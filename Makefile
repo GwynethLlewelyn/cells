@@ -33,6 +33,15 @@ xgo:
 	 -X github.com/pydio/cells/v4/common.BuildRevision=${GITREV}"\
 	 .
 
+cross-go:
+	$(info Cross-compile & build for target '${GOOS}', architecture: '${GOARCH}':)
+	env GOOS=${GOOS} GOARCH=${GOARCH} go build -a -trimpath\
+	 -ldflags "-X github.com/pydio/cells/v4/common.version=${CELLS_VERSION}\
+	 -X github.com/pydio/cells/v4/common.BuildStamp=${TODAY}\
+	 -X github.com/pydio/cells/v4/common.BuildRevision=${GITREV}"\
+	 -o cells\
+	 .
+
 win:
 	env GOOS=windows GOARCH=amd64 go build -a -trimpath\
 	 -ldflags "-X github.com/pydio/cells/v4/common.version=${CELLS_VERSION}\
