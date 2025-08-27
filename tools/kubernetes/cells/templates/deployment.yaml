@@ -514,6 +514,10 @@ spec:
               value: /var/cells
             - name: CELLS_LOG_DIR
               value: /var/log/cells
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           {{- if .Values.image.local }}
           image: "{{ .Values.image.repository }}"
           {{- else }}

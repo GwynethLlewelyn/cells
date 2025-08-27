@@ -189,8 +189,7 @@ const (
 }
 {{end}}
 {{end}}
-{{end}}
-	 `
+{{end}}	`
 )
 
 type TplData struct {

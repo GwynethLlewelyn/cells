@@ -17,6 +17,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -67,11 +68,18 @@ func init() {
 					_ = batchv1.AddToScheme(scheme)
 					_ = corev1.AddToScheme(scheme)
 
+					ns := os.Getenv("POD_NAMESPACE")
+
 					mgr, err := manager.New(ctrl.GetConfigOrDie(), manager.Options{
 						BaseContext: func() context.Context {
 							return ctx
 						},
 						Scheme: scheme,
+						Cache: cache.Options{
+							DefaultNamespaces: map[string]cache.Config{
+								ns: {},
+							},
+						},
 					})
 
 					if err != nil {
@@ -90,7 +98,6 @@ func init() {
 					// so we compare relevant fields manually.
 					changed := predicate.Funcs{
 						CreateFunc: func(e event.CreateEvent) bool {
-							//return false
 							return allowByTarget(reconciler, e.Object)
 						},
 						UpdateFunc: func(e event.UpdateEvent) bool {

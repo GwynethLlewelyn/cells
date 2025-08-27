@@ -1,5 +1,5 @@
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
-kind: ClusterRole
+kind: RoleBinding
 metadata:
   name: {{ template "common.names.fullname" . }}
   namespace: {{ include "common.names.namespace" . | quote }}
@@ -7,7 +7,11 @@ metadata:
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
-rules:
-  - apiGroups: [ "" ]
-    resources: [ "secrets" ]
-    verbs: [ "get", "list", "watch" ]
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ template "common.names.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ template "cells.serviceAccountName" . }}
+    namespace: {{ include "common.names.namespace" . | quote }}
