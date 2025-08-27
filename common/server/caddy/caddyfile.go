@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -56,6 +57,8 @@ const (
 {{- end -}}
 
 {{$CorsOptions := .CorsOptions}}
+{{$RateLimit := .RateLimit}}
+{{$RateLimitWindow := .RateLimitWindow}}
 
 (cors) {
     # --- Preflight (OPTIONS) ---
@@ -168,6 +171,16 @@ const (
 	{{end}}
 
 	{{if .TLS}}tls {{.TLS}}{{end}}
+
+	{{- if gt $RateLimit 0}}
+	rate_limit {
+		zone per_ip {
+			key    {remote_host}
+			window {{or $RateLimitWindow "1s"}}
+			events {{$RateLimit}}
+		}
+	}
+	{{- end }}
 }
 {{if .SSLRedirect}}
 {{range $k,$v := .Redirects}}
@@ -188,6 +201,8 @@ type TplData struct {
 	DisableAdmin      bool
 	RedirectLogWriter bool
 	CorsOptions       cors.Options
+	RateLimitWindow   time.Duration
+	RateLimit         int
 }
 
 var (
