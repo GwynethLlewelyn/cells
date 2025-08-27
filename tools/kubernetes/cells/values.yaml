@@ -9,6 +9,14 @@ image:
   # Overrides the image tag whose default is the chart appVersion.
   tag: latest
 
+auth:
+  enabled: true
+  username: "admin"
+  password: "P@ssw0rd"
+  existingSecret: "cells"
+  existingSecretUsernameKey: "username"
+  existingSecretPasswordKey: "password"
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

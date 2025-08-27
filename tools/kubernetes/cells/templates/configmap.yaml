@@ -48,8 +48,8 @@ data:
     {{- end }}
 
     # Defined in .env file
-    frontendlogin: admin
-    frontendpassword: P@ssw0rd
+    frontendlogin: $CELLS_USERNAME
+    frontendpassword: $CELLS_PASSWORD
 
     {{- if (include "cells.s3.enabled" .) }}
     dstype: S3
@@ -180,5 +180,27 @@ data:
     path "pki*"                    { capabilities = ["read", "list"] } 
     path "pki/sign/application"    { capabilities = ["create", "update"] }
     path "pki/issue/application"   { capabilities = ["create"] }
-
 {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cells.fullname" . }}-controller
+data:
+  bootstrap.yaml: |
+    #------------------------------------------
+    # Actual Bootstrap Keys
+    #
+    # Defaults variable values are injected at load time
+    #------------------------------------------
+    runtime: controller
+    connections:
+      grpc:
+        uri: cells-grpc:8030
+        services:
+          - filter: "{{"{{"}} .Name {{"}}"}} ~= pydio.grpc..*"
+    servers:
+      generic:
+        type: generic
+        services:
+          - filter: "{{"{{"}} .Name {{"}}"}} ~= pydio\\.generic\\."
