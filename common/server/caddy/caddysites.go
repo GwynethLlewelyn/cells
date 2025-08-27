@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/cors"
 	"go.uber.org/zap"
@@ -43,6 +44,8 @@ import (
 	"github.com/pydio/cells/v5/common/runtime"
 	"github.com/pydio/cells/v5/common/telemetry/log"
 	"github.com/pydio/cells/v5/common/telemetry/metrics"
+
+	_ "github.com/mholt/caddy-ratelimit"
 )
 
 type ActiveSite struct {
@@ -114,6 +117,16 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		}
 	}
 
+	rateLimit, err := strconv.Atoi(os.Getenv("CELLS_WEB_RATE_LIMIT"))
+	if err != nil {
+		rateLimit = 0
+	}
+
+	rateLimitWindow, err := time.ParseDuration(os.Getenv("CELLS_WEB_RATE_LIMIT_WINDOW"))
+	if err != nil {
+		rateLimitWindow = 0
+	}
+
 	tplData := TplData{
 		Sites:             caddySites,
 		EnableMetrics:     metrics.HasProviders(),
@@ -121,6 +134,8 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		RedirectLogWriter: !external,
 		MuxMode:           resolver == nil,
 		CorsOptions:       corsOptions,
+		RateLimit:         rateLimit,
+		RateLimitWindow:   rateLimitWindow,
 	}
 
 	k, e := storage.OpenStore(ctx, runtime.CertsStoreURL())

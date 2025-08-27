@@ -387,6 +387,7 @@ require (
 	github.com/mattn/goveralls v0.0.12 // indirect
 	github.com/mgutz/ansi v0.0.0-20200706080929-d51e80ef957d // indirect
 	github.com/mholt/acmez/v3 v3.0.0 // indirect
+	github.com/mholt/caddy-ratelimit v0.1.0 // indirect
 	github.com/miekg/dns v1.1.62 // indirect
 	github.com/minio/highwayhash v1.0.2 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
