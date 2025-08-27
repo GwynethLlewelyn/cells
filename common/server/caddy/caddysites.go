@@ -75,7 +75,7 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		corsMaxAge = 30
 	}
 
-	corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
+	corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
 	if err != nil {
 		log.Logger(ctx).Warn("max age not an int, setting to default value")
 		corsOptionsStatusContent = http.StatusNoContent
