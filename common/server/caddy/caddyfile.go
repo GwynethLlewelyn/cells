@@ -31,6 +31,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/rs/cors"
 	"go.uber.org/zap"
 
 	"github.com/pydio/cells/v5/common"
@@ -49,33 +50,55 @@ const (
   }{{end}}
 }
 
-{{$CorsAllowAll := .CorsAllowAll}}
-{{if .CorsAllowAll}}
+{{- define "csv" -}}
+{{- $first := true -}}
+{{- range $i, $v := . -}}{{- if not $first}}, {{end -}}{{- $v -}}{{- $first = false -}}{{- end -}}
+{{- end -}}
+
+{{$CorsOptions := .CorsOptions}}
+
 (cors) {
-  @cors_preflight {
-	method OPTIONS
-	header_regexp acr Access-Control-Request-Method .+
-  }
-  @cors header Origin {args[0]}
-
-  handle @cors_preflight {
-    header {
-		Access-Control-Allow-Origin "{args[0]}"
-		Access-Control-Allow-Methods "OPTIONS,HEAD,GET,POST,PUT,PATCH,DELETE"
-		Access-Control-Allow-Headers "*"
-		Access-Control-Max-Age "3600"
+    # --- Preflight (OPTIONS) ---
+	# Block bad preflights (Origin present but NOT allowed)
+	@deny_preflight expression {http.request.method} == "OPTIONS" && {http.request.header.Origin} != "" && {args[0]} == ""
+	respond @deny_preflight "Access denied" 403 {
+			close
 	}
-    respond "" 204
-  }
 
-  handle @cors {
-    header Access-Control-Allow-Origin "{args[0]}"
-	header Vary Origin
-    header Access-Control-Expose-Headers "Authorization,ETag"
-	header Access-Control-Allow-Credentials "true"
-  }
+	
+	# Handle good preflights in one place
+	@preflight_ok expression {http.request.method} == "OPTIONS" && {args[0]} != ""
+	
+	handle @preflight_ok {
+			header {
+					Access-Control-Allow-Origin      "{args[0]}"
+					Access-Control-Allow-Methods     "{args[1]}"
+					Access-Control-Allow-Headers     "{args[2]}"
+					Access-Control-Allow-Credentials "{args[3]}"
+					Access-Control-Max-Age           "{args[4]}"
+					Vary                             Origin
+			}
+			respond {args[5]} {
+				close
+			}
+	}
+
+	# --- Actual requests (non-OPTIONS) ---
+	# Block if Origin is present but NOT allowed
+	@deny_actual expression {http.request.method} != "OPTIONS" && {http.request.header.Origin} != "" && {args[0]} == ""
+	respond @deny_actual "Access denied" 403 {
+			close
+	}
+	
+	# For allowed origins, set ACAO (reflect) on normal responses
+	@has_allowed expression {args[0]} != ""
+	header @has_allowed {
+			Access-Control-Allow-Origin      "{args[0]}"
+			Access-Control-Allow-Credentials "{args[3]}"
+			Access-Control-Expose-Headers    "{args[6]}"
+			Vary                             "Origin"
+	}
 }
-{{end}}
 
 {{range .Sites}}
 {{$MuxMode := .MuxMode}}
@@ -86,9 +109,30 @@ const (
 
 	{{range .Routes}}
 	route {{.Path}} {
+		
+		{{- with $CorsOptions }}
+		# Single source of truth: set {allowed_origin} to the incoming Origin if allowed, else "".
+        map {http.request.header.Origin} {allowed_origin} {
+                default ""
+				{{- range .AllowedOrigins}}
+				{{- if eq . "*"}}
+				~(.*)$ {http.request.header.Origin}
+				{{- else}}
+				{{.}} {http.request.header.Origin}
+				{{- end}}
+				{{- end}}
+        }
+		{{- $allowedMethods := .AllowedMethods }}
+		{{- $allowedHeaders := .AllowedHeaders }}
+		{{- $maxAge := .MaxAge }}
+		{{- $optionsSuccessStatus := .OptionsSuccessStatus }}
+		{{- $exposedHeaders := .ExposedHeaders }}
+		{{- $allowCredentials := .AllowCredentials }}
+		import cors {allowed_origin} "{{template "csv" $allowedMethods}}" "{{template "csv" $allowedHeaders}}" {{$allowCredentials}} {{$maxAge}} {{$optionsSuccessStatus}} "{{template "csv" $exposedHeaders}}" 
+		{{- end}}
 
-		{{if $CorsAllowAll}}import cors {header.origin}{{end}}
-		{{range .HeaderMods}}{{.}}
+		{{range .HeaderMods}}
+			{{.}}
 		{{end}}
 
 		{{if $Maintenance}}
@@ -102,13 +146,14 @@ const (
 		redir @rmatcher /maintenance.html
 		{{end}}		
 
-		{{range .RewriteRules}}{{.}}
+		{{range .RewriteRules}}
+			{{.}}
 		{{end}}
 		{{if $MuxMode}}
 		# Apply mux
 		mux
 		{{else}}
-		reverse_proxy {{joinUpstreams .Upstreams " "}} {{if $CorsAllowAll}}{
+		reverse_proxy {{joinUpstreams .Upstreams " "}} {{if $CorsOptions}}{
 			header_down -Access-Control-Allow-Origin
 		}{{end}}
 		{{end}}
@@ -142,7 +187,7 @@ type TplData struct {
 	EnableMetrics     bool
 	DisableAdmin      bool
 	RedirectLogWriter bool
-	CorsAllowAll      bool
+	CorsOptions       cors.Options
 }
 
 var (
@@ -164,6 +209,7 @@ func joinUpstreams(uu []any, sep string) string {
 
 func FromTemplate(ctx context.Context, tplData TplData) ([]byte, error) {
 	var err error
+	// TODO - if there is an error here it's not showing properly
 	parsedOnce.Do(func() {
 		parsedTpl, err = template.New("pydiocaddy").Funcs(template.FuncMap{"joinUpstreams": joinUpstreams}).Parse(caddytemplate)
 	})

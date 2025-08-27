@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
 
 	"github.com/pydio/cells/v5/common/config"
 	"github.com/pydio/cells/v5/common/proto/install"
@@ -65,9 +66,9 @@ func actionFrontendsAdd(ctx context.Context, c *install.InstallConfig) error {
 
 	conf := &frontendsConfig{
 		Hosts:    c.GetFrontendHosts(),
-		Login:    c.GetFrontendLogin(),
-		Password: c.GetFrontendPassword(),
-		Confirm:  c.GetFrontendRepeatPassword(),
+		Login:    os.ExpandEnv(c.GetFrontendLogin()),
+		Password: os.ExpandEnv(c.GetFrontendPassword()),
+		Confirm:  os.ExpandEnv(c.GetFrontendRepeatPassword()),
 	}
 
 	if conf.Login != "" && conf.Password != "" && conf.Confirm == conf.Password {

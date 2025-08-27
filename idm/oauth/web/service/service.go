@@ -133,12 +133,36 @@ func init() {
 				handler := TokenMethodWrapper(ctx, handlerFunc)
 				handler = middleware.WebIncomingContextMiddleware(ctx, "/oidc", service.ContextKey, o.Server, handler)
 
-				serveMux.Route(common.RouteOIDC).Handle("/", cors.New(cors.Options{
-					AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
-					AllowedHeaders:   []string{"Authorization", "Content-Type"},
-					ExposedHeaders:   []string{"Content-Type"},
-					AllowCredentials: true,
-				}).Handler(handler), routing.WithStripPrefix())
+				conf := config.Get(ctx, "services/"+common.ServiceWebNamespace_+common.ServiceOAuth+"/cors/public")
+				zl := zap.New(log.Logger(ctx).Core())
+
+				corsOptions := cors.Options{
+					AllowedOrigins:       []string{"*"}, // Replaced by AllowOriginVaryRequestFunc in case allowed origins are set
+					AllowedMethods:       conf.Val("allowedMethods").Default([]string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete}).StringArray(),
+					AllowedHeaders:       conf.Val("allowedHeaders").Default([]string{"Authorization", "Content-Type"}).StringArray(),
+					ExposedHeaders:       conf.Val("exposedHeaders").Default([]string{"Content-Type"}).StringArray(),
+					MaxAge:               conf.Val("maxAge").Default(30).Int(),
+					AllowCredentials:     conf.Val("allowCredentials").Default(true).Bool(),
+					AllowPrivateNetwork:  conf.Val("allowPrivateNetwork").Default(false).Bool(),
+					OptionsPassthrough:   conf.Val("optionsPassthrough").Default(false).Bool(),
+					OptionsSuccessStatus: conf.Val("optionsSuccessStatus").Default(http.StatusNoContent).Int(),
+					Debug:                conf.Val("debug").Default(false).Bool(),
+					Logger:               zap.NewStdLog(zl),
+				}
+
+				allowedOrigins := conf.Val("allowedOrigins").StringArray()
+				if len(allowedOrigins) > 0 {
+					corsOptions.AllowOriginVaryRequestFunc = func(_ *http.Request, origin string) (bool, []string) {
+						for _, allowedOrigin := range allowedOrigins {
+							if origin == allowedOrigin {
+								return true, []string{}
+							}
+						}
+						return false, []string{}
+					}
+				}
+
+				serveMux.Route(common.RouteOIDC).Handle("/", cors.New(corsOptions).Handler(handler), routing.WithStripPrefix())
 				return nil
 			}),
 			service.WithHTTPStop(func(ctx context.Context, mux routing.RouteRegistrar) error {

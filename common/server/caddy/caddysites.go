@@ -24,9 +24,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/rs/cors"
+	"go.uber.org/zap"
 
 	"github.com/pydio/caddyvault"
 
@@ -36,6 +41,7 @@ import (
 	"github.com/pydio/cells/v5/common/crypto/storage"
 	"github.com/pydio/cells/v5/common/proto/install"
 	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 	"github.com/pydio/cells/v5/common/telemetry/metrics"
 )
 
@@ -62,13 +68,59 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		return nil, nil, err
 	}
 
+	// CORS Options
+	corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
+	if err != nil {
+		log.Logger(ctx).Warn("max age not an int, setting to default value")
+		corsMaxAge = 30
+	}
+
+	corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
+	if err != nil {
+		log.Logger(ctx).Warn("max age not an int, setting to default value")
+		corsOptionsStatusContent = http.StatusNoContent
+	}
+
+	zl := zap.New(log.Logger(ctx).Core())
+
+	var corsOptions cors.Options
+
+	if os.Getenv("CELLS_WEB_CORS_ALLOW_ALL") == "true" {
+		corsOptions = cors.Options{
+			AllowedOrigins: []string{"*"},
+			AllowedMethods: []string{
+				http.MethodHead,
+				http.MethodGet,
+				http.MethodPost,
+				http.MethodPut,
+				http.MethodPatch,
+				http.MethodDelete,
+			},
+			AllowedHeaders:   []string{"*"},
+			AllowCredentials: false,
+		}
+	} else if os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS") != "" {
+		corsOptions = cors.Options{
+			AllowedOrigins:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS"), ","),
+			AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
+			ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
+			MaxAge:               corsMaxAge,
+			AllowCredentials:     os.Getenv("CELLS_WEB_CORS_ALLOW_CREDENTIALS") == "true",
+			AllowPrivateNetwork:  os.Getenv("CELLS_WEB_CORS_ALLOW_PRIVATE_NETWORK") == "true",
+			OptionsPassthrough:   os.Getenv("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH") == "true",
+			OptionsSuccessStatus: corsOptionsStatusContent,
+			Debug:                os.Getenv("CELLS_WEB_CORS_ALLOW_DEBUG") == "true",
+			Logger:               zap.NewStdLog(zl),
+		}
+	}
+
 	tplData := TplData{
 		Sites:             caddySites,
 		EnableMetrics:     metrics.HasProviders(),
 		DisableAdmin:      !external,
 		RedirectLogWriter: !external,
 		MuxMode:           resolver == nil,
-		CorsAllowAll:      os.Getenv("CELLS_WEB_CORS_ALLOW_ALL") == "true",
+		CorsOptions:       corsOptions,
 	}
 
 	k, e := storage.OpenStore(ctx, runtime.CertsStoreURL())
