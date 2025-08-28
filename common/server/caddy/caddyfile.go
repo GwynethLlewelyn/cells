@@ -119,7 +119,7 @@ const (
                 default ""
 				{{- range .AllowedOrigins}}
 				{{- if eq . "*"}}
-				~(.*)$ {http.request.header.Origin}
+				~.*$ ${0}
 				{{- else}}
 				{{.}} {http.request.header.Origin}
 				{{- end}}
