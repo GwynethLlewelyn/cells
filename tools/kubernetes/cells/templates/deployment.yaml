@@ -502,8 +502,10 @@ spec:
         app: {{ include "cells.fullname" . }}-controller
     spec:
       serviceAccountName: {{ include "cells.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - env:
             - name: CELLS_BOOTSTRAP_FILE
