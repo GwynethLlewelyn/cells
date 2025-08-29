@@ -85,6 +85,7 @@ func (o *URLOpener) openURL(ctx context.Context, u *url.URL) (registry.Registry,
 
 	switch strings.TrimSuffix(u.Scheme, "+tls") {
 	case "etcd":
+
 		addr := "://" + u.Host
 		if o.tlsConfig == nil {
 			addr = "http" + addr
@@ -99,8 +100,8 @@ func (o *URLOpener) openURL(ctx context.Context, u *url.URL) (registry.Registry,
 		etcdConn, err := clientv3.New(clientv3.Config{
 			Endpoints:   []string{addr},
 			DialTimeout: 2 * time.Second,
-			Username:    u.User.Username(),
-			Password:    pwd,
+			Username:    os.ExpandEnv(u.User.Username()),
+			Password:    os.ExpandEnv(pwd),
 			TLS:         o.tlsConfig,
 		})
 
