@@ -513,7 +513,7 @@ spec:
             - name: CELLS_START_K8S_MANAGER
               value: "true"
             - name: CELLS_START_K8S_MANAGER_SECRET
-              value: "cells"
+              value: {{ include "cells.auth.secretName" . }}
             - name: CELLS_WORKING_DIR
               value: /var/cells
             - name: CELLS_LOG_DIR

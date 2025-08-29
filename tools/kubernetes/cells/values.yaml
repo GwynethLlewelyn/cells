@@ -11,6 +11,7 @@ image:
 
 auth:
   enabled: true
+  create: true
   username: "admin"
   password: "P@ssw0rd"
   existingSecret: "cells"
