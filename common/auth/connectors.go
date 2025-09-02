@@ -154,7 +154,7 @@ type PasswordConnector interface {
 // CallbackConnector is an interface implemented by connectors which use an OAuth
 // style redirect flow to determine user information.
 type CallbackConnector interface {
-	// The initial URL to redirect the user to.
+	// LoginURL creates the initial URL to redirect the user to.
 	//
 	// OAuth2 implementations should request different scopes from the upstream
 	// identity provider based on the scopes requested by the downstream client.
@@ -167,9 +167,10 @@ type CallbackConnector interface {
 	// requested if one has already been issues. There's no good general answer
 	// for these kind of restrictions, and may require this package to become more
 	// aware of the global set of user/connector interactions.
-	LoginURL(s Scopes, callbackURL, state string, additionalKeyPairs ...string) (string, error)
+	LoginURL(ctx context.Context, s Scopes, callbackURL, state string, additionalKeyPairs ...string) (string, error)
 
-	// Handle the callback to the server and return an identity.
+	// HandleCallback handles the callback to the server and return an identity.
+	// No need to pass ctx as request already has it
 	HandleCallback(s Scopes, r *http.Request) (identity Identity, err error)
 }
 
@@ -185,7 +186,7 @@ type SAMLConnector interface {
 	//
 	// POSTData should encode the provided request ID in the returned serialized
 	// SAML request.
-	POSTData(s Scopes, requestID string) (ssoURL, samlRequest string, err error)
+	POSTData(ctx context.Context, s Scopes, requestID string) (ssoURL, samlRequest string, err error)
 
 	// HandlePOST decodes, verifies, and maps attributes from the SAML response.
 	// It passes the expected value of the "InResponseTo" response field, which
@@ -193,7 +194,7 @@ type SAMLConnector interface {
 	//
 	// See: https://www.oasis-open.org/committees/download.php/35711/sstc-saml-core-errata-2.0-wd-06-diff.pdf
 	// "3.2.2 Complex Type StatusResponseType"
-	HandlePOST(s Scopes, samlResponse, inResponseTo string) (identity Identity, err error)
+	HandlePOST(ctx context.Context, s Scopes, samlResponse, inResponseTo string) (identity Identity, err error)
 }
 
 // RefreshConnector is a connector that can update the client claims.
