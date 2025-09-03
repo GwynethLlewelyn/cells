@@ -66,33 +66,39 @@ func CheckSubServices(ctx context.Context, syncConfig *object.DataSource, cb ...
 		log.Logger(ctx).Debug("Sync " + dataSource + " - Try to contact Index")
 		cc := grpccli.ResolveConn(ctx, common.ServiceGrpcNamespace_+common.ServiceDataIndex_+dataSource)
 		readyzClient := server.NewReadyzClient(cc)
-		hsR, hsE := readyzClient.Ready(ctx, &server.ReadyCheckRequest{HealthCheckRequest: &grpc_health_v1.HealthCheckRequest{}})
-		if hsE != nil {
-			if serviceCallback != nil {
-				serviceCallback("index", false, "Error: "+hsE.Error())
-			} else {
-				log.Logger(ctx).Error("Index Healthcheck Error", zap.Error(hsE))
-			}
-		} else if hsR.GetReadyStatus() != server.ReadyStatus_Ready {
-			if serviceCallback != nil {
-				serviceCallback("index", false, "index not ready")
-				for k, v := range hsR.Components {
-					serviceCallback("index."+k, v.ReadyStatus == server.ReadyStatus_Ready, v.Details)
+		// TODO - This retry should be unnecessary if the UNAVAILABLE status responded by grpc is automatically retried at the client level.
+		rErr := std.Retry(ctx, func() error {
+			hsR, hsE := readyzClient.Ready(ctx, &server.ReadyCheckRequest{HealthCheckRequest: &grpc_health_v1.HealthCheckRequest{}})
+			if hsE != nil {
+				if serviceCallback != nil {
+					serviceCallback("index", false, "Error: "+hsE.Error())
+				} else {
+					log.Logger(ctx).Error("Index Healthcheck Error", zap.Error(hsE))
 				}
-			} else {
-				log.Logger(ctx).Error("Index Not Ready " + hsR.GetReadyStatus().String())
-			}
-		} else {
-			if serviceCallback != nil {
-				serviceCallback("index", true, "index ready")
-				for k, v := range hsR.Components {
-					serviceCallback("index."+k, true, v.Details)
+				return hsE
+			} else if hsR.GetReadyStatus() != server.ReadyStatus_Ready {
+				if serviceCallback != nil {
+					serviceCallback("index", false, "index not ready")
+					for k, v := range hsR.Components {
+						serviceCallback("index."+k, v.ReadyStatus == server.ReadyStatus_Ready, v.Details)
+					}
+				} else {
+					log.Logger(ctx).Error("Index Not Ready " + hsR.GetReadyStatus().String())
 				}
+				return fmt.Errorf("not ready")
 			} else {
-				log.Logger(ctx).Info("Index Connected", zap.Any("res", hsR))
+				if serviceCallback != nil {
+					serviceCallback("index", true, "index ready")
+					for k, v := range hsR.Components {
+						serviceCallback("index."+k, true, v.Details)
+					}
+				} else {
+					log.Logger(ctx).Info("Index Connected", zap.Any("res", hsR))
+				}
+				return nil
 			}
-			indexOK = true
-		}
+		}, 2*time.Second, 20*time.Second)
+		indexOK = rErr == nil
 	}()
 
 	// Making sure Objects is started

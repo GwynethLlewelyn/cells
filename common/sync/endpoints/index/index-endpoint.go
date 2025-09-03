@@ -140,11 +140,8 @@ func (i *Client) CreateNode(ctx context.Context, node tree.N, updateIfExists boo
 
 	session := i.indexationSession()
 
-	tn := &tree.Node{}
-	node.As(tn)
-
 	_, err = i.writerClient.CreateNode(ctx, &tree.CreateNodeRequest{
-		Node:              tn,
+		Node:              node.AsProto(),
 		UpdateIfExists:    updateIfExists,
 		IndexationSession: session,
 	})
@@ -191,12 +188,10 @@ func (i *Client) MoveNode(ctx context.Context, oldPath string, newPath string) (
 }
 
 func (i *Client) StartSession(ctx context.Context, rootNode tree.N, silent bool) (string, error) {
-	tn := &tree.Node{}
-	rootNode.As(tn)
 	sess := &tree.IndexationSession{
 		Uuid:        uuid.New(),
 		Description: "Indexation",
-		RootNode:    tn,
+		RootNode:    rootNode.AsProto(),
 		Silent:      silent,
 	}
 	resp, err := i.sessionClient.OpenSession(ctx, &tree.OpenSessionRequest{Session: sess})

@@ -148,17 +148,18 @@ func (s *Syncer) InitAndStart() error {
 		var clearConfigKey string
 
 		// Create an authenticated context for sync operations if any
-		bg := context.Background()
+		bg := context.WithoutCancel(s.GlobalCtx)
 		bg = propagator.WithUserNameMetadata(bg, common.PydioContextUserKey, common.PydioSystemUsername)
-		bg = propagator.ForkOneKey(runtime.ServiceNameKey, bg, ctx)
 
 		if _, has := s.SyncConfig.StorageConfiguration[object.StorageKeyInitFromBucket]; has {
+			log.Logger(ctx).Info("Initializing storage from bucket")
 			if _, e := s.FlatScanEmpty(bg, nil, nil); e != nil {
 				log.Logger(ctx).Warn("Could not scan storage bucket after start", zap.Error(e))
 			} else {
 				clearConfigKey = object.StorageKeyInitFromBucket
 			}
 		} else if snapKey, has := s.SyncConfig.StorageConfiguration[object.StorageKeyInitFromSnapshot]; has {
+			log.Logger(ctx).Info("Initializing storage from snapshot", zap.String("name", snapKey))
 			if _, e := s.FlatSyncSnapshot(bg, s.SyncConfig, "read", snapKey, nil, nil); e != nil {
 				log.Logger(ctx).Warn("Could not init index from stored snapshot after start", zap.Error(e))
 			} else {

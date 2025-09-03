@@ -1,3 +1,23 @@
+/*
+ * Copyright (c) 2025. Abstrium SAS <team (at) pydio.com>
+ * This file is part of Pydio Cells.
+ *
+ * Pydio Cells is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Pydio Cells is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Pydio Cells.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * The latest code can be found at <https://pydio.com>.
+ */
+
 package source
 
 import (
@@ -14,6 +34,7 @@ import (
 	"github.com/pydio/cells/v5/common/config"
 	"github.com/pydio/cells/v5/common/errors"
 	"github.com/pydio/cells/v5/common/middleware"
+	"github.com/pydio/cells/v5/common/middleware/migrations"
 	"github.com/pydio/cells/v5/common/runtime"
 	"github.com/pydio/cells/v5/common/telemetry/log"
 	"github.com/pydio/cells/v5/common/utils/cache"
@@ -85,11 +106,15 @@ func init() {
 		if t := md.Get(dataSourceServiceHeader); len(t) > 0 {
 			update = true
 			ds := t[len(t)-1]
+			// Update service name
+			ctx = runtime.WithServiceVersionKey(ctx, runtime.GetServiceName(ctx)+"."+ds)
 			ctx = propagator.With(ctx, DataSourceContextKey, ds)
 		}
 		if t := md.Get(objectServiceHeader); len(t) > 0 {
 			update = true
 			ob := t[len(t)-1]
+			// Update service name
+			ctx = runtime.WithServiceVersionKey(ctx, runtime.GetServiceName(ctx)+"."+ob)
 			ctx = propagator.With(ctx, ObjectServiceContextKey, ob)
 		}
 		return ctx, update, nil
@@ -108,6 +133,9 @@ func init() {
 		}
 		return nil
 	})
+
+	// Make sure to register it after these specific ones
+	migrations.RegisterMigrationStatusModifier()
 
 }
 

@@ -149,11 +149,11 @@ func (f Flags) AsMeta() map[string]string {
 /* VARIOUS HELPERS TO MANAGE NODES */
 
 func (node *Node) As(out any) bool {
-	if v, ok := out.(*Node); ok {
-		out = v
+	switch p := out.(type) {
+	case *Node:
+		*p = *node
 		return true
 	}
-
 	return false
 }
 

@@ -28,8 +28,11 @@ import (
 
 type serviceNameKey struct{}
 
+type serviceVersionKey struct{}
+
 var (
-	ServiceNameKey = serviceNameKey{}
+	ServiceNameKey    = serviceNameKey{}
+	ServiceVersionKey = serviceVersionKey{}
 )
 
 func init() {
@@ -53,4 +56,20 @@ func GetServiceName(ctx context.Context) string {
 	} else {
 		return ""
 	}
+}
+
+// WithServiceVersionKey overrides the default name used to read/write service version
+func WithServiceVersionKey(ctx context.Context, versionKey string) context.Context {
+	return context.WithValue(ctx, ServiceVersionKey, versionKey)
+}
+
+// GetServiceVersionKey returns the service name or custom service version key
+func GetServiceVersionKey(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v := ctx.Value(ServiceVersionKey); v != nil {
+		return v.(string)
+	}
+	return GetServiceName(ctx)
 }

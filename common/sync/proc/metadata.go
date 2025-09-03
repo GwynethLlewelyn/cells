@@ -37,12 +37,11 @@ func (pr *Processor) processMetadata(canceler context.Context, operation merger.
 		if opNode == nil {
 			return errors.New("cannot find operation node for operating on metadata")
 		}
-		protoNode := &tree.Node{}
+		protoNode := operation.GetNode().AsProto()
 		var parentUuid, parentPath string
-		if operation.GetNode().As(protoNode) {
-			parentUuid = protoNode.GetStringMeta(merger.MetaNodeParentUUIDMeta)
-			parentPath = protoNode.GetStringMeta(merger.MetaNodeParentPathMeta)
-		}
+		parentUuid = protoNode.GetStringMeta(merger.MetaNodeParentUUIDMeta)
+		parentPath = protoNode.GetStringMeta(merger.MetaNodeParentPathMeta)
+
 		if parentUuid == "" {
 			return errors.New("cannot find parent Uuid for operating on Metadata")
 		}
