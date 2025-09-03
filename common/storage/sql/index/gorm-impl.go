@@ -103,21 +103,27 @@ func (dao *gormImpl[T]) instance(ctx context.Context) *gorm.DB {
 func (dao *gormImpl[T]) Migrate(ctx context.Context) error {
 	t := dao.factory.Struct()
 	db := dao.instance(ctx).WithContext(context.WithoutCancel(ctx))
+	isMySQL := db.Name() == storagesql.MySQLDriver
+	tName := storagesql.TableNameFromModel(db, t)
 
-	if db.Name() == storagesql.MySQLDriver {
+	if isMySQL {
 		db = db.Set("gorm:table_options", "CHARSET=ascii")
+
+		if db.Migrator().HasTable(tName) { // Do NOT auto-migrate existing table, there will be collation issues
+			// Migrate V4 => v5 Leaf Flag
+			if tx := db.Model(t).Where("leaf = ?", 0).UpdateColumn("leaf", 2); tx.Error != nil {
+				return tx.Error
+			}
+			// Append additional manual MySQL migrations here
+			return nil
+		}
 	}
 
 	if er := db.AutoMigrate(t); er != nil {
 		return er
 	}
-	// This is a migration for backward compat with v4
-	if tx := db.Model(t).Where("leaf = ?", 0).UpdateColumn("leaf", 2); tx.Error != nil {
-		return tx.Error
-	}
 
-	if db.Name() == storagesql.MySQLDriver {
-		tName := storagesql.TableNameFromModel(db, t)
+	if isMySQL {
 		var schemaName, collation string
 		db.Raw("SELECT DATABASE()").Scan(&schemaName)
 		if schemaName != "" {
