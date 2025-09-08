@@ -157,8 +157,6 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		return nil, nil, err
 	}
 
-	fmt.Println("caddyFile", string(caddyFile))
-
 	var addresses []string
 	for _, site := range caddySites {
 		for _, bind := range site.GetBinds() {
