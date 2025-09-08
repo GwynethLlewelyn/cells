@@ -102,10 +102,13 @@ EXAMPLE
 
 		} else {
 
-			full := from.Get()
-			if er := to.Set(full); er != nil {
-				return er
+			m := from.Val().Map()
+			for k, v := range m {
+				if er := to.Val(k).Set(v); er != nil {
+					return er
+				}
 			}
+
 			if er := to.Save(common.PydioSystemUsername, "Copied config from "+configCopyFromURL); er != nil {
 				return er
 			}

@@ -218,48 +218,51 @@ func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption)
 
 			// If CORS "*" is expected, do not set cors defaults
 			if co := os.Getenv("CELLS_WEB_CORS_ALLOW_ALL"); co != "true" {
-				mm = append(mm, cors.Default().Handler)
-			} else {
-				corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
-				if err != nil {
-					log.Logger(ctx).Warn("max age not an int, setting to default value")
-					corsMaxAge = 30
-				}
-
-				corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
-				if err != nil {
-					log.Logger(ctx).Warn("max age not an int, setting to default value")
-					corsOptionsStatusContent = http.StatusNoContent
-				}
-
-				zl := zap.New(log.Logger(ctx).Core())
-
-				corsOptions := cors.Options{
-					AllowedOrigins:       []string{"*"}, // Can be replaced by the function AllowOriginVary if the env variable is set
-					AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
-					ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
-					MaxAge:               corsMaxAge,
-					AllowCredentials:     os.Getenv("CELLS_WEB_CORS_ALLOW_CREDENTIALS") == "true",
-					AllowPrivateNetwork:  os.Getenv("CELLS_WEB_CORS_ALLOW_PRIVATE_NETWORK") == "true",
-					OptionsPassthrough:   os.Getenv("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH") == "true",
-					OptionsSuccessStatus: corsOptionsStatusContent,
-					Debug:                os.Getenv("CELLS_WEB_CORS_ALLOW_DEBUG") == "true",
-					Logger:               zap.NewStdLog(zl),
-				}
-
-				allowedOrigins := strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOW_ORIGINS"), ",")
-				if len(allowedOrigins) > 0 {
-					corsOptions.AllowOriginVaryRequestFunc = func(_ *http.Request, origin string) (bool, []string) {
-						for _, allowedOrigin := range allowedOrigins {
-							if origin == allowedOrigin {
-								return true, []string{}
-							}
-						}
-						return false, []string{}
+				if os.Getenv("CELLS_WEB_CORS_ALLOW_ORIGINS") == "" {
+					mm = append(mm, cors.Default().Handler)
+				} else {
+					corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
+					if err != nil {
+						log.Logger(ctx).Warn("max age not an int, setting to default value")
+						corsMaxAge = 30
 					}
-				}
 
-				mm = append(mm, cors.New(corsOptions).Handler)
+					corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
+					if err != nil {
+						log.Logger(ctx).Warn("max age not an int, setting to default value")
+						corsOptionsStatusContent = http.StatusNoContent
+					}
+
+					zl := zap.New(log.Logger(ctx).Core())
+
+					corsOptions := cors.Options{
+						AllowedOrigins:       []string{"*"}, // Can be replaced by the function AllowOriginVary if the env variable is set
+						AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
+						ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
+						MaxAge:               corsMaxAge,
+						AllowCredentials:     os.Getenv("CELLS_WEB_CORS_ALLOW_CREDENTIALS") == "true",
+						AllowPrivateNetwork:  os.Getenv("CELLS_WEB_CORS_ALLOW_PRIVATE_NETWORK") == "true",
+						OptionsPassthrough:   os.Getenv("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH") == "true",
+						OptionsSuccessStatus: corsOptionsStatusContent,
+						Debug:                os.Getenv("CELLS_WEB_CORS_ALLOW_DEBUG") == "true",
+						Logger:               zap.NewStdLog(zl),
+					}
+
+					allowedOrigins := strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOW_ORIGINS"), ",")
+					if len(allowedOrigins) > 0 {
+						corsOptions.AllowOriginVaryRequestFunc = func(_ *http.Request, origin string) (bool, []string) {
+							for _, allowedOrigin := range allowedOrigins {
+								if origin == allowedOrigin {
+									return true, []string{}
+								}
+							}
+							return false, []string{}
+						}
+
+					}
+					mm = append(mm, cors.New(corsOptions).Handler)
+
+				}
 			}
 
 			for _, wrap := range mm {

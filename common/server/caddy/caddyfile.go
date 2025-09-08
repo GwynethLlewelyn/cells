@@ -60,6 +60,7 @@ const (
 {{$RateLimit := .RateLimit}}
 {{$RateLimitWindow := .RateLimitWindow}}
 
+{{- if $CorsOptions }}
 (cors) {
     # --- Preflight (OPTIONS) ---
 	# Block bad preflights (Origin present but NOT allowed)
@@ -102,6 +103,7 @@ const (
 			Vary                             "Origin"
 	}
 }
+{{- end }}
 
 {{range .Sites}}
 {{$MuxMode := .MuxMode}}
@@ -113,6 +115,7 @@ const (
 	{{range .Routes}}
 	route {{.Path}} {
 		
+		{{- if $CorsOptions }}
 		{{- with $CorsOptions }}
 		# Single source of truth: set {allowed_origin} to the incoming Origin if allowed, else "".
         map {http.request.header.Origin} {allowed_origin} {
@@ -132,7 +135,8 @@ const (
 		{{- $exposedHeaders := .ExposedHeaders }}
 		{{- $allowCredentials := .AllowCredentials }}
 		import cors {allowed_origin} "{{template "csv" $allowedMethods}}" "{{template "csv" $allowedHeaders}}" {{$allowCredentials}} {{$maxAge}} {{$optionsSuccessStatus}} "{{template "csv" $exposedHeaders}}" 
-		{{- end}}
+		{{- end }}
+		{{- end }}
 
 		{{range .HeaderMods}}
 			{{.}}
@@ -199,7 +203,7 @@ type TplData struct {
 	EnableMetrics     bool
 	DisableAdmin      bool
 	RedirectLogWriter bool
-	CorsOptions       cors.Options
+	CorsOptions       *cors.Options
 	RateLimitWindow   time.Duration
 	RateLimit         int
 }

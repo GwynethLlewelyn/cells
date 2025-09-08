@@ -87,13 +87,13 @@ func (o *EtcdOpener) Open(ctx context.Context, urlstr string, base config.Store)
 	// Watching remote store
 
 	return &etcdStore{
-		Store: st,
+		Store: base,
 		m:     m,
 	}, nil
 }
 
 type etcdStore struct {
-	kv.Store
+	config.Store
 
 	m config.Store
 }

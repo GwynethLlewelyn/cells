@@ -71,25 +71,12 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		return nil, nil, err
 	}
 
-	// CORS Options
-	corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
-	if err != nil {
-		log.Logger(ctx).Warn("max age not an int, setting to default value")
-		corsMaxAge = 30
-	}
-
-	corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
-	if err != nil {
-		log.Logger(ctx).Warn("max age not an int, setting to default value")
-		corsOptionsStatusContent = http.StatusNoContent
-	}
-
 	zl := zap.New(log.Logger(ctx).Core())
 
-	var corsOptions cors.Options
+	var corsOptions *cors.Options
 
 	if os.Getenv("CELLS_WEB_CORS_ALLOW_ALL") == "true" {
-		corsOptions = cors.Options{
+		corsOptions = &cors.Options{
 			AllowedOrigins: []string{"*"},
 			AllowedMethods: []string{
 				http.MethodHead,
@@ -103,7 +90,20 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 			AllowCredentials: false,
 		}
 	} else if os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS") != "" {
-		corsOptions = cors.Options{
+		// CORS Options
+		corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
+		if err != nil {
+			log.Logger(ctx).Warn("max age not an int, setting to default value")
+			corsMaxAge = 30
+		}
+
+		corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
+		if err != nil {
+			log.Logger(ctx).Warn("max age not an int, setting to default value")
+			corsOptionsStatusContent = http.StatusNoContent
+		}
+
+		corsOptions = &cors.Options{
 			AllowedOrigins:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS"), ","),
 			AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
 			ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
@@ -157,6 +157,8 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		return nil, nil, err
 	}
 
+	fmt.Println("caddyFile", string(caddyFile))
+
 	var addresses []string
 	for _, site := range caddySites {
 		for _, bind := range site.GetBinds() {
@@ -177,6 +179,7 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 			}
 		}
 	}
+
 	return caddyFile, addresses, nil
 }
 
