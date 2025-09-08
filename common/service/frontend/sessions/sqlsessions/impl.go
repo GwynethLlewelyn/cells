@@ -81,10 +81,10 @@ func (h *Impl) Migrate(ctx context.Context) error {
 // GetSession implements the SessionDAO interface
 func (h *Impl) GetSession(r *http.Request) (*sessions.Session, error) {
 	// Auto start expirer - we should find a way to send a Done signal
-	ctx := r.Context()
+	ctx := context.WithoutCancel(r.Context())
 	if once, er := expirers.Get(ctx); er == nil {
 		once.Do(func() {
-			h.DeleteExpired(context.TODO(), log.Logger(r.Context()))
+			h.DeleteExpired(ctx, log.Logger(ctx))
 		})
 	}
 	return h.Get(r, utils.SessionName(r))
