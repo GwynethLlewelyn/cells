@@ -62,12 +62,12 @@ let PoliciesBoard = createReactClass({
 
     groupByResourcesGroups(policies) {
         let result = [];
-        const filter = new RegExp('\-ro$|\-rw$|\-wo$')
+//        const filter = new RegExp('\-ro$|\-rw$|\-wo$')
         ResourceGroups.map((k) => {
 
             const groupPolicies = policies.PolicyGroups.filter((pol) => {
                 const g = pol.ResourceGroup || 'rest';
-                return !pol.Uuid.match(filter) && g === k;
+                return g === k;
             });
             if (groupPolicies.length){
                 groupPolicies.sort((a,b) => {return a.Name.toLowerCase() < b.Name.toLowerCase() ? -1 : (a.Name.toLowerCase() === b.Name.toLowerCase() ? 0 : 1 )})
