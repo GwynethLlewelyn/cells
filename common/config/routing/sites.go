@@ -23,6 +23,7 @@ package routing
 import (
 	"context"
 	"net/url"
+	"slices"
 
 	"github.com/pkg/errors"
 
@@ -97,6 +98,14 @@ func LoadSites(ctx context.Context, configOnly ...bool) ([]*install.ProxyConfig,
 	if len(sites) == 0 {
 		sites = append(sites, DefaultBindingSite)
 	}
+
+	sites = slices.DeleteFunc(sites, func(site *install.ProxyConfig) bool {
+		if site == nil {
+			return true
+		}
+
+		return false
+	})
 
 	return sites, nil
 

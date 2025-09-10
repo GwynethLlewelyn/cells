@@ -75,6 +75,7 @@ func init() {
 	runtime.RegisterEnvVariable("CELLS_WEB_RATE_LIMIT", "0", "Http API rate-limiter, as a number of token allowed per seconds. 0 means no limit.")
 	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOW_ALL", "false", "Should be used for DEV only, allow all CORS requests")
 	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOWED_ORIGINS", "", "Define the origins allowed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOWED_METHODS", "", "Define the methods allowed by CORS")
 	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOWED_HEADERS", "", "Define the headers allowed by CORS")
 	runtime.RegisterEnvVariable("CELLS_WEB_CORS_EXPOSED_HEADERS", "", "Define the headers exposed by CORS")
 	runtime.RegisterEnvVariable("CELLS_WEB_CORS_MAX_AGE", "", "Define the Max Age allowed by CORS")
@@ -218,7 +219,7 @@ func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption)
 
 			// If CORS "*" is expected, do not set cors defaults
 			if co := os.Getenv("CELLS_WEB_CORS_ALLOW_ALL"); co != "true" {
-				if os.Getenv("CELLS_WEB_CORS_ALLOW_ORIGINS") == "" {
+				if os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS") == "" {
 					mm = append(mm, cors.Default().Handler)
 				} else {
 					corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
@@ -238,6 +239,7 @@ func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption)
 					corsOptions := cors.Options{
 						AllowedOrigins:       []string{"*"}, // Can be replaced by the function AllowOriginVary if the env variable is set
 						AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
+						AllowedMethods:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_METHODS"), ","),
 						ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
 						MaxAge:               corsMaxAge,
 						AllowCredentials:     os.Getenv("CELLS_WEB_CORS_ALLOW_CREDENTIALS") == "true",
@@ -248,7 +250,7 @@ func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption)
 						Logger:               zap.NewStdLog(zl),
 					}
 
-					allowedOrigins := strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOW_ORIGINS"), ",")
+					allowedOrigins := strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS"), ",")
 					if len(allowedOrigins) > 0 {
 						corsOptions.AllowOriginVaryRequestFunc = func(_ *http.Request, origin string) (bool, []string) {
 							for _, allowedOrigin := range allowedOrigins {

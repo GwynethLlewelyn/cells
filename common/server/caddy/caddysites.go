@@ -87,6 +87,7 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 				http.MethodDelete,
 			},
 			AllowedHeaders:   []string{"*"},
+			ExposedHeaders:   []string{"*"},
 			AllowCredentials: false,
 		}
 	} else if os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS") != "" {
@@ -105,6 +106,7 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 
 		corsOptions = &cors.Options{
 			AllowedOrigins:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS"), ","),
+			AllowedMethods:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_METHODS"), ","),
 			AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
 			ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
 			MaxAge:               corsMaxAge,
