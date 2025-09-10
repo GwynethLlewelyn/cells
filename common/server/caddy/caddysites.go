@@ -87,7 +87,6 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 				http.MethodDelete,
 			},
 			AllowedHeaders:   []string{"*"},
-			ExposedHeaders:   []string{"*"},
 			AllowCredentials: false,
 		}
 	} else if os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS") != "" {
