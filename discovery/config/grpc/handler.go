@@ -76,8 +76,12 @@ func (h *Handler) Set(ctx context.Context, req *pb.SetRequest) (*pb.SetResponse,
 		}
 	} else {
 		var data any
-		if err := json.Unmarshal(req.GetValue().GetData(), &data); err != nil {
-			return nil, errors.WithMessage(errors.StatusInternalServerError, err.Error())
+		if req.GetValue().GetFormat() == "json" {
+			if err := json.Unmarshal(req.GetValue().GetData(), &data); err != nil {
+				return nil, errors.WithMessage(errors.StatusInternalServerError, err.Error())
+			}
+		} else {
+			data = string(req.GetValue().GetData())
 		}
 		if err := config.Set(ctx, data, req.GetPath()); err != nil {
 			return nil, err

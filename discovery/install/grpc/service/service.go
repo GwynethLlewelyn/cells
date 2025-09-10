@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 
 	"github.com/go-logr/zapr"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/anypb"
+	yaml "gopkg.in/yaml.v3"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -27,7 +29,10 @@ import (
 
 	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	grpc2 "github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/config"
 	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/install"
 	service2 "github.com/pydio/cells/v5/common/proto/service"
 	"github.com/pydio/cells/v5/common/runtime"
 	"github.com/pydio/cells/v5/common/server/generic"
@@ -87,7 +92,7 @@ func init() {
 						os.Exit(1)
 					}
 
-					reconciler := &SecretReconciler{
+					secretReconciler := &SecretReconciler{
 						Client:     mgr.GetClient(),
 						Scheme:     mgr.GetScheme(),
 						TargetName: os.Getenv("CELLS_START_K8S_MANAGER_SECRET"),
@@ -96,12 +101,12 @@ func init() {
 					// Predicates: only reconcile on real changes.
 					// Note: Secrets don't bump .metadata.generation on data changes,
 					// so we compare relevant fields manually.
-					changed := predicate.Funcs{
+					secretChanged := predicate.Funcs{
 						CreateFunc: func(e event.CreateEvent) bool {
-							return allowByTarget(reconciler, e.Object)
+							return allowByTarget(secretReconciler, e.Object)
 						},
 						UpdateFunc: func(e event.UpdateEvent) bool {
-							if !allowByTarget(reconciler, e.ObjectNew) {
+							if !allowByTarget(secretReconciler, e.ObjectNew) {
 								return false
 							}
 							oldS, ok1 := e.ObjectOld.(*corev1.Secret)
@@ -116,7 +121,7 @@ func init() {
 							return dataChanged || typeChanged || lblChanged || annChanged
 						},
 						DeleteFunc: func(e event.DeleteEvent) bool {
-							return allowByTarget(reconciler, e.Object)
+							return allowByTarget(secretReconciler, e.Object)
 						},
 						GenericFunc: func(e event.GenericEvent) bool { return false },
 					}
@@ -124,9 +129,52 @@ func init() {
 					// Build controller.
 					if err := builder.
 						ControllerManagedBy(mgr).
-						For(&corev1.Secret{}, builder.WithPredicates(changed)).
-						Watches(&corev1.Secret{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(changed)). // redundant but explicit
-						Complete(reconciler); err != nil {
+						For(&corev1.Secret{}, builder.WithPredicates(secretChanged)).
+						Watches(&corev1.Secret{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(secretChanged)). // redundant but explicit
+						Complete(secretReconciler); err != nil {
+						panic(err)
+					}
+
+					configMapReconciler := &ConfigMapReconciler{
+						Client:     mgr.GetClient(),
+						Scheme:     mgr.GetScheme(),
+						TargetName: os.Getenv("CELLS_START_K8S_MANAGER_CONFIGMAP"),
+					}
+
+					// Predicates: only reconcile on real changes.
+					// Note: Secrets don't bump .metadata.generation on data changes,
+					// so we compare relevant fields manually.
+					configMapChanged := predicate.Funcs{
+						CreateFunc: func(e event.CreateEvent) bool {
+							return allowConfigMapByTarget(configMapReconciler, e.Object)
+						},
+						UpdateFunc: func(e event.UpdateEvent) bool {
+							if !allowConfigMapByTarget(configMapReconciler, e.ObjectNew) {
+								return false
+							}
+							oldS, ok1 := e.ObjectOld.(*corev1.Secret)
+							newS, ok2 := e.ObjectNew.(*corev1.Secret)
+							if !ok1 || !ok2 {
+								return true // be safe
+							}
+							dataChanged := !reflect.DeepEqual(oldS.Data, newS.Data)
+							typeChanged := oldS.Type != newS.Type
+							lblChanged := !reflect.DeepEqual(oldS.Labels, newS.Labels)
+							annChanged := !reflect.DeepEqual(oldS.Annotations, newS.Annotations)
+							return dataChanged || typeChanged || lblChanged || annChanged
+						},
+						DeleteFunc: func(e event.DeleteEvent) bool {
+							return allowConfigMapByTarget(configMapReconciler, e.Object)
+						},
+						GenericFunc: func(e event.GenericEvent) bool { return false },
+					}
+
+					// Controller for ConfigMaps
+					if err := builder.
+						ControllerManagedBy(mgr).
+						For(&corev1.ConfigMap{}, builder.WithPredicates(configMapChanged)).
+						Watches(&corev1.ConfigMap{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(configMapChanged)).
+						Complete(configMapReconciler); err != nil {
 						panic(err)
 					}
 
@@ -145,6 +193,19 @@ func init() {
 }
 
 func allowByTarget(r *SecretReconciler, obj client.Object) bool {
+	if r.TargetName == "" {
+		// All secrets (optionally limited by mgr Namespace)
+		return true
+	}
+	// Watch only a single Secret name (and namespace if set)
+	if r.TargetNamespace != "" && obj.GetNamespace() != r.TargetNamespace {
+		return false
+	}
+
+	return obj.GetName() == r.TargetName
+}
+
+func allowConfigMapByTarget(r *ConfigMapReconciler, obj client.Object) bool {
 	if r.TargetName == "" {
 		// All secrets (optionally limited by mgr Namespace)
 		return true
@@ -253,4 +314,69 @@ func searchUser(ctx context.Context, cli idm.UserServiceClient, login string) ([
 		users = append(users, currUser)
 	}
 	return users, nil
+}
+
+// Reconciler that reacts to ConfigMap changes.
+type ConfigMapReconciler struct {
+	client.Client
+	Scheme *k8sruntime.Scheme
+
+	// Optional: limit to a single configMap
+	// If both fields are non-empty, only that ConfigMap will trigger reconciles.
+	TargetNamespace string
+	TargetName      string
+}
+
+func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	logger := log.Logger(ctx)
+	logger.Info("Reconciling ConfigMap", zap.String("ns", req.Namespace), zap.String("name", req.Name))
+
+	var configMap corev1.ConfigMap
+	if err := r.Get(ctx, req.NamespacedName, &configMap); err != nil {
+		if errors.IsNotFound(err) {
+			// ConfigMap deleted; you can react here if you need to clean up.
+			logger.Info("ConfigMap deleted", zap.String("ns", req.Namespace), zap.String("name", req.Name))
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, err
+	}
+
+	// ---- Your logic goes here ----
+	data := configMap.Data["install-conf.yaml"]
+	if data == "" {
+		return reconcile.Result{}, nil
+	}
+
+	confFromFile := &install.InstallConfig{}
+	if err := yaml.Unmarshal([]byte(data), confFromFile); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	cli := config.NewConfigClient(grpc2.ResolveConn(ctx, common.ServiceConfigGRPC))
+	for k, v := range confFromFile.CustomConfigs {
+		keyArgs := strings.SplitN(k, "#", 2)
+		format := ""
+		key := keyArgs[0]
+		if len(keyArgs) > 1 {
+			format = keyArgs[1]
+		}
+		in := &config.SetRequest{
+			Namespace: "config",
+			Path:      key,
+			Value: &config.Value{
+				Data:   []byte(v),
+				Format: format,
+			},
+		}
+		_, err := cli.Set(ctx, in)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+	}
+	if _, err := cli.Save(ctx, &config.SaveRequest{User: "controller", Message: "Update to the custom configs"}); err != nil {
+		return reconcile.Result{}, err
+	}
+	// ------------------------------
+
+	return reconcile.Result{}, nil
 }

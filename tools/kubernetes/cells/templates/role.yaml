@@ -9,5 +9,5 @@ metadata:
   {{- end }}
 rules:
   - apiGroups: [ "" ]
-    resources: [ "secrets" ]
+    resources: [ "configmaps", "secrets" ]
     verbs: [ "get", "list", "watch" ]
