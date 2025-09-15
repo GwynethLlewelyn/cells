@@ -197,7 +197,7 @@ let Dashboard = createReactClass({
         return (
             <div className={"main-layout-nav-to-stack vertical-layout"}>
                 <Header
-                    title={message('welc.title')}
+                    title={message('welc.title.5')}
                     icon="mdi mdi-view-dashboard"
                     actions={[websiteButton]}
                 />

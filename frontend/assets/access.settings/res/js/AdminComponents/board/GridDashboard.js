@@ -98,7 +98,7 @@ class GridDashboard extends React.Component{
         return (
             <div style={{height:'100%', display:'flex', flexDirection:'column', overflowY:'hidden'}}>
                 <Header
-                    title={message('welc.title')}
+                    title={message('welc.title.5')}
                     icon="mdi mdi-view-dashboard"
                     actions={[websiteButton]}
                 />
