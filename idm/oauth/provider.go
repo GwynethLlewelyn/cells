@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/gofrs/uuid"
+	"github.com/manifoldco/promptui"
 	"github.com/ory/fosite"
 	hconf "github.com/ory/hydra/v2/driver/config"
 	"github.com/ory/hydra/v2/spec"
@@ -104,7 +105,7 @@ func (pc *ProviderContextualizer) Config(ctx context.Context, provider *hconfx.P
 	site, rootURL, ok := routing.SiteFromContext(ctx, sites)
 	if !ok || rootURL == nil {
 		h, _ := propagator.CanonicalMeta(ctx, keys.HttpMetaHost)
-		panic("cannot find site from context - incoming host was: '" + h + "'")
+		panic(promptui.IconBad + " Cannot detect site from incoming request, probably because the site's **ReverseProxyURL** is not properly set (it should match the incoming host '" + h + "'). The authentication module cannot be initialized, please double-check your configuration.")
 	}
 
 	prov := &hconfx.Provider{}

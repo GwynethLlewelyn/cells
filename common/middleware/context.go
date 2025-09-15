@@ -57,7 +57,7 @@ var (
 		grpc_recovery.WithRecoveryHandlerContext(func(ctx context.Context, p interface{}) (err error) {
 			// Handle now and log
 			errString := fmt.Sprintf("%v", p)
-			log.Logger(ctx).Error("Panic in grpc "+errString, zap.Error(err), zap.StackSkip("stack", 4))
+			log.Logger(runtime.AsCoreContext(ctx)).Error("Panic in grpc "+errString, zap.Error(err), zap.StackSkip("stack", 4))
 			st, _ := status.New(codes.Internal, errString).WithDetails(&service.ErrorSentinel{Name: "handled"})
 			return st.Err()
 		}),

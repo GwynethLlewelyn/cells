@@ -177,7 +177,7 @@ func RouteIngressURIContextErr(ctx context.Context, routeID string) (string, err
 	}
 	crtSite, _, ok := SiteFromContext(ctx, ss)
 	if !ok {
-		return "", errors.New("cannot find site from context")
+		return "", errors.New("cannot find site from context while trying to resolve route " + routeID)
 	}
 	if rule := crtSite.FindRouteRule(routeID); rule.Accept() {
 		return rule.IngressURI(route.GetURI()), nil
