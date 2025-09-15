@@ -87,7 +87,7 @@ func VirtualResolveAll(ctx context.Context, accessList *permissions.AccessList) 
 			if resolvedRoot, err := virtualManager.ResolveInContext(ctx, vNode, false); err == nil {
 				log.Logger(ctx).Debug("Updating Access List with resolved node Uuid", zap.Any("virtual", vNode), zap.Any("resolved", resolvedRoot))
 				accessList.ReplicateBitmask(ctx, vNode.Uuid, resolvedRoot.Uuid, true)
-			} else {
+			} else if !errors.Is(err, errors.NodeNotFound) {
 				log.Logger(ctx).Error("Error while resolving virtual node for access list", zap.String("virtual", vNode.Uuid), zap.Error(err))
 			}
 		}

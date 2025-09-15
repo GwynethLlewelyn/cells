@@ -148,7 +148,7 @@ func (h *Handler) TreeNodeToNode(ctx context.Context, n *tree.Node, oo ...TNOpti
 	}
 	for k, v := range n.GetMetaStore() {
 		if strings.HasPrefix(k, common.MetaNamespaceReservedPrefix_) {
-			if k == common.MetaNamespaceRecycleRestore {
+			if k == common.MetaNamespaceRecycleRestore && strings.Trim(v, "\"") != "" {
 				rn.IsRecycled = true
 			}
 			continue

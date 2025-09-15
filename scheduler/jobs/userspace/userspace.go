@@ -905,6 +905,13 @@ func RestoreTask(ctx context.Context, router nodes.Client, paths []string, langu
 						NodesSelector: &jobs.NodesSelector{
 							Query: &service.Query{SubQueries: []*anypb.Any{q}},
 						},
+						// Properly clear MetaNamespaceRecycleRestore after move is succeeded
+						ChainedActions: []*jobs.Action{{
+							ID: "actions.tree.meta",
+							Parameters: map[string]string{
+								"metaJSON": `{"` + common.MetaNamespaceRecycleRestore + `":""}`,
+							},
+						}},
 					},
 				},
 			}

@@ -71,7 +71,7 @@ func (s *sqlImpl) SetMetadata(ctx context.Context, nodeId string, author string,
 	}
 
 	for namespace, data := range metadata {
-		if data == "" {
+		if data == "" || data == "\"\"" { // Handle json-encoded empty string case
 			tx := s.Session(ctx).Where(&Meta{Namespace: namespace}).Delete(&Meta{})
 			if tx.Error != nil {
 				return tx.Error

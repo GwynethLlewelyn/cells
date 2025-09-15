@@ -231,7 +231,12 @@ func (c *CopyMoveAction) Run(ctx context.Context, channels *actions.RunnableChan
 			sourceNode.ZapSize(),
 		)
 	}
-	output = output.WithNode(targetNode)
+	// Reload targetNode now
+	r2, er := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: targetNode})
+	if er != nil {
+		return input.WithError(er), er
+	}
+	output = output.WithNode(r2.GetNode())
 	output.AppendOutput(&jobs.ActionOutput{
 		Success: true,
 	})
