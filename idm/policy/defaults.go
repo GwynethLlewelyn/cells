@@ -705,6 +705,42 @@ func Upgrade4399(ctx context.Context) error {
 	return nil
 }
 
+// Upgrade4992 opens permissions for the new Rest API v2
+func Upgrade4992(ctx context.Context) error {
+	v2Policy := converter.LadonToProtoPolicy(&ladon.DefaultPolicy{
+		ID:          "user-default-policy-apiv2",
+		Description: "PolicyGroup.LoggedUsers.Rule2",
+		Subjects:    []string{"profile:standard", "profile:shared"},
+		Resources: []string{
+			"rest:/v2/n/<.+>",
+		},
+		Actions: []string{"GET", "POST", "DELETE", "PUT", "PATCH"},
+		Effect:  ladon.AllowAccess,
+	})
+
+	dao, er := manager.Resolve[DAO](ctx)
+	if er != nil {
+		return er
+	}
+	groups, e := dao.ListPolicyGroups(ctx, "")
+	if e != nil {
+		return e
+	}
+	for _, group := range groups {
+		if group.GetUuid() == "rest-apis-default-accesses" {
+			group.Policies = append(group.Policies, v2Policy)
+			if _, er := dao.StorePolicyGroup(ctx, group); er != nil {
+				log.Logger(ctx).Error("could not update policy group "+group.GetUuid(), zap.Error(er))
+			} else {
+				log.Logger(ctx).Info("Updated policy group " + group.GetUuid())
+			}
+		}
+	}
+	log.Logger(ctx).Info("Upgraded policy model to v4.9.92")
+	return nil
+
+}
+
 var GrpcServiceMigrations = []*service.Migration{
 	{
 		TargetVersion: service.FirstRun(),

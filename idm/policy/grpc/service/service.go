@@ -55,7 +55,11 @@ func init() {
 				}
 				return dao.MigrateLegacy(ctx)
 			},
-		})
+		},
+			&service.Migration{
+				TargetVersion: service.ValidVersion("4.5.0"),
+				Up:            policy.Upgrade4992,
+			})
 
 		service.NewService(
 			service.Name(Name),
