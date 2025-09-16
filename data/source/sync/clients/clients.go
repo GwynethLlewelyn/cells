@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	sync2 "sync"
 	"time"
 
@@ -72,8 +73,10 @@ func CheckSubServices(ctx context.Context, syncConfig *object.DataSource, cb ...
 			if hsE != nil {
 				if serviceCallback != nil {
 					serviceCallback("index", false, "Error: "+hsE.Error())
+				} else if errors.Is(hsE, errors.StatusServiceUnavailable) {
+					log.Logger(ctx).Warn("Index not ready yet: " + strings.Replace(hsE.Error(), "\n", "", -1))
 				} else {
-					log.Logger(ctx).Error("Index Healthcheck Error", zap.Error(hsE))
+					log.Logger(ctx).Error("Index health check Error", zap.Error(hsE))
 				}
 				return hsE
 			} else if hsR.GetReadyStatus() != server.ReadyStatus_Ready {
@@ -83,7 +86,7 @@ func CheckSubServices(ctx context.Context, syncConfig *object.DataSource, cb ...
 						serviceCallback("index."+k, v.ReadyStatus == server.ReadyStatus_Ready, v.Details)
 					}
 				} else {
-					log.Logger(ctx).Error("Index Not Ready " + hsR.GetReadyStatus().String())
+					log.Logger(ctx).Warn("Index not ready yet: " + hsR.GetReadyStatus().String())
 				}
 				return fmt.Errorf("not ready")
 			} else {
@@ -93,7 +96,7 @@ func CheckSubServices(ctx context.Context, syncConfig *object.DataSource, cb ...
 						serviceCallback("index."+k, true, v.Details)
 					}
 				} else {
-					log.Logger(ctx).Info("Index Connected", zap.Any("res", hsR))
+					log.Logger(ctx).Info("Index connected: " + hsR.GetReadyStatus().String())
 				}
 				return nil
 			}

@@ -32,6 +32,7 @@ import (
 	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/broker"
 	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/runtime"
 	"github.com/pydio/cells/v5/common/service"
 	"github.com/pydio/cells/v5/common/telemetry/log"
 	"github.com/pydio/cells/v5/common/utils/propagator"
@@ -71,7 +72,7 @@ func (h *Handler) Filter() func(string) string {
 // PerformInstallCheck performs a few server side checks before launching the real install.
 func (h *Handler) PerformInstallCheck(req *restful.Request, rsp *restful.Response) error {
 
-	ctx := req.Request.Context()
+	ctx := runtime.AsCoreContext(req.Request.Context())
 	var input install.PerformCheckRequest
 	if err := req.ReadEntity(&input); err != nil {
 		return err
@@ -100,7 +101,7 @@ func (h *Handler) GetAgreement(req *restful.Request, rsp *restful.Response) erro
 // GetInstall retrieves default configuration parameters.
 func (h *Handler) GetInstall(req *restful.Request, rsp *restful.Response) error {
 
-	ctx := req.Request.Context()
+	ctx := runtime.AsCoreContext(req.Request.Context())
 	// Create a copy of default config without any db passwords
 	defaultConfig := *lib.GenerateDefaultConfig()
 	defaultConfig.DbTCPPassword = ""
@@ -116,7 +117,7 @@ func (h *Handler) GetInstall(req *restful.Request, rsp *restful.Response) error 
 // PostInstall updates pydio.json configuration file after having gathered modifications from the admin end user.
 func (h *Handler) PostInstall(req *restful.Request, rsp *restful.Response) error {
 
-	ctx := req.Request.Context()
+	ctx := runtime.AsCoreContext(req.Request.Context())
 
 	var input install.InstallRequest
 	if err := req.ReadEntity(&input); err != nil {
