@@ -86,9 +86,7 @@ var SampleConfig = `{
 			"name": "cells"
 		  },
 		  "profiling": {
-			"publishers": [
-			  "pull://"
-			]
+			"publishers": []
 		  },
 		  "tracing": {
 			"outputs": []
