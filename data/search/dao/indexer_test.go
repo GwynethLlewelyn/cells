@@ -164,6 +164,7 @@ func TestIndexNode(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
@@ -204,6 +205,7 @@ func TestSearchNode(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
@@ -452,6 +454,7 @@ func TestSearchOnPathPrefixes(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 
 		server, err := manager.Resolve[search.Engine](ctx)
@@ -513,6 +516,7 @@ func TestSearchDashedBasename(t *testing.T) {
 	test.RunStorageTests(mongoOnly(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 
 		server, err := manager.Resolve[search.Engine](ctx)
@@ -563,6 +567,7 @@ func TestSearchOnWithPathDepth(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 
 		server, err := manager.Resolve[search.Engine](ctx)
@@ -641,6 +646,7 @@ func TestSearchSorting(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 
 		server, err := manager.Resolve[search.Engine](ctx)
@@ -728,6 +734,7 @@ func TestSearchByGeolocation(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 
 		server, err := manager.Resolve[search.Engine](ctx)
@@ -782,6 +789,7 @@ func TestDeleteNode(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
@@ -812,6 +820,7 @@ func TestSearchByUuidsMatch(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
@@ -893,6 +902,7 @@ func TestClearIndex(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
@@ -924,6 +934,7 @@ func TestExcludedNamespace(t *testing.T) {
 	test.RunStorageTests(testcases(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
@@ -984,6 +995,7 @@ func TestMongoTagsNamespace(t *testing.T) {
 	test.RunStorageTests(mongoOnly(), t, func(ctx context.Context) {
 		defer func() {
 			commons.BatchPoolInit = sync.Once{}
+			commons.NsPoolInit = sync.Once{}
 		}()
 		server, err := manager.Resolve[search.Engine](ctx)
 		if err != nil {
