@@ -31,6 +31,7 @@ import EditionPanel from './views/EditionPanel'
 import UnifiedSearchForm from "./search/components/UnifiedSearchForm";
 import Renderer from "./search/components/Renderer";
 import AdvancedChips from "./search/components/AdvancedChips"
+import {SearchStatusButton} from "./search/components/SearchStatusButton"
 import Facets from './search/components/Facets'
 import SearchSorter from './search/components/SearchSorter'
 
@@ -65,6 +66,7 @@ const classes = {
     Breadcrumb,
     UnifiedSearchForm,
     AdvancedChips,
+    SearchStatusButton,
     FilePreview,
     FSTemplate,
     WorkspacesList,

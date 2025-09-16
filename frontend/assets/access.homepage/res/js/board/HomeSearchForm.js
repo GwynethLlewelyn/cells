@@ -27,7 +27,7 @@ import DOMUtils from "pydio/util/dom";
 
 const {SimpleList, NodeListCustomProvider} = Pydio.requireLib('components');
 const {PydioContextConsumer, moment} = Pydio.requireLib('boot');
-const {UnifiedSearchForm, Facets, SearchSorter, FilePreview, AdvancedChips} = Pydio.requireLib('workspaces');
+const {UnifiedSearchForm, Facets, SearchSorter, FilePreview, AdvancedChips, SearchStatusButton} = Pydio.requireLib('workspaces');
 const {withSearch} = Pydio.requireLib('hoc')
 
 class HomeSearchForm extends Component{
@@ -201,6 +201,12 @@ class HomeSearchForm extends Component{
             recentsBlockStyle.display = 'none'
         }
 
+        const searchMoreStyles = {
+            fixed: {borderRadius:20, display:'flex', alignItems: 'center', justifyContent:'center'},
+            label:{fontSize:'inherit', paddingLeft: 10, paddingRight: 10},
+            button:{width: 'auto', height:24, lineHeight:'20px', margin: 0, marginBottom:5, backgroundColor: 'var(--md-sys-color-surface-variant)'},
+        }
+
         return (
             <Paper style={style} zDepth={zDepth} className="vertical-layout home-center-paper" rounded={false}>
 
@@ -219,7 +225,20 @@ class HomeSearchForm extends Component{
                             />
                             {loading && <div style={{marginTop:14, marginRight: 8}} ><CircularProgress size={20} thickness={2}/></div>}
                         </Paper>
-                        {fullScreen && <AdvancedChips searchTools={searchTools} containerStyle={{width: '100%', paddingTop: 11, marginBottom: -4}}/>}
+                        {fullScreen &&
+                            <AdvancedChips
+                                appendUnstyled={<SearchStatusButton
+                                    pydio={pydio}
+                                    searchTools={searchTools}
+                                    moreOnly={true}
+                                    style={{...searchMoreStyles.button, ...searchMoreStyles.label, ...searchMoreStyles.fixed}}
+                                    buttonStyle={searchMoreStyles.button}
+                                    buttonLabelStyle={searchMoreStyles.label}
+                                />}
+                                searchTools={searchTools}
+                                containerStyle={{width: '100%', paddingTop: 11, marginBottom: -4}}
+                            />
+                        }
                     </Paper>
                     {fullScreen &&
                         <div className={"layout-fill"} style={{width: '100%', display:'flex'}}>

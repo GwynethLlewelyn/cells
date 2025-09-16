@@ -26,6 +26,7 @@ import Breadcrumb from "./Breadcrumb";
 import UnifiedSearchForm from "../search/components/UnifiedSearchForm";
 import {RefreshAction} from "./RefreshAction";
 import AppBarRight from "./AppBarRight";
+import {SearchStatusButton} from "../search/components/SearchStatusButton";
 const {ButtonMenu, Toolbar, ListPaginator} = Pydio.requireLib('components');
 const {ThemedContainers:{IconButton}} = Pydio.requireLib('hoc');
 
@@ -57,43 +58,21 @@ const AppBar = ({pydio, muiTheme, styles, searchView, searchTools, searchViewTra
 
     let searchToolbar
     if(searchView) {
-        let stLabel, stDisable = true;
-        let labelStyle = {...styles.flatButtonLabelStyle}
-        if(searchLoading) {
-            stLabel = pydio.MessageHash['searchengine.searching'];
-        } else if(empty) {
-            stLabel = pydio.MessageHash['searchengine.start'];
-        } else if(resultsCount === 0) {
-            stLabel = pydio.MessageHash['478'] // No results found
-        } else if(resultsCount < limit) {
-            stLabel = pydio.MessageHash['searchengine.results.foundN'].replace('%1', resultsCount)
-        } else if(resultsCount >= limit) {
-            stDisable = false
-            stLabel = pydio.MessageHash['searchengine.results.withMore'].replace('%1', limit)
-        }
-        if(stDisable){
-            searchToolbar = (
-                <div style={{
-                    fontSize: 13,
-                    fontWeight: 500,
-                    height:24,
-                    lineHeight:'25px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    color:muiTheme.userTheme === 'mui3' ? 'var(--md-sys-color-secondary)': 'white'
-                }}>{stLabel}</div>
-            )
-        } else {
-            searchToolbar = (
-                <FlatButton
-                    style={styles.flatButtonStyle}
-                    labelStyle={labelStyle}
-                    label={stLabel}
-                    onClick={()=>{setLimit(limit+20)}}
-                />
-            )
-
-        }
+        searchToolbar = <SearchStatusButton
+            pydio={pydio}
+            searchTools={searchTools}
+            style={{
+                fontSize: 13,
+                fontWeight: 500,
+                height:24,
+                lineHeight:'25px',
+                display: 'flex',
+                alignItems: 'center',
+                color:muiTheme.userTheme === 'mui3' ? 'var(--md-sys-color-secondary)': 'white'
+            }}
+            buttonStyle={{...styles.flatButtonStyle}}
+            buttonLabelStyle={{...styles.flatButtonLabelStyle}}
+        />
     }
 
     let sortingTag

@@ -87,7 +87,7 @@ class AdvancedChips extends React.Component{
             blocks = [...blocks, ...append]
         }
 
-        if(!blocks.length) {
+        if(!blocks.length && !appendUnstyled) {
             return null
         }
 
