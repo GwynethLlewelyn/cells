@@ -151,7 +151,7 @@ func (h *Handler) Lookup(req *restful.Request, resp *restful.Response) error {
 					if r, modified, exists := h.handleRecycleRoot(ctx, h.TreeHandler.GetRouter(), rootScope); modified {
 						if !exists {
 							// Targeting a non-accessible recycle_bin, just return empty results
-							log.Logger(ctx).Info("Recycle not found")
+							log.Logger(ctx).Debug("Recycle not found - returning empty result")
 							coll.Nodes = []*rest.Node{}
 							return resp.WriteEntity(coll)
 						}
@@ -180,7 +180,7 @@ func (h *Handler) Lookup(req *restful.Request, resp *restful.Response) error {
 				}
 			}
 			bulkRecursive = scope.Recursive
-			log.Logger(ctx).Info("LISTING nodes", zap.Any("bulk", bulkRequest), zap.Bool("recursive", bulkRecursive))
+			log.Logger(ctx).Debug("LISTING nodes", zap.Any("bulk", bulkRequest), zap.Bool("recursive", bulkRecursive))
 
 		} else {
 			searchQuery = &tree.Query{}
@@ -265,7 +265,7 @@ func (h *Handler) Lookup(req *restful.Request, resp *restful.Response) error {
 				searchQuery.FreeString += " " + strings.Join(qq, " ")
 			}
 
-			log.Logger(ctx).Info("SEARCHING nodes", zap.Any("query", searchQuery), zap.Any("prefixes", additionalPrefixes))
+			log.Logger(ctx).Debug("SEARCHING nodes", zap.Any("query", searchQuery), zap.Any("prefixes", additionalPrefixes))
 
 		}
 	}

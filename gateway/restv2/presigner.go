@@ -100,7 +100,7 @@ func NewV4SignerForRequest(r *http.Request, expSeconds int64) (PreSigner, error)
 		if er != nil {
 			return nil, er
 		}
-		log.Logger(ctx).Info("Generated a new key pair with expiration for "+claims.Name, zap.Duration("t", time.Since(t)))
+		log.Logger(ctx).Debug("Generated a new key pair with expiration for "+claims.Name, zap.Duration("t", time.Since(t)))
 		apiKey = resp.GetAccessToken()
 		apiSecret = resp.GetSecretPair()
 		_ = ca.Set(cacheKey, []byte(apiKey+"::"+apiSecret))

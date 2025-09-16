@@ -106,7 +106,7 @@ func (h *Handler) PromoteVersion(req *restful.Request, resp *restful.Response) e
 			ctxWorkspace = bi.Workspace
 		}
 		if ns, ok := h.UserMetaHandler.DraftMetaNamespace(ctx, ctxWorkspace); ok && (targetNode.GetMetaBool(ns) || targetNode.GetMetaBool(common.MetaNamespaceNodeDraftMode)) {
-			log.Logger(ctx).Info("Now publish this node")
+			log.Logger(ctx).Debug("Publishing node", targetNode.Zap())
 			if er := h.publishDraftNode(ctx, targetNode, ns, nil); er != nil {
 				return er
 			} else {
@@ -177,7 +177,7 @@ func (h *Handler) PublishNode(req *restful.Request, resp *restful.Response) erro
 					return
 				}
 				if rev != nil {
-					log.Logger(ctx).Info("Promoted draft version", child.ZapPath(), rev.Zap())
+					log.Logger(ctx).Debug("Promoted draft version", child.ZapPath(), rev.Zap())
 					res.Promoted = true
 				}
 			}
@@ -234,11 +234,11 @@ func (h *Handler) DeleteVersion(req *restful.Request, resp *restful.Response) er
 		return errors.WithStack(errors.VersionNotFound)
 	}
 
-	log.Logger(ctx).Info("Should delete this version: ", v.Zap())
+	log.Logger(ctx).Debug("Should delete this version: ", v.Zap())
 	if _, er = vcl.DeleteVersion(ctx, &tree.HeadVersionRequest{NodeUuid: nodeUuid, VersionId: versionUuid}); er != nil {
 		log.Logger(ctx).Error("Cannot delete draft version", zap.Error(er))
 	} else if _, er2 := compose.PathClient(nodes.AsAdmin()).DeleteNode(ctx, &tree.DeleteNodeRequest{Node: v.GetLocation()}); er2 == nil {
-		log.Logger(ctx).Info("Deleted version blob", v.GetLocation().Zap())
+		log.Logger(ctx).Debug("Deleted version blob", v.GetLocation().Zap())
 	} else {
 		log.Logger(ctx).Error("Could not delete draft version blob", v.GetLocation().Zap())
 	}
@@ -248,7 +248,7 @@ func (h *Handler) DeleteVersion(req *restful.Request, resp *restful.Response) er
 	}
 
 	if targetNode.HasMetaKey(common.MetaNamespaceNodeDraftMode) && len(vv) == 0 {
-		log.Logger(ctx).Info("Now we should also delete the draft node as it has no more versions")
+		log.Logger(ctx).Debug("Now we should also delete the draft node as it has no more versions")
 		if _, er = router.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: targetNode, Silent: true}); er != nil {
 			return er
 		}
@@ -309,7 +309,7 @@ func (h *Handler) promoteDraftVersion(ctx context.Context, targetNode *tree.Node
 		}
 	}
 
-	log.Logger(ctx).Info("Should now promote this revision: ", revision.Zap())
+	log.Logger(ctx).Debug("Should now promote this revision: ", revision.Zap())
 	// Copy draft version as new content - this should create a new version, we can remove this draft afterward
 	if _, er := nodesCli.CopyObject(ctx, targetNode, targetNode, &models.CopyRequestData{SrcVersionId: revision.GetVersionId()}); er != nil {
 		log.Logger(ctx).Error("Cannot switch latest to head", zap.Error(er))
@@ -319,7 +319,7 @@ func (h *Handler) promoteDraftVersion(ctx context.Context, targetNode *tree.Node
 		if _, er := versionCli.DeleteVersion(ctx, &tree.HeadVersionRequest{NodeUuid: targetNode.GetUuid(), VersionId: revision.GetVersionId()}); er != nil {
 			log.Logger(ctx).Error("Cannot delete draft version", zap.Error(er))
 		} else if _, er2 := compose.PathClient(nodes.AsAdmin()).DeleteNode(ctx, &tree.DeleteNodeRequest{Node: revision.GetLocation()}); er2 == nil {
-			log.Logger(ctx).Info("Deleted version blob", revision.GetLocation().Zap())
+			log.Logger(ctx).Debug("Deleted version blob", revision.GetLocation().Zap())
 		} else {
 			log.Logger(ctx).Error("Could not delete draft version blob", revision.GetLocation().Zap())
 		}

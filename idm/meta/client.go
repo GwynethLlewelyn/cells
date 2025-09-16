@@ -277,7 +277,7 @@ func (u *umClient) ExtractAndPut(ctx context.Context, resolved *tree.Node, ctxWo
 	}
 	if len(id) > 0 {
 		for _, i := range id {
-			log.Logger(ctx).Info("Applying default meta value", zap.String("ns", i.Namespace), zap.Any("value", i.ResolvedValue))
+			log.Logger(ctx).Debug("Applying default meta value", zap.String("ns", i.Namespace), zap.Any("value", i.ResolvedValue))
 			resolvedNSS = append(resolvedNSS, i.ResolvedNS)
 			resolved.MustSetMeta(i.ResolvedNS.GetNamespace(), i.ResolvedValue)
 			jsonValue, _ := json.Marshal(i.ResolvedValue)

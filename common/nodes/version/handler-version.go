@@ -313,7 +313,7 @@ func (v *Handler) PutObject(ctx context.Context, node *tree.Node, reader io.Read
 		revision.ETag = oi.ETag
 		if ex, o := reader.(common.ReaderMetaExtractor); o {
 			if mm, ok := ex.ExtractedMeta(); ok && mm[common.MetaNamespaceHash] != "" {
-				log.Logger(ctx).Info("Update revision with computed Hash" + mm[common.MetaNamespaceHash])
+				log.Logger(ctx).Debug("Update revision with computed Hash" + mm[common.MetaNamespaceHash])
 				revision.ContentHash = mm[common.MetaNamespaceHash]
 			}
 		}
