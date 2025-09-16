@@ -467,15 +467,19 @@ func TestGenericFeatures(t *testing.T) {
 
 			})
 
+			sql.TestPrintQueries = true
 			// Setting a file
-			Convey("Test Getting the Children Count of a node", t, func() {
-				folderCount, leafCount := dao.GetNodeChildrenCounts(ctx, mockLongNodeMPath, true)
-
-				So(dao.Flush(ctx, true), ShouldBeNil)
-
+			Convey("Test Getting the Children Counts of a node (non recursive)", t, func() {
+				folderCount, leafCount := dao.GetNodeChildrenCounts(ctx, mockLongNodeMPath, false)
 				So(folderCount, ShouldEqual, 0)
 				So(leafCount, ShouldEqual, 2)
 			})
+
+			Convey("Test Getting the Children Counts of a node (recursive)", t, func() {
+				recCount, _ := dao.GetNodeChildrenCounts(ctx, mockLongNodeMPath, true)
+				So(recCount, ShouldEqual, 2)
+			})
+			sql.TestPrintQueries = false
 
 			// Setting a file
 			Convey("Test Getting the Children of a node", t, func() {

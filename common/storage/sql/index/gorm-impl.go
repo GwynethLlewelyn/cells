@@ -510,38 +510,47 @@ func (dao *gormImpl[T]) getNodeFirstAvailableChildIndex(ctx context.Context, mPa
 // GetNodeChildrenCounts List
 func (dao *gormImpl[T]) GetNodeChildrenCounts(ctx context.Context, mPath *tree.MPath, recursive bool) (int, int) {
 
-	var leafCount, folderCount int
 	var node *tree.TreeNode
 
-	tx := dao.instance(ctx).
-		Model(&node).
-		Select("leaf, count(*) as count").
-		Where(tree.MPathLike{Value: mPath})
-
 	if recursive {
-		tx = tx.Where("level > ?", mPath.Length())
+
+		tx := dao.instance(ctx).
+			Model(&node).
+			Select("count(uuid)").
+			Where(tree.MPathLike{Value: mPath}).
+			Where("level > ?", mPath.Length())
+		var total int
+		tx.Pluck("count(uuid)", &total)
+		return total, 0
+
 	} else {
-		tx = tx.Where("level = ?", mPath.Length()+1)
-	}
 
-	tx.Group("leaf")
+		var leafCount, folderCount int
+		tx := dao.instance(ctx).
+			Model(&node).
+			Select("leaf, count(*) as count").
+			Where(tree.MPathLike{Value: mPath}).
+			Where("level = ?", mPath.Length()+1).
+			Group("leaf")
 
-	var counts []struct {
-		Leaf  int
-		Count int
-	}
-
-	tx = tx.Find(&counts)
-
-	for _, count := range counts {
-		if count.Leaf == int(tree.NodeType_LEAF) {
-			leafCount += count.Count
-		} else {
-			folderCount += count.Count
+		var counts []struct {
+			Leaf  int
+			Count int
 		}
+
+		tx = tx.Find(&counts)
+
+		for _, count := range counts {
+			if count.Leaf == int(tree.NodeType_LEAF) {
+				leafCount += count.Count
+			} else {
+				folderCount += count.Count
+			}
+		}
+
+		return folderCount, leafCount
 	}
 
-	return folderCount, leafCount
 }
 
 // GetNodeChildrenSize List
