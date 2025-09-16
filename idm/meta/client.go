@@ -152,8 +152,8 @@ func (u *umClient) UpdateMetaResolved(ctx context.Context, input *idm.UpdateUser
 					return nil, errors.Tag(e, errors.UnmarshalError)
 				}
 				log.Logger(ctx).Debug("jsonDef for namespace "+ns.Namespace, zap.Any("d", nsDef), zap.Any("v", currentValue))
-				if e := u.valuesClient.StoreNewTags(ctx, ns.Namespace, strings.Split(currentValue, ",")); e != nil {
-					return nil, errors.WithMessagef(errors.StatusInternalServerError, "could not store meta tag for namespace %s: %v", ns.Namespace, e)
+				if er := u.valuesClient.StoreNewTags(ctx, ns.Namespace, strings.Split(currentValue, ",")); er != nil {
+					return nil, er
 				}
 			} else if jE != nil {
 				return nil, errors.WithMessagef(errors.UnmarshalError, "cannot decode json definition for namespace %s (%s): %v", ns.Namespace, ns.JsonDefinition, jE)
