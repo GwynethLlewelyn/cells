@@ -45,6 +45,8 @@ type QueryCodecProvider func(values configx.Values, metaProvider *meta.NsProvide
 var (
 	batchPool     *openurl.Pool[indexer.Batch]
 	BatchPoolInit sync.Once
+	nsPool        *openurl.Pool[*meta.NsProvider]
+	NsPoolInit    sync.Once
 )
 
 type Server struct {
@@ -66,12 +68,22 @@ func NewServer(ctx context.Context, idx indexer.Indexer, provider QueryCodecProv
 	return server
 }
 
+func (s *Server) getPooledNsProvider(ctx context.Context) *meta.NsProvider {
+	NsPoolInit.Do(func() {
+		nsPool = openurl.MustMemPool[*meta.NsProvider](ctx, func(ctx context.Context, url string) *meta.NsProvider {
+			return meta.NewNsProvider(context.WithoutCancel(ctx))
+		})
+	})
+	ns, _ := nsPool.Get(ctx)
+	return ns
+}
+
 func (s *Server) getBatch(ctx context.Context) (indexer.Batch, error) {
 	BatchPoolInit.Do(func() {
 		bo := s.batchOptions
 		batchPool = openurl.MustMemPool[indexer.Batch](ctx, func(ct context.Context, url string) indexer.Batch {
 			openContext := context.WithoutCancel(ct)
-			return NewBatch(openContext, meta.NewNsProvider(openContext), BatchOptions{}, bo...)
+			return NewBatch(openContext, s.getPooledNsProvider(openContext), BatchOptions{}, bo...)
 		})
 	})
 	return batchPool.Get(ctx)
@@ -128,7 +140,7 @@ func (s *Server) Flush(ctx context.Context) error {
 
 func (s *Server) SearchNodes(ctx context.Context, queryObject *tree.Query, from int32, size int32, sortField string, sortDesc bool, resultChan chan *tree.Node, facets chan *tree.SearchFacet, total chan uint64, doneChan chan bool) error {
 
-	nsProvider := meta.NewNsProvider(ctx)
+	nsProvider := s.getPooledNsProvider(ctx)
 
 	codex := s.queryCodecProvider(manager.MustGetConfig(ctx).Val(), nsProvider)
 
