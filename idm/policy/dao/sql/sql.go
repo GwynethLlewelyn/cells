@@ -98,6 +98,7 @@ SET effect_int = CASE
 END`)
 				tx = tx.Exec(`ALTER TABLE ladon_policy DROP COLUMN effect`)
 				tx = tx.Exec(`ALTER TABLE ladon_policy CHANGE COLUMN effect_int effect INT`)
+				tx = tx.Exec(`ALTER TABLE ladon_policy MODIFY COLUMN conditions LONGTEXT NULL`)
 				return tx.Error
 			})
 

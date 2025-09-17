@@ -107,8 +107,6 @@ func (dao *gormImpl[T]) Migrate(ctx context.Context) error {
 	tName := storagesql.TableNameFromModel(db, t)
 
 	if isMySQL {
-		db = db.Set("gorm:table_options", "CHARSET=ascii")
-
 		if db.Migrator().HasTable(tName) { // Do NOT auto-migrate existing table, there will be collation issues
 			// Migrate V4 => v5 Leaf Flag
 			if tx := db.Model(t).Where("leaf = ?", 0).UpdateColumn("leaf", 2); tx.Error != nil {
@@ -128,9 +126,16 @@ func (dao *gormImpl[T]) Migrate(ctx context.Context) error {
 		db.Raw("SELECT DATABASE()").Scan(&schemaName)
 		if schemaName != "" {
 			// Check current collation
-			db.Raw(`SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = 'name'`, schemaName, tName).Scan(&collation)
-			if !strings.Contains(strings.ToLower(collation), "utf8mb4") {
-				tx := db.Exec("ALTER TABLE `" + tName + "` MODIFY COLUMN name VARCHAR(255) COLLATE utf8mb4_bin")
+			db.Raw(`SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = 'mpath1'`, schemaName, tName).Scan(&collation)
+			if !strings.Contains(strings.ToLower(collation), "ascii") {
+				tx := db.Exec("ALTER TABLE `" + tName + "` " +
+					"MODIFY COLUMN name VARCHAR(255) COLLATE utf8mb4_bin,\n" +
+					"MODIFY COLUMN mpath1 VARCHAR(255) COLLATE ascii_general_ci,\n" +
+					"MODIFY COLUMN mpath2 VARCHAR(255) COLLATE ascii_general_ci,\n" +
+					"MODIFY COLUMN mpath3 VARCHAR(255) COLLATE ascii_general_ci,\n" +
+					"MODIFY COLUMN mpath4 VARCHAR(255) COLLATE ascii_general_ci,\n" +
+					"MODIFY COLUMN hash VARCHAR(40) COLLATE ascii_general_ci,\n" +
+					"MODIFY COLUMN hash2 VARCHAR(50) COLLATE ascii_general_ci\n")
 				return tx.Error
 			}
 		}

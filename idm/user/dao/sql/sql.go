@@ -116,6 +116,11 @@ func safeGroupPath(gPath string) string {
 }
 
 func (s *sqlimpl) Migrate(ctx context.Context) error {
+	// First use the specific index migration
+	if er := s.indexDAO.Migrate(ctx); er != nil {
+		return er
+	}
+	// Then setup additional tables
 	return s.AbstractResources.Migrate(ctx)
 }
 

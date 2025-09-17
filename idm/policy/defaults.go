@@ -156,7 +156,7 @@ var (
 				}),
 				converter.LadonToProtoPolicy(&ladon.DefaultPolicy{
 					ID:          "user-default-policy-apiv2",
-					Description: "PolicyGroup.LoggedUsers.Rule2",
+					Description: "PolicyGroup.LoggedUsers.Rule7",
 					Subjects:    []string{"profile:standard", "profile:shared"},
 					Resources: []string{
 						"rest:/v2/n/<.+>",
@@ -709,7 +709,7 @@ func Upgrade4399(ctx context.Context) error {
 func Upgrade4992(ctx context.Context) error {
 	v2Policy := converter.LadonToProtoPolicy(&ladon.DefaultPolicy{
 		ID:          "user-default-policy-apiv2",
-		Description: "PolicyGroup.LoggedUsers.Rule2",
+		Description: "PolicyGroup.LoggedUsers.Rule7",
 		Subjects:    []string{"profile:standard", "profile:shared"},
 		Resources: []string{
 			"rest:/v2/n/<.+>",

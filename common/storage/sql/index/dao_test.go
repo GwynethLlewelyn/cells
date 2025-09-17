@@ -1035,7 +1035,7 @@ func TestOrdering(t *testing.T) {
 					orderDesc:    false,
 				},
 			}
-			for _, tc := range tCases {
+			for i, tc := range tCases {
 				if !testTime && tc.sortField == tree.MetaSortTime {
 					continue
 				}
@@ -1053,7 +1053,7 @@ func TestOrdering(t *testing.T) {
 					}
 
 					So(len(a), ShouldEqual, len(refs))
-					t.Log("Check List Ordered / "+tc.defaultField+"-"+tc.sortField, a, refs)
+					t.Log("Check List Ordered / "+tc.defaultField+"-"+tc.sortField, i, a, buildExpected(refs, tc.expected))
 					So(reflect.DeepEqual(buildExpected(refs, tc.expected), a), ShouldBeTrue)
 				})
 			}
