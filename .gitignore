@@ -42,3 +42,5 @@ frontend/front-srv/*
 /common/proto/rest/openapi/openapi.yaml
 
 install*.yaml
+
+.claude

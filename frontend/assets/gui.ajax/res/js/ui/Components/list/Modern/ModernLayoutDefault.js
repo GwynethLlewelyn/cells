@@ -20,6 +20,7 @@
 
 import React, {useRef, useEffect, useCallback} from "react";
 import {ModernListEntry} from "./ModernListEntry";
+import CustomDragLayer from "./CustomDragLayer";
 import {useFocusOnClick} from "./useFocusOnClick";
 
 const ModernLayoutDefault = ({pydio, items, handleKeyDown, handleItemClick, handleItemDoubleClick, entryRenderIcon, entryRenderFirstLine, entryRenderSecondLine, entryRenderActions, selection, setItemsPerRow}) => {
@@ -54,6 +55,7 @@ const ModernLayoutDefault = ({pydio, items, handleKeyDown, handleItemClick, hand
 
     return (
         <div className="list-area" style={{ width: '100%'}} tabIndex={100} onKeyDown={handleKeyDown} ref={ref}>
+            <CustomDragLayer pydio={pydio}/>
             {items.map((itemData, index) => {
                 const {isGroupHeader, isParent, node, id, title} = itemData;
                 const itemUniqueId = id || `item-${index}`; // Ensure unique key

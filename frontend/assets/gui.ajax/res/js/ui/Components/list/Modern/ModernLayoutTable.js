@@ -22,6 +22,7 @@ import React, {useRef} from "react";
 import {useSortingColumns} from "./useSorting";
 import {ModernTableListEntry} from "./ModernTableListEntry";
 import {useFocusOnClick} from "./useFocusOnClick";
+import CustomDragLayer from "./CustomDragLayer";
 
 const ModernLayoutTable = ({pydio, items, tableKeys, currentSortingInfo, handleSortChange, handleKeyDown, handleItemClick, handleItemDoubleClick, entryRenderIcon, tableEntryRenderCell, entryRenderActions, selection}) => {
 
@@ -32,6 +33,7 @@ const ModernLayoutTable = ({pydio, items, tableKeys, currentSortingInfo, handleS
 
     return (
         <table>
+            <CustomDragLayer pydio={pydio}/>
             <colgroup>
                 {listColumns(({width}) => {
                     return <col style={{width}} width={width}/>

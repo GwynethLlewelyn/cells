@@ -37,6 +37,7 @@ const Types = {
 function collect(connect, monitor) {
     return {
         connectDragSource: connect.dragSource(),
+        connectDragPreview: connect.dragPreview(),
         isDragging: monitor.isDragging()
     };
 }
@@ -118,15 +119,22 @@ const nodeDragSource = {
     },
 
     endDrag: function (props, monitor, component) {
+        const item = monitor.getItem();
+
         if (!monitor.didDrop()) {
+            // Mark as unsuccessful drop for CustomDragLayer
+            if (item) item._dropSuccessful = false;
             return;
         }
-        const item = monitor.getItem();
+
         const dropResult = monitor.getDropResult();
         try{
             applyDNDAction(item.node, dropResult.node, DNDActionParameter.STEP_END_DRAG, dropResult.dropEffect);
+            // Mark as successful drop for CustomDragLayer
+            if (item) item._dropSuccessful = true;
         }catch(e){
-
+            // Drop failed due to error
+            if (item) item._dropSuccessful = false;
         }
     }
 };

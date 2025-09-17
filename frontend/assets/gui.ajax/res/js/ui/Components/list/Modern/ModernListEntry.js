@@ -50,7 +50,7 @@ const ModernListEntry = withNodeListenerEntry(muiThemeable()((props) => {
         noHover,
         setInlineEditionAnchor,
         selectedAsBorder,
-        canDrop, nativeCanDrop, isOver, nativeIsOver, connectDragSource, isDragging, connectDropTarget,
+        canDrop, nativeCanDrop, isOver, nativeIsOver, connectDragSource, isDragging, connectDropTarget, connectDragPreview,
     } = props;
 
     const [hover, setHover] = useState(false);
@@ -62,6 +62,15 @@ const ModernListEntry = withNodeListenerEntry(muiThemeable()((props) => {
             setInlineEditionAnchor(inlineEditorRef.current);
         }
     }, [setInlineEditionAnchor]);
+
+    useEffect(() => {
+        if (typeof connectDragPreview === 'function') {
+            const emptyImg = new Image();
+            emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+            connectDragPreview(emptyImg);
+        }
+    }, [connectDragPreview]);
+
 
     const handleClick = (event) => {
         if (onClick) {

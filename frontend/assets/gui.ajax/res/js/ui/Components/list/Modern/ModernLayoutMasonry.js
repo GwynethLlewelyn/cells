@@ -75,7 +75,7 @@ const ModernLayoutMasonry = ({pydio, items, handleKeyDown, handleItemClick, hand
 
     return (
         <Fragment>
-            <CustomDragLayer/>
+            <CustomDragLayer pydio={pydio}/>
             <div style={{flex: 1, overflowY:'auto'}} tabIndex={0} ref={containerRef} onKeyDown={handleKeyDown}>
                 {masonryElement}
             </div>
