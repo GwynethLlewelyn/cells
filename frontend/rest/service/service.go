@@ -10,6 +10,7 @@ import (
 	"github.com/pydio/cells/v5/common/service"
 	"github.com/pydio/cells/v5/common/service/frontend/sessions"
 	"github.com/pydio/cells/v5/frontend/rest"
+	"github.com/pydio/cells/v5/frontend/rest/modifiers"
 )
 
 func init() {
@@ -28,6 +29,10 @@ func init() {
 				{
 					TargetVersion: service.FirstRunOrChange(),
 					Up:            manager.StorageMigration(),
+				},
+				{
+					TargetVersion: service.ValidVersion("4.5.0"),
+					Up:            modifiers.CreatePagesNamespaces,
 				},
 			}),
 			service.WithWebMiddleware(func(h http.Handler) http.Handler {
