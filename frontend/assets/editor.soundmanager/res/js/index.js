@@ -17,10 +17,6 @@
  *
  * The latest code can be found at <https://pydio.com>.
  */
-import "../../soundmanager.css";
-import "../../sm/360-player/360player.css";
-import "../../sm/360-player/360player-visualization.css";
-
 export { default as Badge } from './badge'
 export { default as Panel } from './preview'
 export { default as Editor } from './editor'

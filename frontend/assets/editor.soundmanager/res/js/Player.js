@@ -18,6 +18,7 @@
  * The latest code can be found at <https://pydio.com>.
  */
 
+import "./styles.css"
 
 import React from 'react'
 import PropTypes from 'prop-types'
@@ -27,7 +28,7 @@ import { threeSixtyPlayer } from '../../sm/360-player/script/360player';
 soundManager.setup({
     // path to directory containing SM2 SWF
     url: 'plug/editor.soundmanager/sm/swf/',
-    debugMode: true
+    debugMode: false
 });
 
 class Player extends React.Component {
