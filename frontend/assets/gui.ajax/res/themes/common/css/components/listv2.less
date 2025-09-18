@@ -166,7 +166,7 @@
         border-bottom-color: transparent;
         .material-list-line-1{
           .label-extension{
-            display:inline-block !important;
+            visibility:visible !important;
           }
         }
         .material-list-line-2{
@@ -187,7 +187,7 @@
       &:hover:not(.selected){
         .material-list-line-1{
           .label-extension{
-            display:inline-block !important;
+            visibility:visible !important;
           }
         }
         .material-list-line-2{
@@ -280,7 +280,7 @@
         }
         &:hover:not(.selected), &.selected {
           .label-extension {
-            display: inline !important;
+            visibility: visible !important;
           }
         }
         .cell {
@@ -488,10 +488,11 @@
 
         .list-area {
           grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+          gap: 4px;
+          padding: 4px;
         }
 
         .modern-list-entry{
-          margin: 4px;
           .material-list-icon {
             height: ~"calc(100% - 16px)";
           }

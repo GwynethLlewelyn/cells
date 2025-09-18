@@ -26,7 +26,7 @@ const useActionExtensionsPin = ({preferencePrefix = 'FSTemplate.FilesList'}) => 
             let ext = PathUtils.getFileExtension(label);
             if(ext){
                 ext = '.' + ext;
-                label = <span>{label.substring(0, label.length-ext.length)}<span className={"label-extension"} style={{opacity:0.33, display:showExtensions?null:'none'}}>{ext}</span></span>;
+                label = <span>{label.substring(0, label.length-ext.length)}<span className={"label-extension"} style={{opacity:0.33, visibility:showExtensions?null:'hidden'}}>{ext}</span></span>;
             }
         }
         return label;

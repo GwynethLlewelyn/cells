@@ -51,7 +51,7 @@ const ModernLayoutMasonry = ({pydio, items, handleKeyDown, handleItemClick, hand
     const positioner = usePositioner({
         width,
         columnWidth,
-        columnGutter: 8
+        columnGutter: columnWidth <200 ? 6 : 8
     }, [items, columnWidth]);
     const resizeObserver = useResizeObserver(positioner);
     const masonryElement = useMasonry({
