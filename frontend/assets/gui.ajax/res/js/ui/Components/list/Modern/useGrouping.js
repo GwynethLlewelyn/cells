@@ -46,8 +46,8 @@ const useGrouping = ({defaultGroupBy, groupSkipUnique, groupByLabel, renderGroup
         } else {
             new Map([...groups.entries()].sort()).forEach((groupItems, groupValue) => {
                 let groupTitle = groupValue;
-                if (groupByLabel && pydio.MessageHash && pydio.MessageHash[groupByLabel + '.' + groupValue]) {
-                    groupTitle = pydio.MessageHash[groupByLabel + '.' + groupValue];
+                if (groupByLabel && groupItems.length && groupItems[0].node && groupItems[0].node.getMetadata().has(groupByLabel)) {
+                    groupTitle = groupItems[0].node.getMetadata().get(groupByLabel);
                 } else if (renderGroupLabels && typeof renderGroupLabels === 'function') {
                     groupTitle = renderGroupLabels(defaultGroupBy, groupValue, groupItems);
                 }
