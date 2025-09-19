@@ -175,9 +175,7 @@ func NewManager(ctx context.Context, namespace string, logger log.ZapLogger, r .
 	runtime.Init(m.ctx, "system")
 
 	base := localRuntime.GetString(runtime.KeyBootstrapRoot)
-	if name := runtime.Name(); name != "" && name != "default" {
-		base += strings.Join(strings.Split("_"+name, "_"), "/processes/")
-	}
+	m.base = base
 
 	if reg, err := m.initInternalRegistry(m.ctx, m.bootstrap, m.base); err != nil {
 		return nil, err
@@ -540,6 +538,7 @@ func (m *manager) initTelemetry(ctx context.Context, bootstrap config.Store, sto
 	// Then read from bootstrap
 	_ = bootstrap.Val("#/telemetry").Scan(&conf)
 
+	// TODO - hot reload should be done on the pool
 	store, err := storePool.Get(ctx)
 	if err != nil {
 		return
@@ -706,7 +705,11 @@ func (m *manager) initProcesses(ctx context.Context, bootstrap config.Store, bas
 
 				childEnv = append(childEnv, fmt.Sprintf("CELLS_BOOTSTRAP_YAML=%s", string(b)))
 			} else {
-				childEnv = append(childEnv, "CELLS_BOOTSTRAP_ROOT="+base)
+				b, err := yaml.Marshal(bootstrap.Val("processes", name).Map())
+				if err != nil {
+					continue
+				}
+				childEnv = append(childEnv, fmt.Sprintf("CELLS_BOOTSTRAP_YAML=%s", string(b)))
 			}
 
 			// Adding connections to the environment
@@ -1203,13 +1206,6 @@ func (m *manager) ServeAll(oo ...server.ServeOption) error {
 	}).Register(m.root); err != nil {
 		return err
 	}
-
-	// TODO - should it be here ?
-	// m.WatchServices()
-
-	//go m.bootstrap.WatchConfAndReset(m.ctx, runtime.GetRuntime().GetString(runtime.KeyConfig), func(err error) {
-	//	fmt.Println("[bootstrap-watcher]" + err.Error())
-	//})
 
 	m.servers = map[string]server.Server{}
 	m.services = map[string]service.Service{}

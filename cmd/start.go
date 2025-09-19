@@ -240,13 +240,6 @@ ENVIRONMENT
 			}
 		}
 
-		bootstrap, err = manager.NewBootstrap(ctx)
-		if err != nil {
-			return err
-		}
-
-		runtime.GetRuntime().Set(runtime.KeyBootstrapYAML, bootstrap)
-
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -297,7 +290,11 @@ ENVIRONMENT
 		ctx = runtime.AsCoreContext(ctx)
 
 		// Optionally fully override the template based on arguments
-		if file := runtime.GetString(runtime.KeyBootstrapFile); file != "" {
+		if yaml := runtime.GetString(runtime.KeyBootstrapYAML); yaml != "" {
+			if err := bootstrap.RegisterTemplate(ctx, "yaml", yaml); err != nil {
+				return err
+			}
+		} else if file := runtime.GetString(runtime.KeyBootstrapFile); file != "" {
 			b, err := os.ReadFile(file)
 			if err != nil {
 				return err
@@ -334,8 +331,6 @@ ENVIRONMENT
 			return er
 		}
 		bootstrap.MustReset(ctx, nil)
-
-		runtime.GetRuntime().Set(runtime.KeyBootstrapYAML, bootstrap)
 
 		broker.Register(broker.NewBroker(runtime.BrokerURL(), broker.WithContext(ctx)))
 

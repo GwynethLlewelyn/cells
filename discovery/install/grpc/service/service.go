@@ -59,7 +59,7 @@ func init() {
 		)
 	})
 
-	runtime.Register("controller", func(ctx context.Context) {
+	runtime.Register("main", func(ctx context.Context) {
 		service.NewService(
 			service.Name(common.ServiceGenericNamespace_+common.ServiceInstall),
 			service.Context(ctx),
