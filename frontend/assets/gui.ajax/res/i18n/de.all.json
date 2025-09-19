@@ -364,5 +364,29 @@
   },
   "sorter.metas.more": {
     "other": "Mehr..."
+  },
+  "drag-layer.move.file": {
+    "other": "Datei verschieben"
+  },
+  "drag-layer.move.folder": {
+    "other": "Ordner verschieben"
+  },
+  "drag-layer.move.plural": {
+    "other": "Bewege %s Elemente"
+  },
+  "drag-layer.copy.file": {
+    "other": "Datei kopieren"
+  },
+  "drag-layer.copy.folder": {
+    "other": "Ordner kopieren"
+  },
+  "drag-layer.copy.plural": {
+    "other": "%s Elemente kopieren"
+  },
+  "drag-layer.more": {
+    "other": "...und %s mehr."
+  },
+  "drag-layer.hint": {
+    "other": "[alt/option] Schlüssel zum Kopieren verwenden"
   }
 }
