@@ -215,7 +215,7 @@ class FilePreview extends PureComponent {
                 }}
             />
         }else if (processing) {
-            if (rootStyle.height > 150) {
+            if (rootStyle.height > 150 || displayLarge) {
                 element = <CircularProgress size={30} thickness={2}/>
                 rootStyle.alignItems = 'center';
                 rootStyle.justifyContent= 'center';
