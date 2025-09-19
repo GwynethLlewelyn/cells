@@ -89,7 +89,6 @@ export const ModernList = ({editor, block}) => {
         }
         const observerDown = () => {
             if(ctxDataModel.getSelectionSource() !== dataModel){
-                console.log('clearing local DM')
                 dataModel.setSelectedNodes([])
             }
         }

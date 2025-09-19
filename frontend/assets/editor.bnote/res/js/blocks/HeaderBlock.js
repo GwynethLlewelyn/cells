@@ -18,19 +18,22 @@
  * The latest code can be found at <https://pydio.com>.
  */
 
-import {useContext, useState} from 'react'
+import {useContext, useCallback} from 'react'
 import Pydio from 'pydio'
 import {SaveContext} from "../MainPanel";
-import {MdSave} from "react-icons/md";
+import {MdSave, MdAddBox} from "react-icons/md";
+import { Tooltip } from '@mantine/core'
 import {PydioContext} from "../hooks/context";
 import {useNodeTitle} from "../hooks/useNodeTitle";
 import {InlineEditableText} from "./InlineEditableText";
+import {ChildrenListSpecType} from "../specs/NodeRef";
+import {useHover} from "../hooks/useHover";
 
 const { moment } = Pydio.requireLib('boot');
 const {ButtonMenu} = Pydio.requireLib('components');
 const LangUtils = require('pydio/util/lang')
 
-export const HeaderBlock = (props) => {
+export const HeaderBlock = ({editor}) => {
     const {dataModel} = useContext(PydioContext)
     const {dirty} = useContext(SaveContext)
     const node = dataModel.getContextNode();
@@ -63,8 +66,53 @@ export const HeaderBlock = (props) => {
         segments.push(<span key={'bread_' + i} style={{cursor:'pointer'}} className={"segment"+(last?' last':'')} onClick={(e)=> {e.stopPropagation(); console.log(rebuiltCopy); pydio.goTo(rebuiltCopy)}}>{seg}</span>);
     });
 
+    const subColor='var(--md-sys-color-outline)'
+    const {hoverProps, hover} = useHover()
+
+    const childrenSize = node.getChildren().size
+    let contentsLabel = false, showAddToc = false
+    const addToc = useCallback(() => {
+        const last = editor.document[editor.document.length - 1];
+        editor.insertBlocks([{
+            type: ChildrenListSpecType,
+        }], last, 'after')
+    }, [editor])
+    if(childrenSize) {
+        showAddToc = editor.document.filter(block => block.type === ChildrenListSpecType).filter(block => !block.props.nodeUuid && !block.props.path).length === 0
+        let pages=0, folders=0, files=0
+        node.getChildren().forEach(child => {
+            if(child.isLeaf()) {
+                files ++
+            } else if(child.getMetadata().get('usermeta-is-page')) {
+                pages ++
+            } else {
+                folders ++
+            }
+        })
+        let labels = [];
+        if(pages) {
+            labels.push(pages+ ' sub-pages')
+        }
+        if(files) {
+            labels.push(files + ' files')
+        }
+        if(folders) {
+            labels.push(folders+ ' folders')
+        }
+        contentsLabel = labels.join(', ')
+        if(showAddToc && hover) {
+            contentsLabel = (
+                <span style={{display:'inline-flex', alignItems:'center'}}>{contentsLabel}
+                    <Tooltip label={"Insert Table of Contents"} position={"bottom"} style={{backgroundColor: subColor, color:'var(--md-sys-color-surface)',padding:'5px 10px', borderRadius:8}}>
+                        <span onClick={addToc} style={{display:'inline-block', height:19, marginLeft:5, cursor:'pointer'}}><MdAddBox/></span>
+                    </Tooltip>
+                </span>
+            )
+        }
+    }
+
     return (
-        <div style={{paddingBottom: 20}} className={"disable-outline"}>
+        <div style={{paddingBottom: 20}} className={"disable-outline"} {...hoverProps}>
             {segments && <div style={{fontSize: '0.8em'}}>{segments}</div>}
             <h1 style={{fontSize:'2em', fontWeight:700, display:'flex', alignItems:'baseline'}}>
                 {/*Rich text field for user to type in*/}
@@ -79,10 +127,10 @@ export const HeaderBlock = (props) => {
                 />
                 {dirty && <span style={{fontSize:16, fontWeight:'normal', opacity: 0.3}}><MdSave/></span>}
             </h1>
-            <div style={{color:'gray'}}>
+            <div style={{color:subColor}}>
                 {!abstractCallback && description}
                 {abstractCallback && <InlineEditableText value={description||'Add description'} onCommit={(v) => abstractCallback(node, v)}/>}
-                &nbsp;-&nbsp;Created {date}
+                &nbsp;-&nbsp;Created {date} {contentsLabel && <>&nbsp;-&nbsp;{contentsLabel}</>}
             </div>
         </div>
 
