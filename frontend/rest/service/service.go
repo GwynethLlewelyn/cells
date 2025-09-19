@@ -31,8 +31,12 @@ func init() {
 					Up:            manager.StorageMigration(),
 				},
 				{
+					TargetVersion: service.FirstRun(),
+					Up:            modifiers.RetryCreatePagesNamespaces,
+				},
+				{
 					TargetVersion: service.ValidVersion("4.5.0"),
-					Up:            modifiers.CreatePagesNamespaces,
+					Up:            modifiers.RetryCreatePagesNamespaces,
 				},
 			}),
 			service.WithWebMiddleware(func(h http.Handler) http.Handler {

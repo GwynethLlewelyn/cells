@@ -22,6 +22,7 @@ package modifiers
 
 import (
 	"context"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -30,7 +31,14 @@ import (
 	"github.com/pydio/cells/v5/common/proto/idm"
 	service2 "github.com/pydio/cells/v5/common/proto/service"
 	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
+
+func RetryCreatePagesNamespaces(ctx context.Context) error {
+	return std.Retry(ctx, func() error {
+		return CreatePagesNamespaces(ctx)
+	}, 3*time.Second, 30*time.Second)
+}
 
 func CreatePagesNamespaces(ctx context.Context) error {
 	cli := idm.NewUserMetaServiceClient(grpc.ResolveConn(ctx, common.ServiceUserMetaGRPC))
