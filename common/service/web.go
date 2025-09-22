@@ -39,6 +39,7 @@ import (
 	"github.com/sethvargo/go-limiter/httplimit"
 	"github.com/sethvargo/go-limiter/memorystore"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/config/routing"
@@ -224,17 +225,19 @@ func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption)
 				} else {
 					corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
 					if err != nil {
-						log.Logger(ctx).Warn("max age not an int, setting to default value")
 						corsMaxAge = 30
 					}
 
 					corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
 					if err != nil {
-						log.Logger(ctx).Warn("max age not an int, setting to default value")
 						corsOptionsStatusContent = http.StatusNoContent
 					}
 
 					zl := zap.New(log.Logger(ctx).Core())
+					zsl, err := zap.NewStdLogAt(zl, zapcore.DebugLevel)
+					if err != nil {
+						log.Logger(ctx).Warn("error setting stdlog", zap.Error(err))
+					}
 
 					corsOptions := cors.Options{
 						AllowedOrigins:       []string{"*"}, // Can be replaced by the function AllowOriginVary if the env variable is set
@@ -247,7 +250,7 @@ func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption)
 						OptionsPassthrough:   os.Getenv("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH") == "true",
 						OptionsSuccessStatus: corsOptionsStatusContent,
 						Debug:                os.Getenv("CELLS_WEB_CORS_ALLOW_DEBUG") == "true",
-						Logger:               zap.NewStdLog(zl),
+						Logger:               zsl,
 					}
 
 					allowedOrigins := strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS"), ",")

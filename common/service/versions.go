@@ -83,7 +83,7 @@ func DefaultConfigMigration(serviceName string, data interface{}) *Migration {
 // UpdateServiceVersion applies migration(s) if necessary and stores new current version for future use.
 func UpdateServiceVersion(ctx context.Context, opts *ServiceOptions) (bool, error) {
 
-	tID := runtime.MultiContextManager().Current(ctx)
+	//tID := runtime.MultiContextManager().Current(ctx)
 	refName := opts.Name
 	if opts.MigrateIterator.ContextKey != nil {
 		var s string
@@ -91,7 +91,8 @@ func UpdateServiceVersion(ctx context.Context, opts *ServiceOptions) (bool, erro
 			refName += "." + s
 		}
 	}
-	var run bool
+
+	/*var run bool
 	opts.migrateOnceL.Lock()
 	if !opts.migrateOnce[tID+"-"+refName] {
 		run = true
@@ -99,8 +100,8 @@ func UpdateServiceVersion(ctx context.Context, opts *ServiceOptions) (bool, erro
 	}
 	opts.migrateOnceL.Unlock()
 	if !run {
-		return false, nil
-	}
+		return nil
+	}*/
 
 	prefix := []string{"versions", refName}
 

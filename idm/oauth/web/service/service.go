@@ -32,6 +32,7 @@ import (
 	"github.com/ory/hydra/v2/oauth2"
 	"github.com/rs/cors"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/config"
@@ -135,6 +136,10 @@ func init() {
 
 				conf := config.Get(ctx, "services/"+common.ServiceWebNamespace_+common.ServiceOAuth+"/cors/public")
 				zl := zap.New(log.Logger(ctx).Core())
+				zsl, err := zap.NewStdLogAt(zl, zapcore.DebugLevel)
+				if err != nil {
+					log.Logger(ctx).Warn("error setting stdlog", zap.Error(err))
+				}
 
 				corsOptions := cors.Options{
 					AllowedOrigins:       []string{"*"}, // Replaced by AllowOriginVaryRequestFunc in case allowed origins are set
@@ -147,7 +152,7 @@ func init() {
 					OptionsPassthrough:   conf.Val("optionsPassthrough").Default(false).Bool(),
 					OptionsSuccessStatus: conf.Val("optionsSuccessStatus").Default(http.StatusNoContent).Int(),
 					Debug:                conf.Val("debug").Default(false).Bool(),
-					Logger:               zap.NewStdLog(zl),
+					Logger:               zsl,
 				}
 
 				allowedOrigins := conf.Val("allowedOrigins").StringArray()

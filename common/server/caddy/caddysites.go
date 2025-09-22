@@ -33,6 +33,7 @@ import (
 
 	"github.com/rs/cors"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/pydio/caddyvault"
 
@@ -72,6 +73,10 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 	}
 
 	zl := zap.New(log.Logger(ctx).Core())
+	zsl, err := zap.NewStdLogAt(zl, zapcore.DebugLevel)
+	if err != nil {
+		log.Logger(ctx).Warn("error setting stdlog", zap.Error(err))
+	}
 
 	var corsOptions *cors.Options
 
@@ -93,13 +98,11 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 		// CORS Options
 		corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
 		if err != nil {
-			log.Logger(ctx).Warn("max age not an int, setting to default value")
 			corsMaxAge = 30
 		}
 
 		corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
 		if err != nil {
-			log.Logger(ctx).Warn("max age not an int, setting to default value")
 			corsOptionsStatusContent = http.StatusNoContent
 		}
 
@@ -114,7 +117,7 @@ func ResolveSites(ctx context.Context, resolver routing.UpstreamsResolver, exter
 			OptionsPassthrough:   os.Getenv("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH") == "true",
 			OptionsSuccessStatus: corsOptionsStatusContent,
 			Debug:                os.Getenv("CELLS_WEB_CORS_ALLOW_DEBUG") == "true",
-			Logger:               zap.NewStdLog(zl),
+			Logger:               zsl,
 		}
 	}
 
