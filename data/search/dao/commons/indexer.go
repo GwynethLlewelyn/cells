@@ -26,10 +26,11 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/pydio/cells/v5/common/config"
 	"github.com/pydio/cells/v5/common/errors"
 	"github.com/pydio/cells/v5/common/nodes/meta"
 	"github.com/pydio/cells/v5/common/proto/tree"
-	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/runtime"
 	"github.com/pydio/cells/v5/common/storage/indexer"
 	"github.com/pydio/cells/v5/common/telemetry/log"
 	"github.com/pydio/cells/v5/common/utils/configx"
@@ -78,12 +79,17 @@ func (s *Server) getPooledNsProvider(ctx context.Context) *meta.NsProvider {
 	return ns
 }
 
+func (s *Server) getIndexerConfig(ctx context.Context) configx.Values {
+	svcName := runtime.GetServiceName(ctx)
+	return config.Get(ctx, "services", svcName)
+}
+
 func (s *Server) getBatch(ctx context.Context) (indexer.Batch, error) {
 	BatchPoolInit.Do(func() {
 		bo := s.batchOptions
 		batchPool = openurl.MustMemPool[indexer.Batch](ctx, func(ct context.Context, url string) indexer.Batch {
 			openContext := context.WithoutCancel(ct)
-			return NewBatch(openContext, s.getPooledNsProvider(openContext), BatchOptions{}, bo...)
+			return NewBatch(openContext, s.getPooledNsProvider(openContext), BatchOptions{config: s.getIndexerConfig(ct)}, bo...)
 		})
 	})
 	return batchPool.Get(ctx)
@@ -142,7 +148,7 @@ func (s *Server) SearchNodes(ctx context.Context, queryObject *tree.Query, from 
 
 	nsProvider := s.getPooledNsProvider(ctx)
 
-	codex := s.queryCodecProvider(manager.MustGetConfig(ctx).Val(), nsProvider)
+	codex := s.queryCodecProvider(s.getIndexerConfig(ctx), nsProvider)
 
 	searchResult, err := s.Indexer.FindMany(ctx, queryObject, from, size, sortField, sortDesc, codex)
 	if err != nil {

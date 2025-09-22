@@ -503,7 +503,7 @@ func (b *Codec) extractConfigs(cfg configx.Values) (basenameAnalyzer, contentAna
 
 	_, tt := registry.AnalyzerTypesAndInstances()
 
-	if bA := cfg.Val("BasenameAnalyzer").String(); bA != "" {
+	if bA := cfg.Val("basenameAnalyzer").String(); bA != "" {
 		var found bool
 		for _, t := range tt {
 			if t == bA {
@@ -517,7 +517,7 @@ func (b *Codec) extractConfigs(cfg configx.Values) (basenameAnalyzer, contentAna
 		}
 	}
 
-	if cA := cfg.Val("ContentAnalyzer").String(); cA != "" {
+	if cA := cfg.Val("contentAnalyzer").String(); cA != "" {
 		var found bool
 		for _, t := range tt {
 			if t == cA {

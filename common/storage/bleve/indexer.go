@@ -40,6 +40,7 @@ import (
 
 	"github.com/pydio/cells/v5/common/config"
 	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/runtime"
 	"github.com/pydio/cells/v5/common/storage/indexer"
 	"github.com/pydio/cells/v5/common/telemetry/log"
 	"github.com/pydio/cells/v5/common/utils/configx"
@@ -836,7 +837,7 @@ func (s *Indexer) openOneIndex(ctx context.Context, fullPath string, mappingName
 		if s.codec != nil {
 			var val configx.Values
 			if s.serviceConfigs != nil {
-				val = s.serviceConfigs.Val()
+				val = s.serviceConfigs.Val("services", runtime.GetServiceName(ctx))
 			}
 			if model, ok := s.codec.GetModel(val); ok {
 				if docMapping, ok := model.(*mapping.DocumentMapping); ok {
