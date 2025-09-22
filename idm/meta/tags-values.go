@@ -22,10 +22,8 @@ package meta
 
 import (
 	"context"
-	"strings"
 
 	"github.com/pydio/cells/v5/common/client/commons/docstorec"
-	"github.com/pydio/cells/v5/common/errors"
 	"github.com/pydio/cells/v5/common/proto/docstore"
 	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
@@ -73,9 +71,6 @@ func (s *tgClient) StoreNewTags(ctx context.Context, namespace string, tags []st
 	currentTags, storeDocument := s.ListTags(ctx, namespace)
 	changes := false
 	for _, newT := range tags {
-		if strings.TrimSpace(newT) == "" {
-			return errors.WithMessage(errors.StatusBadRequest, "tag is empty")
-		}
 		found := false
 		for _, crt := range currentTags {
 			if crt == newT {
