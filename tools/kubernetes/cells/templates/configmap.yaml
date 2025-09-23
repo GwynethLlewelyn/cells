@@ -115,14 +115,14 @@ data:
       debouncer:
         uri: "mem://?debounce={{"{{"}} .debounce {{"}}"}}&idle={{"{{"}} .idle {{"}}"}}&max={{"{{"}} .max {{"}}"}}&openerID={{"{{"}} .openerID {{"}}"}}"
       persistent:
-        uri: "nats://nats:4222?name={{"{{"}} .name {{"}}"}}&serviceName={{"{{"}} .Service {{"}}"}}&prefix={{"{{"}} .prefix {{"}}"}}&serverConfEnv=BROKER_SERVER_CONF"
-
+        {{- $authParamsBroker := (include "cells.urlUser" (dict "enabled" false)) }}
+        uri: "{{ include "cells.broker.url" (dict "path" "queue" "context" . "authParams" $authParamsBroker "params" (dict "name" "{{ .name }}" "serviceName" "{{ .Service }}" "prefix" "{{ .prefix }}" "serverConfEnv" "BROKER_SERVER_CONF" ))}}"
     caches:
       local:
         uri: "pm://?evictionTime={{"{{"}} .evictionTime {{"}}"}}&cleanWindow={{"{{"}} .cleanWindow {{"}}"}}&prefix={{"{{"}} .prefix {{"}}"}}"
       shared:
-        uri: "bigcache://?evictionTime={{"{{"}} .evictionTime {{"}}"}}&cleanWindow={{"{{"}} .cleanWindow {{"}}"}}&prefix={{"{{"}} .prefix {{"}}"}}"
-
+        {{- $authParamsCache := (include "cells.urlUser" (dict "enabled" (include "cells.cache.auth.enabled" .) "user" "$CACHE_USERNAME" "password" "$CACHE_PASSWORD")) }}
+        uri: "{{ include "cells.cache.url" (dict "path" "cells" "context" . "authParams" $authParamsCache "params" (dict "evictionTime" "{{ .evictionTime }}" "cleanWindow" "{{ .cleanWindow }}" "prefix" "{{ .prefix }}" ))}}"
 
     #------------------------------------
     # All services
