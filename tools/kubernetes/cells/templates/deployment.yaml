@@ -64,7 +64,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/bin/sh"]
           args:
-            ['-c', 'source /var/cells-install/source && cells start --log debug']
+            ['-c', 'source /var/cells-install/source && cells start']
           env:
             - name: POD_NAME
               valueFrom:
@@ -492,6 +492,13 @@ spec:
     metadata:
       labels:
         app: {{ include "cells.fullname" . }}-controller
+      annotations:
+      {{- if (include "cells.vault.enabled" .) }}
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: {{ include "cells.serviceAccountName" . }}
+        vault.hashicorp.com/agent-init-first: "true"
+        vault.hashicorp.com/agent-inject-token: "true"
+      {{- end }}
     spec:
       serviceAccountName: {{ include "cells.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
@@ -516,13 +523,27 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- include "cells.auth.envvar" (dict "prefix" "CELLS" "auth" .Values.auth) | nindent 12 -}}
+            {{- include "cells.discovery.envvar" . | nindent 12 -}}
+            {{- include "cells.broker.envvar" . | nindent 12 -}}
+            {{- include "cells.cache.envvar" . | nindent 12 -}}
+            {{- include "cells.vault.envvar" . | nindent 12 -}}
+            {{- include "cells.discovery.auth.envvar" . | nindent 12 -}}
+            {{- include "cells.database.auth.envvar" . | nindent 12 -}}
+            {{- include "cells.broker.auth.envvar" . | nindent 12 -}}
+            {{- include "cells.cache.auth.envvar" . | nindent 12 -}}
+            {{- include "cells.nosql.auth.envvar" . | nindent 12 -}}
+            {{- include "cells.s3.auth.envvar" . | nindent 12 -}}
+            {{- include "cells.vault.auth.envvar" . | nindent 12 }}
           {{- if .Values.image.local }}
           image: "{{ .Values.image.repository }}"
           {{- else }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           {{- end }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: [ "cells", "start" ]
+          command: [ "/bin/sh" ]
+          args:
+            [ '-c', 'source /var/cells-install/source && cells start' ]
           name: {{ include "cells.fullname" . }}-controller
           ports:
             - containerPort: 9000
@@ -531,7 +552,12 @@ spec:
           volumeMounts:
             - mountPath: /var/cells-bootstrap
               name: {{ include "cells.fullname" . }}-controller
+            - name: install
+              mountPath: /var/cells-install
       volumes:
         - configMap:
             name: {{ include "cells.fullname" . }}-controller
           name: {{ include "cells.fullname" . }}-controller
+        - name: install
+          configMap:
+            name: {{ include "cells.fullname" . }}

@@ -65,8 +65,6 @@ data:
     dss3bucketbinaries: {{ .Values.externalS3.ds.binaries | default "binaries" }}
     dss3bucketthumbs: {{ .Values.externalS3.ds.thumbnails | default "thumbnails" }}
     dss3bucketversions: {{ .Values.externalS3.ds.versions | default "versions" }}
-
-
     {{- end }}
 
     customconfigs:
@@ -412,7 +410,7 @@ data:
     #
     # Defaults variable values are injected at load time
     #------------------------------------------
-    runtime: main
+    runtime: {{ .Values.controller.runtime | default "main" }}
     connections:
       grpc:
         uri: cells-grpc:8030
@@ -422,4 +420,5 @@ data:
       generic:
         type: generic
         services:
-          - filter: "{{"{{"}} .Name {{"}}"}} ~= pydio\\.generic\\.install or {{"{{"}} .Name {{"}}"}} ~= pydio\\.generic\\.timer"
+          {{- $services := .Values.controller.services }}
+          - filter: "{{ range $k, $v := $services }}{{ printf "{{ .Name }} ~= %s" $v }}{{ if lt $k (sub (len $services) 1)}} or {{ end }}{{ end }}"
