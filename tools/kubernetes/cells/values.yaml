@@ -111,6 +111,12 @@ service:
     "frontend/plugin/core.pydio/APPLICATION_TITLE": "My Pydio Cells Cluster"
   }
 
+controller:
+  runtime: main
+  services:
+    - pydio.generic.install
+    - pydio.generic.timer
+
 ## @section TLS/SSL parameters
 ##
 ## @param tls.enabled Enable TLS in MySQL

@@ -3,7 +3,7 @@ annotations:
 
 apiVersion: v2
 name: cells
-description: A Helm chart for Kubernetes
+description: Cells Helm chart for Kubernetes
 
 # A chart can be either an 'application' or a 'library' chart.
 #
@@ -18,13 +18,13 @@ type: application
 # This is the chart version. This version number should be incremented each time you make changes
 # to the chart and its templates, including the app version.
 # Versions are expected to follow Semantic Versioning (https://semver.org/)
-version: 1.0.0-beta.13
+version: 1.0.0-beta.15
 
 # This is the version number of the application being deployed. This version number should be
 # incremented each time you make changes to the application. Versions are not expected to
 # follow Semantic Versioning. They should reflect the version the application is using.
 # It is recommended to use it with quotes.
-appVersion: "v4.9.92-alpha09"
+appVersion: v4.9.92-alpha11
 
 home: https://pydio.com
 icon: https://pydio.com/sites/all/themes/pydio_theme/images/logoPydioWhite.png

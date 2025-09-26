@@ -170,7 +170,7 @@ Names
 {{- $i := 0 -}}
 {{- $parts := list -}}
 {{- range $k, $v := $out -}}
-  {{- $encoded := printf "%s=%s" ($k | urlquery) ($v | toString | urlquery) -}}
+  {{- $encoded := printf "%s=%s" $k $v -}}
   {{- $parts = append $parts $encoded -}}
 {{- end }}
 {{- if gt (len $parts) 0 -}}

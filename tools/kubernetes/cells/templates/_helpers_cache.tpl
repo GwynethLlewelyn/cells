@@ -45,7 +45,7 @@ REDIS ACTIVATION
 {{- define "cells.cache.envvar" -}}
 {{- $authParams := (include "cells.urlUser" (dict "enabled" (include "cells.cache.auth.enabled" .) "user" "$CACHE_USERNAME" "password" "$CACHE_PASSWORD")) }}
 {{- $cacheURL := (include "cells.cache.url" (dict "context" . "path" "cache" "authParams" $authParams)) -}}
-{{- $shortcacheURL := (include "cells.cache.url" (dict "context" . "path" "vault" "authParams" $authParams)) -}}
+{{- $shortcacheURL := (include "cells.cache.url" (dict "context" . "path" "shortcache" "authParams" $authParams)) -}}
 {{- if (include "cells.cache.enabled" .) -}}
 {{ include "common.tplvalues.render" (dict "value" (list (dict "name" "CELLS_CACHE" "value" $cacheURL)) "context" .) }}
 {{- if .Values.redis.shortcacheEnabled -}}
