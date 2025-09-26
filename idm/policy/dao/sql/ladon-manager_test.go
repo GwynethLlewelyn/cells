@@ -20,6 +20,7 @@ import (
 
 var (
 	testcases = test.TemplateSQL(NewDAO)
+	bg        = context.Background()
 )
 
 func TestManager(t *testing.T) {
@@ -30,7 +31,7 @@ func TestManager(t *testing.T) {
 			panic(er)
 		}
 		sqlDAO := dao.(*sqlimpl)
-		lm := NewManager(sqlDAO.DB).WithContext(ctx)
+		lm := NewManager(sqlDAO.DB)
 
 		t.Run("type=get errors", HelperTestGetErrors(lm))
 		t.Run("type=CRUD", HelperTestCreateGetDelete(lm))
@@ -271,14 +272,14 @@ func HelperTestFindPoliciesForSubject(s ladon.Manager) func(t *testing.T) {
 	return func(t *testing.T) {
 		Convey("test find", t, func() {
 			for _, c := range testPolicies {
-				So(s.Create(c), ShouldBeNil)
+				So(s.Create(bg, c), ShouldBeNil)
 			}
 
-			r, e := s.FindPoliciesForSubject("some")
+			r, e := s.FindPoliciesForSubject(bg, "some")
 			So(e, ShouldBeNil)
 			So(len(r), ShouldEqual, 1)
 
-			res, err := s.FindRequestCandidates(&ladon.Request{
+			res, err := s.FindRequestCandidates(bg, &ladon.Request{
 				Subject:  "sqlmatch",
 				Resource: "article",
 				Action:   "create",
@@ -294,7 +295,7 @@ func HelperTestFindPoliciesForSubject(s ladon.Manager) func(t *testing.T) {
 				AssertPolicyEqual(t, testPolicies[1], res[0])
 			}
 
-			res, err = s.FindRequestCandidates(&ladon.Request{
+			res, err = s.FindRequestCandidates(bg, &ladon.Request{
 				Subject:  "sqlamatch",
 				Resource: "article",
 				Action:   "create",
@@ -311,10 +312,10 @@ func HelperTestFindPoliciesForResource(s ladon.Manager) func(t *testing.T) {
 	return func(t *testing.T) {
 		Convey("test find", t, func() {
 			for _, c := range testPolicies {
-				So(s.Create(c), ShouldBeNil)
+				So(s.Create(bg, c), ShouldBeNil)
 			}
 
-			res, err := s.FindPoliciesForResource("sqlmatch_resource")
+			res, err := s.FindPoliciesForResource(bg, "sqlmatch_resource")
 			So(err, ShouldBeNil)
 			So(len(res), ShouldEqual, 2)
 
@@ -326,7 +327,7 @@ func HelperTestFindPoliciesForResource(s ladon.Manager) func(t *testing.T) {
 				AssertPolicyEqual(t, testPolicies[len(testPolicies)-1], res[0])
 			}
 
-			res, err = s.FindPoliciesForResource("sqlamatch_resource")
+			res, err = s.FindPoliciesForResource(bg, "sqlamatch_resource")
 			So(err, ShouldBeNil)
 			So(len(res), ShouldEqual, 1)
 			AssertPolicyEqual(t, testPolicies[len(testPolicies)-1], res[0])
@@ -390,10 +391,10 @@ func testEq(a, b []string) error {
 func HelperTestGetErrors(s ladon.Manager) func(t *testing.T) {
 	return func(t *testing.T) {
 		Convey("test errors", t, func() {
-			_, err := s.Get(uuid.New())
+			_, err := s.Get(bg, uuid.New())
 			So(err, ShouldBeError)
 
-			_, err = s.Get("asdf")
+			_, err = s.Get(bg, "asdf")
 			So(err, ShouldBeError)
 		})
 	}
@@ -403,13 +404,13 @@ func HelperTestCreateGetDelete(s ladon.Manager) func(t *testing.T) {
 	return func(t *testing.T) {
 		for i, c := range TestManagerPolicies {
 			Convey(fmt.Sprintf("case=%d/id=%s/type=create", i, c.GetID()), t, func() {
-				_, err := s.Get(c.GetID())
+				_, err := s.Get(bg, c.GetID())
 				So(err, ShouldBeError)
-				So(s.Create(c), ShouldBeNil)
+				So(s.Create(bg, c), ShouldBeNil)
 			})
 
 			Convey(fmt.Sprintf("case=%d/id=%s/type=query", i, c.GetID()), t, func() {
-				get, err := s.Get(c.GetID())
+				get, err := s.Get(bg, c.GetID())
 				So(err, ShouldBeNil)
 
 				AssertPolicyEqual(t, c, get)
@@ -417,16 +418,16 @@ func HelperTestCreateGetDelete(s ladon.Manager) func(t *testing.T) {
 
 			Convey(fmt.Sprintf("case=%d/id=%s/type=update", i, c.GetID()), t, func() {
 				c.Description = c.Description + "_updated"
-				So(s.Update(c), ShouldBeNil)
+				So(s.Update(bg, c), ShouldBeNil)
 
-				get, err := s.Get(c.GetID())
+				get, err := s.Get(bg, c.GetID())
 				So(err, ShouldBeNil)
 
 				AssertPolicyEqual(t, c, get)
 			})
 
 			Convey(fmt.Sprintf("case=%d/id=%s/type=query", i, c.GetID()), t, func() {
-				get, err := s.Get(c.GetID())
+				get, err := s.Get(bg, c.GetID())
 				So(err, ShouldBeNil)
 
 				AssertPolicyEqual(t, c, get)
@@ -436,19 +437,19 @@ func HelperTestCreateGetDelete(s ladon.Manager) func(t *testing.T) {
 		Convey("type=query-all", t, func() {
 			count := int64(len(TestManagerPolicies))
 
-			pols, err := s.GetAll(100, 0)
+			pols, err := s.GetAll(bg, 100, 0)
 			So(err, ShouldBeNil)
 			So(len(pols), ShouldEqual, len(TestManagerPolicies))
 
-			pols4, err := s.GetAll(1, 0)
+			pols4, err := s.GetAll(bg, 1, 0)
 			So(err, ShouldBeNil)
 			So(len(pols4), ShouldEqual, 1)
 
-			pols2, err := s.GetAll(100, count-1)
+			pols2, err := s.GetAll(bg, 100, count-1)
 			So(err, ShouldBeNil)
 			So(len(pols2), ShouldEqual, 1)
 
-			pols3, err := s.GetAll(100, count)
+			pols3, err := s.GetAll(bg, 100, count)
 			So(err, ShouldBeNil)
 			So(len(pols3), ShouldEqual, 0)
 
@@ -479,9 +480,9 @@ func HelperTestCreateGetDelete(s ladon.Manager) func(t *testing.T) {
 
 		for i, c := range TestManagerPolicies {
 			Convey(fmt.Sprintf("case=%d/id=%s/type=delete", i, c.GetID()), t, func() {
-				So(s.Delete(c.ID), ShouldBeNil)
+				So(s.Delete(bg, c.ID), ShouldBeNil)
 
-				_, err := s.Get(c.GetID())
+				_, err := s.Get(bg, c.GetID())
 				So(err, ShouldBeError)
 			})
 		}

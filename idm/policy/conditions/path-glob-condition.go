@@ -21,11 +21,13 @@
 package conditions
 
 import (
-	"github.com/gobwas/glob"
-	"github.com/ory/ladon"
+	"context"
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/gobwas/glob"
+	"github.com/ory/ladon"
 )
 
 // PathGlobCondition is a condition which is fulfilled if the given
@@ -40,7 +42,7 @@ var (
 
 // Fulfills returns true if the given value is a string and does *NOT* matches the regex
 // pattern in PathGlobCondition
-func (c *PathGlobCondition) Fulfills(value interface{}, _ *ladon.Request) bool {
+func (c *PathGlobCondition) Fulfills(ctx context.Context, value interface{}, _ *ladon.Request) bool {
 
 	if value == nil {
 		return false

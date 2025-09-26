@@ -21,6 +21,7 @@
 package conditions
 
 import (
+	"context"
 	"regexp"
 
 	"github.com/ory/ladon"
@@ -34,7 +35,7 @@ type StringNotMatchCondition struct {
 
 // Fulfills returns true if the given value is a string and does *NOT* matches the regex
 // pattern in StringNotMatchCondition
-func (c *StringNotMatchCondition) Fulfills(value interface{}, _ *ladon.Request) bool {
+func (c *StringNotMatchCondition) Fulfills(_ context.Context, value interface{}, _ *ladon.Request) bool {
 
 	if s, ok := value.(string); ok {
 		matches, _ := regexp.MatchString(c.Matches, s)

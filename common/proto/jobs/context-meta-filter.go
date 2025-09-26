@@ -96,10 +96,10 @@ func (m *ContextMetaFilter) filterPolicyQueries(ctx context.Context, input *Acti
 					c.FieldName: c.Condition,
 				},
 			}
-			_ = warden.Manager.Create(converter.ProtoToLadonPolicy(idPol))
+			_ = warden.Manager.Create(ctx, converter.ProtoToLadonPolicy(idPol))
 		}
 	}
-	if err := warden.IsAllowed(&ladon.Request{
+	if err := warden.IsAllowed(ctx, &ladon.Request{
 		Subject:  "ctx",
 		Action:   "ctx",
 		Resource: "ctx",

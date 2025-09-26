@@ -267,7 +267,7 @@ func CachedPoliciesChecker(ctx context.Context, resType string, requestContext m
 				pol.Conditions[k] = c
 			}
 		}
-		_ = w.Manager.Create(converter.ProtoToLadonPolicy(pol))
+		_ = w.Manager.Create(ctx, converter.ProtoToLadonPolicy(pol))
 	}
 
 	return w, nil
@@ -285,13 +285,13 @@ func LocalACLPoliciesResolver(ctx context.Context, request *idm.PolicyEngineRequ
 
 	allow := explicitOnly
 	for _, subject := range request.Subjects {
-		request := &ladon.Request{
+		req := &ladon.Request{
 			Resource: request.Resource,
 			Subject:  subject,
 			Action:   request.Action,
 			Context:  cx,
 		}
-		if err := checker.IsAllowed(request); err != nil && err.Error() == ladon.ErrRequestForcefullyDenied.Error() {
+		if err := checker.IsAllowed(ctx, req); err != nil && err.Error() == ladon.ErrRequestForcefullyDenied.Error() {
 			if explicitOnly {
 				allow = false
 			}

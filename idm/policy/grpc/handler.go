@@ -69,11 +69,11 @@ func (h *Handler) IsAllowed(ctx context.Context, request *idm.PolicyEngineReques
 			mem := memory.NewMemoryManager()
 			for _, g := range all {
 				for _, p := range g.Policies {
-					_ = mem.Create(converter.ProtoToLadonPolicy(p))
+					_ = mem.Create(ctx, converter.ProtoToLadonPolicy(p))
 				}
 			}
 			checker = func(_ context.Context, r *ladon.Request) error {
-				return (&ladon.Ladon{Manager: mem}).IsAllowed(r)
+				return (&ladon.Ladon{Manager: mem}).IsAllowed(ctx, r)
 			}
 		}
 	}

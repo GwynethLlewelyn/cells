@@ -122,7 +122,7 @@ func (r *ResourceProviderHandler) MatchPolicies(ctx context.Context, resourceId 
 			Effect:    pol.Effect.String(),
 			Subjects:  []string{pol.Subject},
 		}
-		warden.Manager.Create(ladonPol)
+		_ = warden.Manager.Create(ctx, ladonPol)
 	}
 	if len(subjects) == 0 {
 		subjects, _ = auth.SubjectsForResourcePolicyQuery(ctx, nil)
@@ -135,7 +135,7 @@ func (r *ResourceProviderHandler) MatchPolicies(ctx context.Context, resourceId 
 			Subject:  subject,
 			Action:   action.String(),
 		}
-		if err := warden.IsAllowed(request); err != nil && err == ladon.ErrRequestForcefullyDenied {
+		if err := warden.IsAllowed(ctx, request); err != nil && err == ladon.ErrRequestForcefullyDenied {
 			return false
 		} else if err == nil {
 			allow = true

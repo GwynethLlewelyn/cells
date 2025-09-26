@@ -64,7 +64,7 @@ func checkOIDCPolicies(ctx context.Context, user *idm.User) error {
 			Action:   "login",
 			Context:  reqCtx,
 		}
-		if er := checker.IsAllowed(request); er != nil && errors.Is(er, ladon.ErrRequestForcefullyDenied) {
+		if er := checker.IsAllowed(ctx, request); er != nil && errors.Is(er, ladon.ErrRequestForcefullyDenied) {
 			break
 		} else if er == nil {
 			allow = true

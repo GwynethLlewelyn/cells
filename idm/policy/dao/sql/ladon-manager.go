@@ -31,6 +31,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/pydio/cells/v5/common/errors"
 	"github.com/pydio/cells/v5/common/proto/idm"
 	storagesql "github.com/pydio/cells/v5/common/storage/sql"
 	"github.com/pydio/cells/v5/idm/policy/converter"
@@ -38,10 +39,7 @@ import (
 
 var _ ladon.Manager = (*gormManager)(nil)
 
-var _ ladon.Manager = (*managerWithContext)(nil)
-
 type Manager interface {
-	WithContext(ctx context.Context) ladon.Manager
 	ladon.Manager
 	ladon.Warden
 }
@@ -50,11 +48,6 @@ type Manager interface {
 type gormManager struct {
 	db   *gorm.DB
 	once *sync.Once
-}
-
-type managerWithContext struct {
-	*gormManager
-	ctx context.Context
 }
 
 // NewManager initializes a new SQLManager for given db instance.
@@ -66,70 +59,23 @@ func NewManager(db *gorm.DB) Manager {
 	return m
 }
 
-func (m *gormManager) WithContext(ctx context.Context) ladon.Manager {
-	return &managerWithContext{
-		gormManager: m,
-		ctx:         ctx,
-	}
+func (m *gormManager) IsAllowed(ctx context.Context, r *ladon.Request) error {
+	return errors.New("not supported")
 }
 
-func (m *gormManager) Create(policy ladon.Policy) error {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) Update(policy ladon.Policy) error {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) Get(id string) (ladon.Policy, error) {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) Delete(id string) error {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) GetAll(limit, offset int64) (ladon.Policies, error) {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) FindRequestCandidates(r *ladon.Request) (ladon.Policies, error) {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) FindPoliciesForSubject(subject string) (ladon.Policies, error) {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) FindPoliciesForResource(resource string) (ladon.Policies, error) {
-	panic("manager should be be called without context")
-}
-
-func (m *gormManager) IsAllowed(r *ladon.Request) error {
-	panic("manager is not allowed")
-}
-
-func (s *managerWithContext) instance(ctx context.Context) *gorm.DB {
+func (s *gormManager) instance(ctx context.Context) *gorm.DB {
 	if s.once == nil {
 		s.once = &sync.Once{}
 	}
 
 	db := s.db.Session(&gorm.Session{SkipDefaultTransaction: true}).WithContext(ctx)
 
-	//s.once.Do(func() {
-	//	db.SetupJoinTable(&idm.Policy{}, "Subjects", &idm.PolicySubjectRel{})
-	//	db.SetupJoinTable(&idm.Policy{}, "Resources", &idm.PolicyResourceRel{})
-	//	db.SetupJoinTable(&idm.Policy{}, "Actions", &idm.PolicyActionRel{})
-	//
-	//	db.AutoMigrate(&idm.PolicyResource{}, &idm.PolicyAction{}, &idm.PolicySubject{}, &idm.Policy{})
-	//})
-
 	return db
 }
 
 // Create inserts a new policy
-func (s *managerWithContext) Create(policy ladon.Policy) (err error) {
-	tx := s.instance(s.ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(converter.LadonToProtoPolicy(policy))
+func (s *gormManager) Create(ctx context.Context, policy ladon.Policy) (err error) {
+	tx := s.instance(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(converter.LadonToProtoPolicy(policy))
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -138,8 +84,8 @@ func (s *managerWithContext) Create(policy ladon.Policy) (err error) {
 }
 
 // Update updates an existing policy.
-func (s *managerWithContext) Update(policy ladon.Policy) error {
-	tx := s.instance(s.ctx).Updates(converter.LadonToProtoPolicy(policy))
+func (s *gormManager) Update(ctx context.Context, policy ladon.Policy) error {
+	tx := s.instance(ctx).Updates(converter.LadonToProtoPolicy(policy))
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -157,10 +103,10 @@ type ScanPolicy struct {
 	Conditions  map[string]*idm.PolicyCondition `gorm:"column:conditions;serializer:json;"`
 }
 
-func (s *managerWithContext) FindRequestCandidates(r *ladon.Request) (ladon.Policies, error) {
+func (s *gormManager) FindRequestCandidates(ctx context.Context, r *ladon.Request) (ladon.Policies, error) {
 	var policies []*ScanPolicy
 
-	db := s.instance(s.ctx)
+	db := s.instance(ctx)
 	polTable := storagesql.TableNameFromModel(db, &idm.Policy{})
 	acTable := storagesql.TableNameFromModel(db, &idm.PolicyAction{})
 	resTable := storagesql.TableNameFromModel(db, &idm.PolicyResource{})
@@ -252,18 +198,18 @@ func merge(s1 []string, s2 string) []string {
 	return s1
 }
 
-func (s *managerWithContext) FindPoliciesForResource(resource string) (ladon.Policies, error) {
-	return s.FindRequestCandidates(&ladon.Request{Resource: resource})
+func (s *gormManager) FindPoliciesForResource(ctx context.Context, resource string) (ladon.Policies, error) {
+	return s.FindRequestCandidates(ctx, &ladon.Request{Resource: resource})
 }
 
-func (s *managerWithContext) FindPoliciesForSubject(subject string) (ladon.Policies, error) {
-	return s.FindRequestCandidates(&ladon.Request{Subject: subject})
+func (s *gormManager) FindPoliciesForSubject(ctx context.Context, subject string) (ladon.Policies, error) {
+	return s.FindRequestCandidates(ctx, &ladon.Request{Subject: subject})
 }
 
 // GetAll returns all policies
-func (s *managerWithContext) GetAll(limit, offset int64) (ladon.Policies, error) {
+func (s *gormManager) GetAll(ctx context.Context, limit, offset int64) (ladon.Policies, error) {
 	var policies []*idm.Policy
-	tx := s.instance(s.ctx).
+	tx := s.instance(ctx).
 		Preload("OrmActions").Preload("OrmResources").Preload("OrmSubjects").
 		Limit(int(limit)).Offset(int(offset)).Find(&policies)
 
@@ -280,9 +226,9 @@ func (s *managerWithContext) GetAll(limit, offset int64) (ladon.Policies, error)
 }
 
 // Get retrieves a policy.
-func (s *managerWithContext) Get(id string) (ladon.Policy, error) {
+func (s *gormManager) Get(ctx context.Context, id string) (ladon.Policy, error) {
 	var policy *idm.Policy
-	tx := s.instance(s.ctx).Preload("OrmActions").Preload("OrmResources").Preload("OrmSubjects").Where(&idm.Policy{ID: id}).Find(&policy)
+	tx := s.instance(ctx).Preload("OrmActions").Preload("OrmResources").Preload("OrmSubjects").Where(&idm.Policy{ID: id}).Find(&policy)
 
 	if tx.Error != nil {
 		return nil, tx.Error
@@ -296,8 +242,8 @@ func (s *managerWithContext) Get(id string) (ladon.Policy, error) {
 }
 
 // Delete removes a policy.
-func (s *managerWithContext) Delete(id string) error {
-	tx := s.instance(s.ctx).Where(&idm.Policy{ID: id}).Delete(&idm.Policy{})
+func (s *gormManager) Delete(ctx context.Context, id string) error {
+	tx := s.instance(ctx).Where(&idm.Policy{ID: id}).Delete(&idm.Policy{})
 
 	if tx.Error != nil {
 		return tx.Error

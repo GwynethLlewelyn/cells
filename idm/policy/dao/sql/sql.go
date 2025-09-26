@@ -326,6 +326,6 @@ func (s *sqlimpl) deletePolicyById(ctx context.Context, tx *gorm.DB, id string) 
 
 // IsAllowed implements API
 func (s *sqlimpl) IsAllowed(ctx context.Context, r *ladon.Request) error {
-	mg := NewManager(s.instance(ctx)).WithContext(ctx)
-	return (&ladon.Ladon{Manager: mg}).IsAllowed(r)
+	mg := NewManager(s.instance(ctx))
+	return (&ladon.Ladon{Manager: mg}).IsAllowed(ctx, r)
 }

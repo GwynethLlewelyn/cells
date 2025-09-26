@@ -24,7 +24,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/imdario/mergo"
+	"dario.cat/mergo"
+
 	"github.com/pydio/cells/v5/common/proto/idm"
 )
 
@@ -94,7 +95,9 @@ func (u *User) Merge(idmUser *idm.User, options *MergeOptions) (*idm.User, error
 	if u.IsMergeable(idmUser) {
 		newUser := clone(idmUser)
 
-		mergo.Merge(newUser, u.User, mergo.WithOverride, mergo.WithTransformers(&rolesTransfomer{options.ToMap()}))
+		if err := mergo.Merge(newUser, u.User, mergo.WithOverride, mergo.WithTransformers(&rolesTransfomer{options.ToMap()})); err != nil {
+			// TODO - Return or log error here?
+		}
 
 		// This means something has changed
 		if !reflect.DeepEqual(u.User, newUser) {

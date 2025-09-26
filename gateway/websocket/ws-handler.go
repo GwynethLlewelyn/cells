@@ -503,7 +503,7 @@ func (w *WebsocketHandler) MatchPolicies(ctx context.Context, session *melody.Se
 			Effect:    pol.Effect.String(),
 			Subjects:  []string{pol.Subject},
 		}
-		_ = warden.Manager.Create(ladonPol)
+		_ = warden.Manager.Create(ctx, ladonPol)
 	}
 	// check that at least one of the subject is allowed
 	var allow bool
@@ -513,7 +513,7 @@ func (w *WebsocketHandler) MatchPolicies(ctx context.Context, session *melody.Se
 			Subject:  subject,
 			Action:   action.String(),
 		}
-		if err := warden.IsAllowed(request); err != nil && err == ladon.ErrRequestForcefullyDenied {
+		if err := warden.IsAllowed(ctx, request); err != nil && err == ladon.ErrRequestForcefullyDenied {
 			return false
 		} else if err == nil {
 			allow = true

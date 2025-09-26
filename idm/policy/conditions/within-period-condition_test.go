@@ -49,7 +49,7 @@ func TestWithinPeriodCondition(t *testing.T) {
 				Matches: c.matches,
 			}
 
-			So(condition.Fulfills(c.value, new(ladon.Request)), ShouldEqual, c.pass)
+			So(condition.Fulfills(bg, c.value, new(ladon.Request)), ShouldEqual, c.pass)
 		}
 	})
 }
@@ -76,7 +76,7 @@ func TestWithinPeriodPolicies(t *testing.T) {
 		warden := &ladon.Ladon{Manager: memory.NewMemoryManager()}
 
 		// Add the policies defined above to the memory manager.
-		require.Nil(t, warden.Manager.Create(ladonPolicy))
+		require.Nil(t, warden.Manager.Create(bg, ladonPolicy))
 
 		requestOK := &ladon.Request{
 			Subject:  "max",
@@ -97,7 +97,7 @@ func TestWithinPeriodPolicies(t *testing.T) {
 
 		// This is where we ask the warden if the access requests should be granted
 		// Note IsAllowed returns null when access is granted and an error otherwise
-		So(warden.IsAllowed(requestOK), ShouldBeNil)
-		So(warden.IsAllowed(requestNotOK), ShouldNotBeNil)
+		So(warden.IsAllowed(bg, requestOK), ShouldBeNil)
+		So(warden.IsAllowed(bg, requestNotOK), ShouldNotBeNil)
 	})
 }
