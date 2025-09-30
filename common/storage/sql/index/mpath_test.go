@@ -28,8 +28,9 @@ import (
 var (
 	options configx.Values = configx.New()
 
-	mockNode   *tree.TreeNode
-	updateNode *tree.TreeNode
+	mockNode     *tree.TreeNode
+	updateNode   *tree.TreeNode
+	manyChildren *tree.TreeNode
 
 	mockLongNodeMPath       *tree.MPath
 	mockLongNodeChild1MPath *tree.MPath
@@ -63,6 +64,17 @@ func init() {
 		},
 		MPath: &tree.MPath{MPath1: "1.2"},
 		Name:  "update",
+	}
+
+	manyChildren = &tree.TreeNode{
+		Node: &tree.Node{
+			Uuid: "manyChildren",
+			Type: tree.NodeType_COLLECTION,
+			Etag: "etag1",
+			Size: 12,
+		},
+		MPath: &tree.MPath{MPath1: "1.3"},
+		Name:  "mc",
 	}
 
 	mockLongNode = &tree.TreeNode{

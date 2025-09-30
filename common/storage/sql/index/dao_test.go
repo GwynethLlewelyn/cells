@@ -87,22 +87,24 @@ func testAll(t *testing.T, f func(dao testdao) func(*testing.T), cache ...bool) 
 		return logger, nil
 	}, nil)
 	tct := test.TemplateSQL(NewDAO[*tree.TreeNode])
-	test.RunStorageTests(tct, t, func(ctx context.Context) {
-		dao, err := manager.Resolve[DAO](ctx)
-		if err != nil {
-			panic(err)
-		}
+	if len(cache) < 2 { // Adding a second parameter will perform cache only
+		test.RunStorageTests(tct, t, func(ctx context.Context) {
+			dao, err := manager.Resolve[DAO](ctx)
+			if err != nil {
+				panic(err)
+			}
 
-		// First make sure that we delete everything
-		_ = dao.DelNode(ctx, &tree.TreeNode{MPath: &tree.MPath{MPath1: "1"}})
-		_ = dao.DelNode(ctx, &tree.TreeNode{MPath: &tree.MPath{MPath1: "2"}})
+			// First make sure that we delete everything
+			_ = dao.DelNode(ctx, &tree.TreeNode{MPath: &tree.MPath{MPath1: "1"}})
+			_ = dao.DelNode(ctx, &tree.TreeNode{MPath: &tree.MPath{MPath1: "2"}})
 
-		// Run the test
-		scheme := strings.SplitN(tct[cnt].DSN[0], "://", 2)[0]
-		label := caser.String(scheme)
-		t.Run(label, f(dao))
-		cnt++
-	})
+			// Run the test
+			scheme := strings.SplitN(tct[cnt].DSN[0], "://", 2)[0]
+			label := caser.String(scheme)
+			t.Run(label, f(dao))
+			cnt++
+		})
+	}
 	if len(cache) > 0 && cache[0] {
 		cnt = 0
 		test.RunStorageTests(tct, t, func(ctx context.Context) {
@@ -700,6 +702,39 @@ func TestGenericFeatures(t *testing.T) {
 				So(parentNode.GetNode().GetEtag(), ShouldEqual, newEtag2)
 
 			})
+
+			// Getting a node last child
+			Convey("Test Getting the last child of a long node", t, func() {
+				err := dao.insertNode(ctx, manyChildren)
+				So(err, ShouldBeNil)
+				var cc []*tree.TreeNode
+				for i := 1; i <= 15; i++ {
+					ch := &tree.TreeNode{
+						Node: &tree.Node{
+							Uuid: fmt.Sprintf("uuid-%d", i),
+							Type: tree.NodeType_LEAF,
+							Etag: fmt.Sprintf("etag-%d", i),
+							Size: 12,
+						},
+						MPath: &tree.MPath{MPath1: fmt.Sprintf("1.3.%d", i)},
+						Name:  fmt.Sprintf("name-%d", i),
+					}
+					cc = append(cc, ch)
+					So(dao.insertNode(ctx, ch), ShouldBeNil)
+				}
+				So(dao.Flush(ctx, true), ShouldBeNil)
+
+				node, err := dao.getNodeLastChild(ctx, manyChildren.MPath)
+				So(err, ShouldBeNil)
+				So(node.GetName(), ShouldEqual, "name-15")
+				// DELETE CHILDREN AND PARENT
+				for _, ch := range cc {
+					So(dao.DelNode(ctx, ch), ShouldBeNil)
+				}
+				So(dao.DelNode(ctx, manyChildren), ShouldBeNil)
+				So(dao.Flush(ctx, true), ShouldBeNil)
+			})
+
 		}
 	}, true)
 }
@@ -900,6 +935,79 @@ func TestSecondArborescence(t *testing.T) {
 
 		}
 	}, true)
+}
+
+func TestMassiveArborescenceInSession(t *testing.T) {
+	ctx := context.Background()
+
+	testAll(t, func(dao testdao) func(t *testing.T) {
+		return func(t *testing.T) {
+
+			folders := []string{
+				"/ROOT",
+			}
+			files := []string{
+				"/ROOT",
+			}
+
+			Convey("Load Folders Tree from file", t, func() {
+
+				readFile, err := os.Open("./testdata/core-folders.txt")
+
+				if err != nil {
+					fmt.Println(err)
+				}
+				fileScanner := bufio.NewScanner(readFile)
+				fileScanner.Split(bufio.ScanLines)
+
+				for fileScanner.Scan() {
+					line := fileScanner.Text()
+					folders = append(folders, "/ROOT/"+line)
+				}
+
+				So(len(folders), ShouldBeGreaterThan, 2)
+			})
+
+			Convey("Load Files Tree from file", t, func() {
+
+				readFile, err := os.Open("./testdata/core-files.txt")
+
+				if err != nil {
+					fmt.Println(err)
+				}
+				fileScanner := bufio.NewScanner(readFile)
+				fileScanner.Split(bufio.ScanLines)
+
+				for fileScanner.Scan() {
+					line := fileScanner.Text()
+					files = append(files, "/ROOT/"+line)
+				}
+			})
+
+			Convey("Create Nodes", t, func() {
+
+				for _, pa := range folders {
+					//t.Logf("Adding folder %s", pa)
+					_, _, err := dao.GetOrCreateNodeByPath(ctx, pa, &tree.Node{Uuid: uuid.New(), Type: tree.NodeType_COLLECTION})
+					So(err, ShouldBeNil)
+				}
+
+				e := dao.Flush(ctx, true)
+				So(e, ShouldBeNil)
+
+				for _, pa := range files {
+					//t.Logf("Adding files %s", pa)
+					_, _, err := dao.GetOrCreateNodeByPath(ctx, pa, &tree.Node{Uuid: uuid.New(), Type: tree.NodeType_LEAF})
+					So(err, ShouldBeNil)
+				}
+
+				e = dao.Flush(ctx, true)
+				So(e, ShouldBeNil)
+
+			})
+
+		}
+	}, true, true)
 }
 
 func TestOrdering(t *testing.T) {

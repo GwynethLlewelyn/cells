@@ -43,6 +43,7 @@ type Helper interface {
 	HashParent(nameKey string, levelKey string, mpathes ...string) string
 	ApplyOrderedUpdates(db *gorm.DB, tableName string, sets []OrderedUpdate, wheres []sql.NamedArg) (int64, error)
 	MPathOrdering(...string) string
+	MPathOrderingLastInteger(...string) string
 	FirstAvailableSlot(tableName string, mpath *tree.MPath, levelKey string, mpathes ...string) (string, []any, int64, bool)
 }
 
