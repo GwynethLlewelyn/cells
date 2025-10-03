@@ -1112,6 +1112,9 @@ func toMPath(ctx context.Context, dao DAO, targetNode tree.ITreeNode, parentNode
 
 	// We're done - ending the recursive
 	if len(remainingPath) == 0 {
+		if parentNode == nil {
+			return nil, nil, errors.WithStack(errors.NodeNotFound)
+		}
 		return parentNode, []tree.ITreeNode{}, nil
 	}
 

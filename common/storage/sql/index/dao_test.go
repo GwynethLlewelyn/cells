@@ -186,6 +186,8 @@ func TestPath(t *testing.T) {
 				}
 				node0, err0 := dao.GetNodeByPath(ctx, "/")
 				So(err0, ShouldNotBeNil)
+				node0, err0 = dao.GetNodeByPath(ctx, "")
+				So(err0, ShouldNotBeNil)
 				So(errors.Is(err0, errors.NodeNotFound), ShouldBeTrue)
 				So(node0, ShouldBeNil)
 
