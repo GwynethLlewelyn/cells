@@ -56,7 +56,6 @@ import (
 	"github.com/pydio/cells/v5/common/utils/uuid"
 
 	_ "github.com/pydio/cells/v5/common/utils/cache/bigcache"
-	_ "github.com/pydio/cells/v5/common/utils/cache/gocache"
 	_ "github.com/pydio/cells/v5/common/utils/cache/redis"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -737,6 +736,87 @@ func TestGenericFeatures(t *testing.T) {
 				So(dao.Flush(ctx, true), ShouldBeNil)
 			})
 
+		}
+	}, true)
+}
+
+func TestRedisCache(t *testing.T) {
+	ctx := context.Background()
+
+	testAll(t, func(dao testdao) func(t *testing.T) {
+		return func(t *testing.T) {
+			// s, err := miniredis.Run()
+			// if err != nil {
+			// 	// TODO skip test
+			// 	t.Skip("Unable to start miniredis")
+			// }
+			// defer s.Close()
+			// cache_helper.SetStaticResolver(s.Addr(), &redis.URLOpener{})
+			// defer cache_helper.SetStaticResolver("redis://", nil)
+
+			currentDAO := NewFolderSizeCacheDAO(dao)
+			root, _ := currentDAO.GetNodeByUUID(ctx, "ROOT")
+
+			parent, _ := currentDAO.GetNodeByMPath(ctx, mockLongNodeMPath)
+
+			So(parent.GetNode().GetSize(), ShouldEqual, mockLongNodeChild1.GetNode().GetSize()+mockLongNodeChild2.GetNode().GetSize())
+			So(root.GetNode().GetSize(), ShouldEqual, parent.GetNode().GetSize())
+
+			// Add new node and check size
+			newNode := &tree.TreeNode{}
+			newNode.SetNode(&tree.Node{
+				Uuid: "newNodeFolderSize",
+				Type: tree.NodeType_LEAF,
+				Size: 37,
+			})
+			newNode.SetMPath(mockLongNode.GetMPath().Append(37))
+			newNode.SetName("newNodeFolderSize")
+
+			err := currentDAO.insertNode(ctx, newNode)
+			So(err, ShouldBeNil)
+
+			So(currentDAO.Flush(ctx, true), ShouldBeNil)
+
+			root, _ = currentDAO.GetNodeByUUID(ctx, "ROOT")
+			parent, _ = currentDAO.GetNodeByMPath(ctx, mockLongNodeMPath)
+			log.Logger(ctx).Info("After insert and flush")
+			log.Logger(ctx).Info("Parent size", zap.Int64("size", int64(parent.GetNode().GetSize())))
+			log.Logger(ctx).Info("Child1 size", zap.Int64("size", int64(mockLongNodeChild1.GetNode().GetSize())))
+			log.Logger(ctx).Info("Child2 size", zap.Int64("size", int64(mockLongNodeChild2.GetNode().GetSize())))
+			log.Logger(ctx).Info("New node size", zap.Int64("size", int64(newNode.GetNode().GetSize())))
+			log.Logger(ctx).Info("Root size", zap.Int64("size", int64(root.GetNode().GetSize())))
+
+			So(parent.GetNode().GetSize(), ShouldEqual, mockLongNodeChild1.GetNode().GetSize()+mockLongNodeChild2.GetNode().GetSize()+newNode.GetNode().GetSize())
+			So(root.GetNode().GetSize(), ShouldEqual, parent.GetNode().GetSize())
+			// TODO Assert mocked redis contains the key
+
+			// Move the node and check the size
+			movedNewNode := &tree.TreeNode{}
+			movedNewNode.SetNode(&tree.Node{
+				Uuid: "newNodeFolderSize",
+				Type: tree.NodeType_LEAF,
+				Size: 100,
+			})
+			movedNewNode.SetMPath(root.GetMPath().Append(100))
+			movedNewNode.SetName("newNodeFolderSize")
+
+			err = currentDAO.insertNode(ctx, movedNewNode)
+			So(err, ShouldBeNil)
+
+			root, _ = currentDAO.GetNodeByUUID(ctx, "ROOT")
+			parent, _ = currentDAO.GetNodeByMPath(ctx, mockLongNodeMPath)
+
+			So(parent.GetNode().GetSize(), ShouldEqual, mockLongNodeChild1.GetNode().GetSize()+mockLongNodeChild2.GetNode().GetSize()+movedNewNode.GetNode().GetSize())
+			So(root.GetNode().GetSize(), ShouldEqual, parent.GetNode().GetSize())
+			// TODO Restore previous DAO
+			err = currentDAO.DelNode(ctx, newNode)
+			So(err, ShouldBeNil)
+
+			root, _ = currentDAO.GetNodeByUUID(ctx, "ROOT")
+			parent, _ = currentDAO.GetNodeByMPath(ctx, mockLongNodeMPath)
+
+			So(parent.GetNode().GetSize(), ShouldEqual, mockLongNodeChild1.GetNode().GetSize()+mockLongNodeChild2.GetNode().GetSize())
+			So(root.GetNode().GetSize(), ShouldEqual, parent.GetNode().GetSize())
 		}
 	}, true)
 }
