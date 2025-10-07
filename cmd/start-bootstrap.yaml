@@ -44,7 +44,7 @@ servers:
   generic:
     type: generic
     services:
-      - filter: "{{ .Name }} ~= pydio\\.generic\\..*"
+      - filter: "{{ .Name }} ~= pydio\\.generic\\..* or {{ .Name }} ~= pydio\\.gateway-generic\\..*"
   grpc-external:
     type: grpc+auth+tls
     listener: grpc2
