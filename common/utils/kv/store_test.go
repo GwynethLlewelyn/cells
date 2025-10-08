@@ -11,7 +11,6 @@ import (
 )
 
 func TestMemory(t *testing.T) {
-
 	store := NewStore()
 
 	tests := []struct {
@@ -81,16 +80,68 @@ func TestMemory(t *testing.T) {
 			getKey:        "config/serverDetails/0/port",
 			expectedValue: 8080,
 		},
+
+		// --- New deletion-related tests ---
+		{
+			name:     "Remove key from map by setting to nil",
+			setKey:   "config/db/password",
+			setValue: nil,
+			getKey:   "config/db/password",
+			// Since password key is deleted, it should not exist anymore
+			expectGetError: true,
+		},
+		{
+			name:     "Remove element from slice via nil assignment",
+			setKey:   "config/servers/1",
+			setValue: nil,
+			getKey:   "config/servers/1",
+			// Element should be removed
+			expectGetError: true,
+		},
+		{
+			name:          "Add element after deletion to ensure re-expansion works",
+			setKey:        "config/servers/1",
+			setValue:      "server2b",
+			getKey:        "config/servers/1",
+			expectedValue: "server2b",
+		},
+		{
+			name:   "Shorter slice replaces longer slice (removes tail)",
+			setKey: "config/servers",
+			setValue: []interface{}{
+				"server1", "server2b",
+			},
+			getKey:        "config/servers",
+			expectedValue: []interface{}{"server1", "server2b"},
+		},
+		{
+			name:           "Deleted element index should not exist after truncation",
+			getKey:         "config/servers/2",
+			expectGetError: true,
+		},
+
+		// --- Deeply nested deletions ---
+		{
+			name:           "Remove key inside map within slice",
+			setKey:         "config/serverDetails/0/port",
+			setValue:       nil,
+			getKey:         "config/serverDetails/0/port",
+			expectGetError: true,
+		},
+		{
+			name:          "Re-add deleted key inside nested map",
+			setKey:        "config/serverDetails/0/port",
+			setValue:      9090,
+			getKey:        "config/serverDetails/0/port",
+			expectedValue: 9090,
+		},
 	}
 
-	// Run test cases
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.setKey != "" {
-				// Perform the set operation
 				defer func() {
 					if r := recover(); r != nil {
-						// Handle panics gracefully for invalid test cases
 						if !tt.expectGetError {
 							assert.Nil(t, r, "Unexpected panic in set")
 						} else {
@@ -101,7 +152,6 @@ func TestMemory(t *testing.T) {
 				store.Val(tt.setKey).Set(tt.setValue)
 			}
 
-			// Perform the get operation
 			result := store.Val(tt.getKey).Get()
 			if tt.expectGetError {
 				assert.Nil(t, result, "Expected nil result for error case")
