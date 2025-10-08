@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -139,13 +140,31 @@ func varsToTLSConfig(vars map[string]string) (*tls.Config, error) {
 }
 
 func OpenPool(ctx context.Context, uu string) (storage.Storage, error) {
-	p, err := openurl.OpenPool(ctx, []string{uu}, func(ctx context.Context, dsnStr string) (*gorm.DB, error) {
+	connPool, err := openurl.OpenPool[*sql.DB](ctx, []string{uu}, func(ctx context.Context, dsnStr string) (*sql.DB, error) {
 		dsn, er := NewStorageDSN(dsnStr)
 		if er != nil {
 			return nil, er
 		}
 
 		conn, err := dsn.OpenDB(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		return conn, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	p, err := openurl.OpenPool(ctx, []string{uu}, func(ctx context.Context, dsnStr string) (*gorm.DB, error) {
+		dsn, er := NewStorageDSN(dsnStr)
+		if er != nil {
+			return nil, er
+		}
+
+		// Sending without resolution data so we always resolve to the same basic connection
+		conn, err := connPool.Get(ctx)
 		if err != nil {
 			return nil, err
 		}
