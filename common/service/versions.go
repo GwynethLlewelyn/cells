@@ -229,7 +229,7 @@ func applyMigrations(ctx context.Context, current *version.Version, target *vers
 	isFirstRun := current.Equal(FirstRun())
 	for _, m := range migrations {
 		// ignore runAlways, already gathered before
-		if m.TargetVersion.Equal(runAlways) {
+		if m.TargetVersion == runAlways {
 			continue
 		}
 		// if AllUpdates && firstRun, consider it as a FirstRun() and replace it to make sure it
