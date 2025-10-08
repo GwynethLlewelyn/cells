@@ -334,6 +334,16 @@ func merge(dst any, src any) (any, error) {
 			}
 		}
 
+		// Removing those that are in dstV that are not in srcV
+		for i := len(srcV); i < len(dstV); i++ {
+			if i+1 == len(dstV) {
+				s = append(s[:i])
+			} else {
+				s = append(s[:i], s[i+1:]...)
+			}
+		}
+
+		// Adding those that are in srcV that are not in dstV
 		for i := len(dstV); i < len(srcV); i++ {
 			s = append(s, srcV[i])
 		}
