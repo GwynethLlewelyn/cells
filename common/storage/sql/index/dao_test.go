@@ -747,6 +747,7 @@ func TestRedisCache(t *testing.T) {
 		return func(t *testing.T) {
 
 			Convey("Test Getting the folders cumulated Size with Redis Cache", t, func() {
+				// Arrange
 				currentDAO := NewFolderSizeCacheDAO(dao)
 				// Add new node and check size
 				newNode := &tree.TreeNode{}
@@ -757,8 +758,9 @@ func TestRedisCache(t *testing.T) {
 				})
 				newNode.SetMPath(mockLongNode.GetMPath().Append(37))
 				newNode.SetName("newNodeFolderSize")
-
+				// Act
 				err := currentDAO.insertNode(ctx, newNode)
+				// Assert
 				So(err, ShouldBeNil)
 
 				So(currentDAO.Flush(ctx, true), ShouldBeNil)
@@ -767,13 +769,14 @@ func TestRedisCache(t *testing.T) {
 
 				So(root, ShouldNotBeNil)
 				So(root.GetNode().GetSize(), ShouldEqual, 37)
-
+				// Arrange moving nodes
 				additionalNode := &tree.TreeNode{}
 				additionalNode.SetNode(&tree.Node{
 					Uuid: "additionalNodeFolderSize",
 					Type: tree.NodeType_LEAF,
 					Size: 63,
 				})
+				// Act
 				additionalNode.SetMPath(additionalNode.GetMPath().Append(63))
 				additionalNode.SetName("additionalNodeFolderSize")
 
@@ -781,7 +784,7 @@ func TestRedisCache(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				root, _ = currentDAO.GetNodeByMPath(ctx, additionalNode.GetMPath())
-
+				// Assert
 				So(root, ShouldNotBeNil)
 				So(root.GetNode().GetSize(), ShouldEqual, 37)
 				// TODO check parent sizes
