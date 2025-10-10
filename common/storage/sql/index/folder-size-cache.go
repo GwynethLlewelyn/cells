@@ -213,7 +213,7 @@ func (dao *FolderSizeCacheSQL) invalidateMPathHierarchy(ctx context.Context, mpa
 
 // Compute sizes from children files - Does not handle lock, should be
 // used by other functions handling lock
-func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNode) (err error) {
+func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNode) error {
 	mpath := node.GetMPath().ToString()
 	ca, err := cache_helper.ResolveCache(ctx, common.CacheTypeShared, folderSizeCacheConfig)
 	if err != nil {
@@ -234,9 +234,9 @@ func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNo
 	node.GetNode().SetSize(int64(size))
 
 	// using a string representation for byte size since redis does not support int64.
-	err = ca.Set(mpath, []byte(strconv.FormatInt(int64(size), 10)))
-	if err != nil {
+	if err = ca.Set(mpath, []byte(strconv.FormatInt(int64(size), 10))); err != nil {
 		return err
 	}
-	return
+	
+	return nil
 }
