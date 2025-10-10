@@ -301,6 +301,18 @@ func (u *umClient) ExtractAndPut(ctx context.Context, resolved *tree.Node, ctxWo
 }
 
 func (u *umClient) DraftMetaNamespace(ctx context.Context, ctxWorkspace *idm.Workspace) (string, bool) {
+	cacheKey := "draft-meta-namespace"
+	if cl, ok := claim.FromContext(ctx); ok {
+		cacheKey += "-" + cl.Subject
+	}
+	if ctxWorkspace != nil {
+		cacheKey += "-" + ctxWorkspace.GetUUID()
+	}
+	ka := cache_helper.MustResolveCache(ctx, common.CacheTypeLocal, cache.Config{Prefix: "draft-ns", Eviction: "1h", CleanWindow: "2h"})
+	var ns string
+	if ka.Get(cacheKey, &ns) {
+		return ns, ns != ""
+	}
 	// Global config first
 	var enabled bool
 	var draftNS string
@@ -317,13 +329,13 @@ func (u *umClient) DraftMetaNamespace(ctx context.Context, ctxWorkspace *idm.Wor
 			return "", false
 		}
 		aclParams := acl.FlattenedFrontValues().Val("parameters", frontPluginName)
-		log.Logger(ctx).Debug("Checking default metadata " + aclParams.String())
 		scopes := permissions.FrontValuesScopesFromWorkspaces([]*idm.Workspace{ctxWorkspace})
 		for _, s := range scopes {
 			enabled = aclParams.Val(frontPluginDraftEnabled, s).Default(enabled).Bool()
 			draftNS = aclParams.Val(frontPluginDraftMeta, s).Default(draftNS).String()
 		}
 	}
+	_ = ka.Set(cacheKey, draftNS)
 	return draftNS, enabled
 }
 
