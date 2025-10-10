@@ -217,7 +217,7 @@ func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNo
 	mpath := node.GetMPath().ToString()
 	ca, err := cache_helper.ResolveCache(ctx, common.CacheTypeShared, folderSizeCacheConfig)
 	if err != nil {
-		return
+		return err
 	}
 
 	if data, ok := ca.GetBytes(mpath); ok && data != nil {
@@ -228,7 +228,7 @@ func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNo
 
 	size, err := dao.GetNodeChildrenSize(ctx, node.GetMPath())
 	if err != nil {
-		return
+		return err
 	}
 
 	node.GetNode().SetSize(int64(size))
@@ -237,6 +237,6 @@ func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNo
 	if err = ca.Set(mpath, []byte(strconv.FormatInt(int64(size), 10))); err != nil {
 		return err
 	}
-	
+
 	return nil
 }
