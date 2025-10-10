@@ -231,9 +231,11 @@ func (c *Abstract) Watch(recursivePath string) (*model.WatchObject, error) {
 		ConnectionInfo: c.watchConn,
 	}
 	go func() {
-		defer close(finished)
-		defer close(obj.EventInfoChan)
-		defer close(c.watchConn)
+		defer func() {
+			close(obj.EventInfoChan)
+			close(c.watchConn)
+			cancel()
+		}()
 		for {
 			select {
 			case changeEvent := <-changes:
@@ -253,7 +255,6 @@ func (c *Abstract) Watch(recursivePath string) (*model.WatchObject, error) {
 			case <-obj.DoneChan:
 				log.Logger(c.GlobalCtx).Info("Stopping event watcher")
 				c.watchCtxCancelled = true
-				cancel()
 				return
 			}
 		}
