@@ -238,5 +238,5 @@ func (dao *FolderSizeCacheSQL) folderSize(ctx context.Context, node tree.ITreeNo
 	if err != nil {
 		return err
 	}
-	return nil
+	return
 }

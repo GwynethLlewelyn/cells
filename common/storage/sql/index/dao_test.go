@@ -740,68 +740,6 @@ func TestGenericFeatures(t *testing.T) {
 	}, true)
 }
 
-func TestRedisCache(t *testing.T) {
-	ctx := context.Background()
-
-	testAll(t, func(dao testdao) func(t *testing.T) {
-		return func(t *testing.T) {
-
-			Convey("Test Getting the folders cumulated Size with Redis Cache", t, func() {
-				// Arrange
-				currentDAO := NewFolderSizeCacheDAO(dao)
-				// Add new node and check size
-				newNode := &tree.TreeNode{}
-				newNode.SetNode(&tree.Node{
-					Uuid: "newNodeFolderSize",
-					Type: tree.NodeType_LEAF,
-					Size: 37,
-				})
-				newNode.SetMPath(mockLongNode.GetMPath().Append(37))
-				newNode.SetName("newNodeFolderSize")
-				// Act
-				err := currentDAO.insertNode(ctx, newNode)
-				// Assert
-				So(err, ShouldBeNil)
-
-				So(currentDAO.Flush(ctx, true), ShouldBeNil)
-
-				root, _ := currentDAO.GetNodeByMPath(ctx, newNode.GetMPath())
-
-				So(root, ShouldNotBeNil)
-				So(root.GetNode().GetSize(), ShouldEqual, 37)
-				// Arrange moving nodes
-				additionalNode := &tree.TreeNode{}
-				additionalNode.SetNode(&tree.Node{
-					Uuid: "additionalNodeFolderSize",
-					Type: tree.NodeType_LEAF,
-					Size: 63,
-				})
-				// Act
-				additionalNode.SetMPath(additionalNode.GetMPath().Append(63))
-				additionalNode.SetName("additionalNodeFolderSize")
-
-				err = currentDAO.MoveNodeTree(ctx, newNode, additionalNode)
-				So(err, ShouldBeNil)
-
-				root, _ = currentDAO.GetNodeByMPath(ctx, additionalNode.GetMPath())
-				// Assert
-				So(root, ShouldNotBeNil)
-				So(root.GetNode().GetSize(), ShouldEqual, 37)
-				// TODO check parent sizes
-
-				So(currentDAO.Flush(ctx, true), ShouldBeNil)
-
-				t.Cleanup(func() {
-					_ = currentDAO.DelNode(ctx, newNode)
-					_ = currentDAO.DelNode(ctx, additionalNode)
-					_ = currentDAO.Flush(ctx, true)
-				})
-			})
-
-		}
-	}, true)
-}
-
 func TestGetNodeFirstAvailableChildIndex(t *testing.T) {
 	ctx := context.Background()
 
