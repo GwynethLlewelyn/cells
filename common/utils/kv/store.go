@@ -323,6 +323,11 @@ func merge(dst any, src any) (any, error) {
 			return src, nil
 		}
 
+		// Removing those that are in dstV that are not in srcV
+		if len(dstV) > len(srcV) {
+			dstV = dstV[:len(srcV)]
+		}
+
 		s := slices.Clone(dstV)
 		for k, v := range dstV {
 			if len(srcV) > k {
@@ -331,15 +336,6 @@ func merge(dst any, src any) (any, error) {
 				} else {
 					s[k] = merged
 				}
-			}
-		}
-
-		// Removing those that are in dstV that are not in srcV
-		for i := len(srcV); i < len(dstV); i++ {
-			if i+1 == len(dstV) {
-				s = append(s[:i])
-			} else {
-				s = append(s[:i], s[i+1:]...)
 			}
 		}
 
