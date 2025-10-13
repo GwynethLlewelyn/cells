@@ -27,8 +27,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-
-	"github.com/pydio/cells/v5/common/errors"
 )
 
 type Collection struct {
@@ -59,26 +57,22 @@ func (m Model) Init(ctx context.Context, db *Database) error {
 		}
 		name := col.Name
 		if e := db.CreateCollection(ctx, name, opts); e != nil {
-			var commandError mongo.CommandError
-			if !errors.As(e, &commandError) {
+			if _, ok := e.(mongo.CommandError); !ok {
 				return e
+			} else {
+				// Collection already exists
 			}
 		} else {
 			for _, model := range col.Indexes {
 				keys := bson.D{}
-				var iOpts *options.IndexOptions
 				for key, sort := range model {
 					if sort == 2 {
 						keys = append(keys, primitive.E{Key: key, Value: "2dsphere"})
 					} else {
 						keys = append(keys, primitive.E{Key: key, Value: sort})
 					}
-					if col.IDName != "" && key == col.IDName {
-						b := true
-						iOpts = &options.IndexOptions{Unique: &b}
-					}
 				}
-				if _, e = db.Collection(name).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: iOpts}); e != nil {
+				if _, e := db.Collection(name).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys}); e != nil {
 					return e
 				} else {
 					// fmt.Println("Successfully created index " + iName)
