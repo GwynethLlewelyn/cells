@@ -562,17 +562,23 @@ func (d *cellDsn) cleanDSN(dsn string, parserType string) (string, error) {
 
 		d.hosts = []string{}
 		for _, host := range strings.Split(hosts, ",") {
-			replicaHost, replicaPort, err := net2.SplitHostPort(host)
-			if err != nil {
-				continue
+			if !strings.Contains(host, ":") {
+				hostConf := conf.Clone()
+				hostConf.Addr = net2.JoinHostPort(host, port)
+				d.hosts = append(d.hosts, hostConf.FormatDSN())
+			} else {
+				replicaHost, replicaPort, err := net2.SplitHostPort(host)
+				if err != nil {
+					continue
+				}
+				// Using port defined for all hosts
+				if replicaPort == "" {
+					replicaPort = port
+				}
+				hostConf := conf.Clone()
+				hostConf.Addr = net2.JoinHostPort(replicaHost, replicaPort)
+				d.hosts = append(d.hosts, hostConf.FormatDSN())
 			}
-			// Using port defined for all hosts
-			if replicaPort == "" {
-				replicaPort = port
-			}
-			hostConf := conf.Clone()
-			hostConf.Addr = net2.JoinHostPort(replicaHost, replicaPort)
-			d.hosts = append(d.hosts, hostConf.FormatDSN())
 		}
 
 		return conf.FormatDSN(), nil
