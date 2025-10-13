@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
+	"gorm.io/plugin/dbresolver"
 	otel "gorm.io/plugin/opentelemetry/tracing"
 
 	"github.com/pydio/cells/v5/common/crypto"
@@ -140,7 +141,7 @@ func varsToTLSConfig(vars map[string]string) (*tls.Config, error) {
 }
 
 func OpenPool(ctx context.Context, uu string) (storage.Storage, error) {
-	connPool, err := openurl.OpenPool[*sql.DB](ctx, []string{uu}, func(ctx context.Context, dsnStr string) (*sql.DB, error) {
+	connPool, err := openurl.OpenPool[[]*sql.DB](ctx, []string{uu}, func(ctx context.Context, dsnStr string) ([]*sql.DB, error) {
 		dsn, er := NewStorageDSN(dsnStr)
 		if er != nil {
 			return nil, er
@@ -164,33 +165,55 @@ func OpenPool(ctx context.Context, uu string) (storage.Storage, error) {
 		}
 
 		// Sending without resolution data so we always resolve to the same basic connection
-		conn, err := connPool.Get(ctx)
+		conns, err := connPool.Get(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		var dialect gorm.Dialector
-		switch dsn.Driver() {
-		case MySQLDriver:
-			dialect = &Dialector{
-				Dialector: mysql.New(mysql.Config{
-					Conn: conn,
-				}),
-				Helper: &mysqlHelper{},
-			}
-		case PostgreDriver:
-			dialect = &Dialector{
-				Dialector: postgres.New(postgres.Config{
-					Conn: conn,
-				}),
-				Helper: &postgresHelper{},
-			}
-		case SqliteDriver:
-			dialect = &Dialector{
-				Dialector: &sqlite.Dialector{
-					Conn: conn,
-				},
-				Helper: &sqliteHelper{},
+		var sourcesDialect []gorm.Dialector
+		var replicasDialect []gorm.Dialector
+
+		for _, conn := range conns {
+			switch dsn.Driver() {
+			case MySQLDriver:
+				if len(sourcesDialect) == 0 {
+					sourcesDialect = append(sourcesDialect, &Dialector{
+						Dialector: mysql.New(mysql.Config{
+							Conn: conn,
+						}),
+						Helper: &mysqlHelper{},
+					})
+				} else {
+					replicasDialect = append(replicasDialect, &Dialector{
+						Dialector: mysql.New(mysql.Config{
+							Conn: conn,
+						}),
+						Helper: &mysqlHelper{},
+					})
+				}
+			case PostgreDriver:
+				if len(sourcesDialect) == 0 {
+					sourcesDialect = append(sourcesDialect, &Dialector{
+						Dialector: postgres.New(postgres.Config{
+							Conn: conn,
+						}),
+						Helper: &postgresHelper{},
+					})
+				} else {
+					replicasDialect = append(replicasDialect, &Dialector{
+						Dialector: postgres.New(postgres.Config{
+							Conn: conn,
+						}),
+						Helper: &mysqlHelper{},
+					})
+				}
+			case SqliteDriver:
+				sourcesDialect = append(sourcesDialect, &Dialector{
+					Dialector: &sqlite.Dialector{
+						Conn: conn,
+					},
+					Helper: &sqliteHelper{},
+				})
 			}
 		}
 
@@ -208,7 +231,11 @@ func OpenPool(ctx context.Context, uu string) (storage.Storage, error) {
 			logLevel = logger.Info
 		}
 
-		db, err := gorm.Open(dialect, &gorm.Config{
+		if len(sourcesDialect) == 0 {
+			return nil, fmt.Errorf("no dialect found for %s", uu)
+		}
+
+		db, err := gorm.Open(sourcesDialect[0], &gorm.Config{
 			TranslateError: true,
 			Logger: NewLogger(logger.Config{
 				SlowThreshold:             time.Second, // Slow SQL threshold
@@ -228,6 +255,15 @@ func OpenPool(ctx context.Context, uu string) (storage.Storage, error) {
 
 		if err != nil {
 			return nil, err
+		}
+
+		if len(replicasDialect) > 0 {
+			db.Use(dbresolver.Register(dbresolver.Config{
+				Sources:           sourcesDialect,
+				Replicas:          replicasDialect,
+				Policy:            dbresolver.RandomPolicy{},
+				TraceResolverMode: true,
+			}))
 		}
 
 		// also replace Default
