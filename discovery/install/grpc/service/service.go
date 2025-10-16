@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-logr/zapr"
 	"go.uber.org/zap"
@@ -30,6 +31,7 @@ import (
 	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/client/commons/idmc"
 	grpc2 "github.com/pydio/cells/v5/common/client/grpc"
+	cconfig "github.com/pydio/cells/v5/common/config"
 	"github.com/pydio/cells/v5/common/proto/config"
 	"github.com/pydio/cells/v5/common/proto/idm"
 	"github.com/pydio/cells/v5/common/proto/install"
@@ -38,7 +40,10 @@ import (
 	"github.com/pydio/cells/v5/common/server/generic"
 	"github.com/pydio/cells/v5/common/service"
 	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 	gh "github.com/pydio/cells/v5/discovery/install/grpc"
+	"github.com/pydio/cells/v5/discovery/install/lib"
 )
 
 var Name = common.ServiceGrpcNamespace_ + common.ServiceInstall
@@ -375,6 +380,51 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req reconcile.Reque
 	}
 	if _, err := cli.Save(ctx, &config.SaveRequest{User: "controller", Message: "Update to the custom configs"}); err != nil {
 		return reconcile.Result{}, err
+	}
+
+	cp, err := openurl.OpenPool(ctx, []string{"grpc://"}, func(ctx context.Context, url string) (cconfig.Store, error) {
+		c, err := cconfig.OpenStore(ctx, "grpc://")
+		if err != nil {
+			return nil, err
+		}
+
+		return c, nil
+	})
+
+	ctx = propagator.With(ctx, cconfig.ContextKey, cp)
+
+	// Merge with GetDefaults()
+	err = lib.MergeWithDefaultConfig(confFromFile)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("Could not merge conf with defaults", err)
+	}
+
+	// Check if pre-configured DB is up and running
+	nbRetry := 20
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for attempt := 1; attempt <= nbRetry; attempt++ {
+		if res, _ := lib.PerformCheck(ctx, "DB", confFromFile); res.Success {
+			break
+		}
+		if attempt == nbRetry {
+			logger.Error("[Error] Cannot connect to database, you should double check your server and your connection configuration.")
+			return reconcile.Result{}, fmt.Errorf("No DB. Aborting...")
+		}
+		logger.Error("... Cannot connect to database, wait before retry")
+		select {
+		case <-ctx.Done():
+			logger.Error("[Error] Retries interrupted by user, aborting...")
+			return reconcile.Result{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+
+	err = lib.Install(ctx, confFromFile, lib.InstallDb, func(event *lib.InstallProgressEvent) {
+		logger.Info("Install progress", zap.String("ns", req.Namespace), zap.String("name", req.Name), zap.Any("event", event.Message))
+	})
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("error while performing installation: %s", err.Error())
 	}
 	// ------------------------------
 
