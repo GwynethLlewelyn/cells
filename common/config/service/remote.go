@@ -377,7 +377,7 @@ func (v *values) Set(value interface{}) error {
 	if _, err := v.cli.Set(v.ctx, &pb.SetRequest{
 		Namespace: v.id,
 		Path:      strings.Join(v.k, "/"),
-		Value:     &pb.Value{Data: b},
+		Value:     &pb.Value{Data: b, Format: "json"},
 	}); err != nil {
 		return err
 	}
