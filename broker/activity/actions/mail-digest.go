@@ -50,7 +50,6 @@ const (
 )
 
 type MailDigestAction struct {
-	common.RuntimeHolder
 	dryRun  bool
 	dryMail string
 }
@@ -81,7 +80,7 @@ func (m *MailDigestAction) GetName() string {
 }
 
 // Init passes parameters to a newly created instance.
-func (m *MailDigestAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (m *MailDigestAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if dR, ok := action.Parameters["dryRun"]; ok && dR == "true" {
 		m.dryRun = true
 	}

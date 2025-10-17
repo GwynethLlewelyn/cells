@@ -103,7 +103,7 @@ func (ex *ExtractAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (ex *ExtractAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (ex *ExtractAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if format, ok := action.Parameters["format"]; ok {
 		ex.format = format
 	}

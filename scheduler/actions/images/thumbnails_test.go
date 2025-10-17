@@ -48,13 +48,15 @@ func TestThumbnailExtractor_Init(t *testing.T) {
 	Convey("", t, func() {
 		action := &ThumbnailExtractor{}
 		job := &jobs.Job{}
+		ctx := context.Background()
+
 		// Test action without parameters
-		e := action.Init(job, &jobs.Action{})
+		e := action.Init(ctx, job, &jobs.Action{})
 		So(e, ShouldBeNil)
 		So(action.thumbSizes, ShouldResemble, map[string]int{"sm": 300})
 
 		// Test action with parameters
-		e = action.Init(job, &jobs.Action{
+		e = action.Init(ctx, job, &jobs.Action{
 			Parameters: map[string]string{
 				"ThumbSizes": "256,512",
 			},
@@ -145,7 +147,9 @@ func runThumbnailForFormat(t *testing.T, thumbSizes, sourceFile, extension strin
 
 	action := &ThumbnailExtractor{}
 	job := &jobs.Job{}
-	err := action.Init(job, &jobs.Action{
+	ctx := context.Background()
+
+	err := action.Init(ctx, job, &jobs.Action{
 		Parameters: map[string]string{
 			"ThumbSizes": thumbSizes,
 		},

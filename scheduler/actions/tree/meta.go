@@ -41,7 +41,6 @@ var (
 )
 
 type MetaAction struct {
-	common.RuntimeHolder
 	Client   tree.NodeReceiverClient
 	MetaJSON string
 }
@@ -84,10 +83,10 @@ func (c *MetaAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *MetaAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *MetaAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	if !nodes.IsUnitTestEnv {
-		c.Client = tree.NewNodeReceiverClient(grpc.ResolveConn(c.GetRuntimeContext(), common.ServiceMetaGRPC))
+		c.Client = tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC))
 	}
 	c.MetaJSON = action.Parameters["metaJSON"]
 

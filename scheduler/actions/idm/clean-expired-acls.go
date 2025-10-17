@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/client/commons/idmc"
 	"github.com/pydio/cells/v5/common/errors"
 	"github.com/pydio/cells/v5/common/forms"
@@ -20,7 +19,6 @@ var (
 )
 
 type CleanExpiredACLAction struct {
-	common.RuntimeHolder
 	expiredAfter  string
 	expiredBefore string
 }
@@ -72,7 +70,7 @@ func (c *CleanExpiredACLAction) GetName() string {
 }
 
 // Init passes parameters
-func (c *CleanExpiredACLAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CleanExpiredACLAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if ea, o := action.Parameters["expiredAfter"]; o {
 		c.expiredAfter = ea
 	}

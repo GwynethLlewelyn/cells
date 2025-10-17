@@ -99,7 +99,7 @@ func (c *DeleteAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *DeleteAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *DeleteAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	if co, ok := action.Parameters["childrenOnly"]; ok {
 		c.childrenOnlyParam = co

@@ -77,7 +77,6 @@ type ThumbnailsMeta struct {
 }
 
 type ThumbnailExtractor struct {
-	common.RuntimeHolder
 	thumbSizes map[string]int
 	metaClient tree.NodeReceiverClient
 	codec      encoding.ImageCodec
@@ -123,7 +122,7 @@ func (t *ThumbnailExtractor) GetName() string {
 }
 
 // Init passes parameters to the action.
-func (t *ThumbnailExtractor) Init(job *jobs.Job, action *jobs.Action) error {
+func (t *ThumbnailExtractor) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if action.Parameters != nil {
 		t.thumbSizes = make(map[string]int)
 		if params, ok := action.Parameters["ThumbSizes"]; ok {
@@ -138,7 +137,7 @@ func (t *ThumbnailExtractor) Init(job *jobs.Job, action *jobs.Action) error {
 		t.thumbSizes = map[string]int{"sm": 300}
 	}
 	if !nodes.IsUnitTestEnv {
-		t.metaClient = tree.NewNodeReceiverClient(grpc.ResolveConn(t.GetRuntimeContext(), common.ServiceMetaGRPC))
+		t.metaClient = tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC))
 	}
 	return nil
 }
@@ -203,7 +202,7 @@ func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes 
 	} else {
 		// Security in case Router is not transmitting nodes immutably
 		routerNode := proto.Clone(node).(*tree.Node)
-		router = getRouter(t.GetRuntimeContext())
+		router = getRouter(ctx)
 		reader, err = router.GetObject(ctx, routerNode, &models.GetRequestData{Length: -1})
 		errPath = routerNode.Path
 	}

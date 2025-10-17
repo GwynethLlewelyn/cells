@@ -120,7 +120,7 @@ func (c *CompressAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *CompressAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CompressAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if format, ok := action.Parameters["format"]; ok {
 		c.Format = format
 	} else {

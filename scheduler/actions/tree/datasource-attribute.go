@@ -17,7 +17,6 @@ var (
 )
 
 type datasourceAttributeAction struct {
-	common.RuntimeHolder
 	attName, attValue string
 }
 
@@ -62,7 +61,7 @@ func (d *datasourceAttributeAction) GetParametersForm(context.Context) *forms.Fo
 
 }
 
-func (d *datasourceAttributeAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (d *datasourceAttributeAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	for k, p := range action.Parameters {
 		switch k {
 		case "attName":

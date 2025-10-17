@@ -26,7 +26,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v5/common"
 	"github.com/pydio/cells/v5/common/forms"
 	"github.com/pydio/cells/v5/common/proto/jobs"
 	"github.com/pydio/cells/v5/common/proto/tree"
@@ -40,7 +39,6 @@ var (
 )
 
 type middlewareMetaAction struct {
-	common.RuntimeHolder
 	MetaJSON string
 }
 
@@ -82,7 +80,7 @@ func (c *middlewareMetaAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *middlewareMetaAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *middlewareMetaAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	c.MetaJSON = action.Parameters["metaJSON"]
 

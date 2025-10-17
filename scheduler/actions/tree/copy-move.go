@@ -129,7 +129,7 @@ func (c *CopyMoveAction) ProvidesProgress() bool {
 }
 
 // Init passes parameters to the action
-func (c *CopyMoveAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CopyMoveAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	if action.Parameters == nil {
 		return errors.WithMessage(errors.InvalidParameters, "Could not find parameters for CopyMove action")

@@ -97,7 +97,7 @@ func (c *SyncUsersAction) GetName() string {
 }
 
 // Init parses and validates parameters
-func (c *SyncUsersAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *SyncUsersAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	// Making sure oauth configs are up-to-date on this node
 	// TODO ?
 	// auth.InitConfiguration()

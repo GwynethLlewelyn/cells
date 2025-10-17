@@ -53,7 +53,6 @@ var (
 
 // WGetAction performs a wget command with the provided URL
 type WGetAction struct {
-	common.RuntimeHolder
 	Router     nodes.Client
 	SourceUrl  string
 	targetPath string
@@ -104,7 +103,7 @@ func (w *WGetAction) GetName() string {
 }
 
 // Init passes parameters
-func (w *WGetAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (w *WGetAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if action.Parameters["targetPath"] != "" {
 		w.targetPath = action.Parameters["targetPath"]
 	}
