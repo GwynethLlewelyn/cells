@@ -71,7 +71,7 @@ func (m *MailDigestAction) GetDescription(lang ...string) actions.ActionDescript
 }
 
 // GetParametersForm returns an UX Form
-func (m *MailDigestAction) GetParametersForm() *forms.Form {
+func (m *MailDigestAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

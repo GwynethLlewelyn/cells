@@ -56,7 +56,7 @@ func (c *CleanThumbsTask) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (c *CleanThumbsTask) GetParametersForm() *forms.Form {
+func (c *CleanThumbsTask) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

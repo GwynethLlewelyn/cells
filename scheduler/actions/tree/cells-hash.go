@@ -83,7 +83,7 @@ func (c *CellsHashAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns parameters
-func (c *CellsHashAction) GetParametersForm() *forms.Form {
+func (c *CellsHashAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{
 		Groups: []*forms.Group{
 			{

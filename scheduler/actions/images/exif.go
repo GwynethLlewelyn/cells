@@ -73,7 +73,7 @@ func (e *ExifProcessor) GetDescription(lang ...string) actions.ActionDescription
 }
 
 // GetParametersForm returns a UX form
-func (e *ExifProcessor) GetParametersForm() *forms.Form {
+func (e *ExifProcessor) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

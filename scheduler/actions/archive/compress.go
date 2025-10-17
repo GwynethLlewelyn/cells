@@ -82,7 +82,7 @@ func (c *CompressAction) GetDescription(lang ...string) actions.ActionDescriptio
 }
 
 // GetParametersForm returns a UX form
-func (c *CompressAction) GetParametersForm() *forms.Form {
+func (c *CompressAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

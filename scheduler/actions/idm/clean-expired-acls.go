@@ -41,7 +41,7 @@ func (c *CleanExpiredACLAction) GetDescription(lang ...string) actions.ActionDes
 }
 
 // GetParametersForm returns a UX form
-func (c *CleanExpiredACLAction) GetParametersForm() *forms.Form {
+func (c *CleanExpiredACLAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

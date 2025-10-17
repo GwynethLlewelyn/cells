@@ -104,7 +104,7 @@ type ProgressProviderAction interface {
 // DescriptionProviderAction has a human-readable label
 type DescriptionProviderAction interface {
 	GetDescription(lang ...string) ActionDescription
-	GetParametersForm() *forms.Form
+	GetParametersForm(ctx context.Context) *forms.Form
 }
 
 // ControllableAction Actions that implement this interface can eventually be stopped and/or paused+resumed

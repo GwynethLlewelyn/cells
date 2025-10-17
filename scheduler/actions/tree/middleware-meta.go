@@ -58,7 +58,7 @@ func (c *middlewareMetaAction) GetDescription(lang ...string) actions.ActionDesc
 	}
 }
 
-func (c *middlewareMetaAction) GetParametersForm() *forms.Form {
+func (c *middlewareMetaAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

@@ -99,7 +99,7 @@ func (t *ThumbnailExtractor) GetDescription(_ ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (t *ThumbnailExtractor) GetParametersForm() *forms.Form {
+func (t *ThumbnailExtractor) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

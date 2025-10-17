@@ -73,7 +73,7 @@ func (w *WGetAction) GetDescription(lang ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (w *WGetAction) GetParametersForm() *forms.Form {
+func (w *WGetAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

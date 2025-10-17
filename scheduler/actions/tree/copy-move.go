@@ -71,7 +71,7 @@ func (c *CopyMoveAction) GetDescription(_ ...string) actions.ActionDescription {
 	}
 }
 
-func (c *CopyMoveAction) GetParametersForm() *forms.Form {
+func (c *CopyMoveAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

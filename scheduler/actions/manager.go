@@ -89,10 +89,10 @@ func (m *ActionsManager) DescribeActions(languages ...string) map[string]ActionD
 }
 
 // LoadActionForm tries to load a forms.Form object that can be serialized for frontend
-func (m *ActionsManager) LoadActionForm(actionID string) (*forms.Form, error) {
+func (m *ActionsManager) LoadActionForm(ctx context.Context, actionID string) (*forms.Form, error) {
 	if action, ok := m.ActionById(actionID); ok {
 		if desc, ok := action.(DescriptionProviderAction); ok {
-			form := desc.GetParametersForm()
+			form := desc.GetParametersForm(ctx)
 			if form != nil {
 				return form, nil
 			}

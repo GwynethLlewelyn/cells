@@ -75,7 +75,7 @@ func (c *CaptureAction) GetDescription(lang ...string) actions.ActionDescription
 }
 
 // GetParametersForm returns a UX form
-func (c *CaptureAction) GetParametersForm() *forms.Form {
+func (c *CaptureAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

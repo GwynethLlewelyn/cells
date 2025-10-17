@@ -66,7 +66,7 @@ func (c *DeleteAction) GetDescription(_ ...string) actions.ActionDescription {
 	}
 }
 
-func (c *DeleteAction) GetParametersForm() *forms.Form {
+func (c *DeleteAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

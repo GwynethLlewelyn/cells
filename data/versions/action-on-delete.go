@@ -63,7 +63,7 @@ func (c *OnDeleteVersionsAction) GetDescription(lang ...string) actions.ActionDe
 	}
 }
 
-func (c *OnDeleteVersionsAction) GetParametersForm() *forms.Form {
+func (c *OnDeleteVersionsAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

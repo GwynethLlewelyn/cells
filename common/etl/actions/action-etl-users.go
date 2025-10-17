@@ -58,7 +58,7 @@ func (c *SyncUsersAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (c *SyncUsersAction) GetParametersForm() *forms.Form {
+func (c *SyncUsersAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

@@ -64,7 +64,7 @@ func (ex *ExtractAction) GetDescription(_ ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (ex *ExtractAction) GetParametersForm() *forms.Form {
+func (ex *ExtractAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

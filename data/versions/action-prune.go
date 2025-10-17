@@ -57,7 +57,7 @@ func (c *PruneVersionsAction) GetDescription(lang ...string) actions.ActionDescr
 	}
 }
 
-func (c *PruneVersionsAction) GetParametersForm() *forms.Form {
+func (c *PruneVersionsAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

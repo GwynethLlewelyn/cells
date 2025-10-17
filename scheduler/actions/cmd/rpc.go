@@ -67,7 +67,7 @@ func (c *RpcAction) GetDescription(lang ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (c *RpcAction) GetParametersForm() *forms.Form {
+func (c *RpcAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

@@ -68,7 +68,7 @@ func (c *PruneTokensAction) GetDescription(lang ...string) actions.ActionDescrip
 	}
 }
 
-func (c *PruneTokensAction) GetParametersForm() *forms.Form {
+func (c *PruneTokensAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

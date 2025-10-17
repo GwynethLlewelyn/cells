@@ -73,7 +73,7 @@ func (c *SyncSharesAction) GetDescription(lang ...string) actions.ActionDescript
 }
 
 // GetParametersForm returns a UX form
-func (c *SyncSharesAction) GetParametersForm() *forms.Form {
+func (c *SyncSharesAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

@@ -44,7 +44,7 @@ func (c *CleanUserDataAction) GetDescription(lang ...string) actions.ActionDescr
 }
 
 // GetParametersForm returns a UX form
-func (c *CleanUserDataAction) GetParametersForm() *forms.Form {
+func (c *CleanUserDataAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

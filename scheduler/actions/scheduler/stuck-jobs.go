@@ -57,7 +57,7 @@ func (c *PruneJobsAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (c *PruneJobsAction) GetParametersForm() *forms.Form {
+func (c *PruneJobsAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

@@ -63,7 +63,7 @@ func (c *VersionAction) GetDescription(lang ...string) actions.ActionDescription
 	}
 }
 
-func (c *VersionAction) GetParametersForm() *forms.Form {
+func (c *VersionAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 

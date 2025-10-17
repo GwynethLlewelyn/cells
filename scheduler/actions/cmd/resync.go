@@ -62,7 +62,7 @@ func (c *ResyncAction) GetDescription(lang ...string) actions.ActionDescription 
 }
 
 // GetParametersForm returns a UX form
-func (c *ResyncAction) GetParametersForm() *forms.Form {
+func (c *ResyncAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

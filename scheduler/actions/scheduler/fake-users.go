@@ -66,7 +66,7 @@ func (f *FakeUsersAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (f *FakeUsersAction) GetParametersForm() *forms.Form {
+func (f *FakeUsersAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{

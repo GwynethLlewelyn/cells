@@ -46,7 +46,7 @@ func (a *DeleteUsersAction) GetDescription(lang ...string) actions.ActionDescrip
 	}
 }
 
-func (a *DeleteUsersAction) GetParametersForm() *forms.Form {
+func (a *DeleteUsersAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{{Fields: []forms.Field{
 		&forms.FormField{
 			Name:        "login",

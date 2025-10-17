@@ -37,7 +37,7 @@ func (d *datasourceAttributeAction) GetDescription(lang ...string) actions.Actio
 	}
 }
 
-func (d *datasourceAttributeAction) GetParametersForm() *forms.Form {
+func (d *datasourceAttributeAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{
 		Groups: []*forms.Group{
 			{
