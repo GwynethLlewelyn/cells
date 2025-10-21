@@ -488,7 +488,7 @@ func (s *sqlimpl) Search(ctx context.Context, query service.Enquirer, users *[]i
 
 			q := user_model.Use(s.Session(ctx))
 
-			s.Session(ctx).Where(q.UserRole.UUID.Eq(userOrGroup.Uuid)).Find(&roles)
+			s.Session(ctx).Where(q.UserRole.UUID.Eq(userOrGroup.Uuid)).Order("weight").Find(&roles)
 
 			for _, role := range roles {
 				userOrGroup.Roles = append(userOrGroup.Roles, &idm.Role{Uuid: role.Role, Label: role.Role})
