@@ -25,6 +25,7 @@ import (
 	"image/color"
 	"io"
 
+	"github.com/disintegration/imageorient"
 	"github.com/disintegration/imaging"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -39,6 +40,7 @@ const (
 	BMP
 	WEBP
 	TIFF
+	GIF
 )
 
 // ResizeFilter represents the resizing algorithm
@@ -82,7 +84,13 @@ func NewImageCodec(fileExt string) ImageCodec {
 
 // Decode reads an image from the provided reader
 func (c defaultCodec) Decode(reader io.Reader) (image.Image, error) {
-	return imaging.Decode(reader)
+	// Formats that don't support EXIF, so we avoid the extra processing
+	if c.format == GIF || c.format == BMP {
+		return imaging.Decode(reader)
+	}
+
+	img, _, err := imageorient.Decode(reader)
+	return img, err
 }
 
 // Encode writes an image to the provided writer in the specified format
@@ -139,6 +147,8 @@ func extensionToFormat(ext string) ImageFormat {
 		return WEBP
 	case ".tiff", ".tif":
 		return TIFF
+	case ".gif":
+		return GIF
 	default:
 		return JPEG
 	}
