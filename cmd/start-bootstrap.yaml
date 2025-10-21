@@ -91,9 +91,9 @@ services: &services
     storages:
       main:
         - type: bleve
-          file: search.bleve?mapping=node&rotationSize=-1
+          file: searchengine.bleve?mapping=node&rotationSize=-1
         - type: mongo
-          prefix: search_
+          prefix: searchengine_
   pydio.grpc.chat:
     storages:
       main:
@@ -114,7 +114,7 @@ services: &services
         - type: bolt
           file: activities.db
         - type: mongo
-          prefix: activities_
+          prefix: activity_
   pydio.grpc.versions:
     after:
       - pydio.grpc.docstore
@@ -161,7 +161,7 @@ services: &services
         - type: bleve
           file: tasklogs.bleve?mapping=log&rotationSize=-1
         - type: mongo
-          prefix: jobs_
+          prefix: tasklogs_
   pydio.grpc.role:
     after:
       - pydio.grpc.acl
