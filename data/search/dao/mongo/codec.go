@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -223,17 +224,23 @@ func (m *Codex) regexTerm(term string) primitive.Regex {
 }
 
 // regexComaTerms replaces multiple values by multiple regexes
-func (m *Codex) regexComaTerms(metaName string, terms []string, not bool) (filters []bson.E) {
+func (m *Codex) regexComaTerms(metaName string, terms []string, not bool, exact_match bool) (filters []bson.E) {
 	for _, part := range terms {
-		tok := strings.TrimSpace(part)
+		tok := regexp.QuoteMeta(strings.TrimSpace(part))
 		if tok == "" {
 			continue
 		}
+		var pattern string
+		if exact_match {
+			pattern = "^" + tok + "$"
+		} else {
+			pattern = tok
+		}
 		op := "$regex"
-		re := primitive.Regex{Pattern: tok, Options: "i"}
 		if not {
 			op = "$not"
 		}
+		re := primitive.Regex{Pattern: pattern, Options: "i"}
 		filters = append(filters, bson.E{
 			Key:   metaName,
 			Value: bson.M{op: re},
@@ -263,12 +270,12 @@ func (m *Codex) customMetaQueryCodex(s string, q query2.Query, not bool) (string
 		switch qTyped := q.(type) {
 		case *query2.MatchQuery:
 			if vals := strings.Split(qTyped.Match, ","); len(vals) >= 1 {
-				ff := m.regexComaTerms(finalMeta, vals, not)
+				ff := m.regexComaTerms(finalMeta, vals, not, true)
 				return finalMeta, ff, true
 			}
 		case *query2.MatchPhraseQuery:
 			if vals := strings.Split(qTyped.MatchPhrase, ","); len(vals) >= 1 {
-				ff := m.regexComaTerms(finalMeta, vals, not)
+				ff := m.regexComaTerms(finalMeta, vals, not, false)
 				return finalMeta, ff, true
 			}
 		default:
