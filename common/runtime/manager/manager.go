@@ -516,29 +516,21 @@ func (m *manager) initConfig(ctx context.Context) (*openurl.Pool[config.Store], 
 }
 
 func (m *manager) initTelemetry(ctx context.Context, bootstrap config.Store, storePool *openurl.Pool[config.Store]) {
-	// Default is taken from bootstrap
+
+	dirLog := ""
+	if common.LogToFile {
+		dirLog = runtime.ApplicationWorkingDir(runtime.ApplicationDirLogs)
+	}
 	conf := &telemetry.Config{
 		Loggers: []log.LoggerConfig{
-			{
-				Encoding: "console",
-				Level:    "info",
-				Outputs:  []string{"stdout:///"},
-			},
-			{
-				Encoding: "json",
-				Level:    "info",
-				Outputs: []string{
-					"file://" + runtime.ApplicationWorkingDir(runtime.ApplicationDirLogs) + "/pydio.log",
-					"service:///?service=pydio.grpc.log",
-				},
-			},
+			log.DefaultStdoutLogger(common.LogLevel.String(), common.LogJSON),
+			log.DefaultJsonLogger(dirLog, common.ServiceLogGRPC),
 		},
 	}
 
-	// Then read from bootstrap
+	// Read from bootstrap
 	_ = bootstrap.Val("#/telemetry").Scan(&conf)
 
-	// TODO - hot reload should be done on the pool
 	store, err := storePool.Get(ctx)
 	if err != nil {
 		return
@@ -548,14 +540,14 @@ func (m *manager) initTelemetry(ctx context.Context, bootstrap config.Store, sto
 	// And finally from config, it will be hot-reloaded if config is changed
 	config.GetAndWatch(ctx, store, []string{"defaults", "telemetry"}, func(values configx.Values) {
 		if values.Context(ctx).Scan(conf) == nil {
-			if e := conf.Reload(ctx); e != nil {
+			if e := conf.Reload(ctx, common.LogLevel.String(), common.LogJSON); e != nil {
 				fmt.Println("Error loading telemetry setup", e)
 			}
 			configLoaded = true
 		}
 	})
 	if !configLoaded {
-		if e := conf.Reload(ctx); e != nil {
+		if e := conf.Reload(ctx, common.LogLevel.String(), common.LogJSON); e != nil {
 			fmt.Println("Error loading telemetry setup", e)
 		}
 	}

@@ -31,10 +31,9 @@ import (
 
 // Various custom types internally used by Pydio.
 type (
-	ServiceType   string
-	ServiceTag    string
-	ServiceName   string
-	LogConfigType string
+	ServiceType string
+	ServiceTag  string
+	ServiceName string
 )
 
 // Defines all constants for services names.
@@ -333,12 +332,6 @@ const (
 	DocStoreIdResetPassKeys      = "resetPasswordKeys"
 )
 
-// Define constants for Loggging configuration
-const (
-	LogConfigConsole    LogConfigType = "console"
-	LogConfigProduction LogConfigType = "production"
-)
-
 // Main code information. Set by the go linker in the resulting binary when doing 'make main'
 var (
 	BuildStamp    string
@@ -367,8 +360,8 @@ var (
 
 // Logging Levels.
 var (
-	LogConfig           LogConfigType
 	LogLevel            zapcore.Level
+	LogJSON             bool
 	LogToFile           bool
 	LogFileDefaultValue = "true"
 )
