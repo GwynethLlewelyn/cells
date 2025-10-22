@@ -245,7 +245,10 @@ func (m *Codex) regexComaTerms(metaName string, terms []string, not bool, exact_
 		}
 		if len(ors) == 1 {
 			// Single term: just one filter
-			filters = append(filters, bson.E{Key: metaName, Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]}})
+			filters = append(filters, bson.E{
+				Key:   metaName,
+				Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]},
+			})
 		} else if len(ors) > 1 {
 			// Multiple terms: OR logic
 			filters = append(filters, bson.E{Key: "$or", Value: ors})
@@ -257,7 +260,10 @@ func (m *Codex) regexComaTerms(metaName string, terms []string, not bool, exact_
 			ors = append(ors, bson.M{metaName: bson.M{op: re}})
 		}
 		if len(ors) == 1 {
-			filters = append(filters, bson.E{Key: metaName, Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]}})
+			filters = append(filters, bson.E{
+				Key:   metaName,
+				Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]},
+			})
 		} else if len(ors) > 1 {
 			filters = append(filters, bson.E{Key: "$or", Value: ors})
 		}
