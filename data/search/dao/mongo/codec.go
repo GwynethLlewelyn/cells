@@ -225,26 +225,42 @@ func (m *Codex) regexTerm(term string) primitive.Regex {
 
 // regexComaTerms replaces multiple values by multiple regexes
 func (m *Codex) regexComaTerms(metaName string, terms []string, not bool, exact_match bool) (filters []bson.E) {
+	var cleanTerms []string
 	for _, part := range terms {
-		tok := regexp.QuoteMeta(strings.TrimSpace(part))
-		if tok == "" {
-			continue
+		tok := strings.TrimSpace(part)
+		if tok != "" {
+			cleanTerms = append(cleanTerms, tok)
 		}
-		var pattern string
-		if exact_match {
-			pattern = "^" + tok + "$"
-		} else {
-			pattern = tok
+	}
+	op := "$regex"
+	if not {
+		op = "$not"
+	}
+	ors := bson.A{}
+	if exact_match {
+		for _, term := range cleanTerms {
+			pattern := "(^|,\\s*)" + regexp.QuoteMeta(term) + "($|,\\s*)"
+			re := primitive.Regex{Pattern: pattern, Options: "i"}
+			ors = append(ors, bson.M{metaName: bson.M{op: re}})
 		}
-		op := "$regex"
-		if not {
-			op = "$not"
+		if len(ors) == 1 {
+			// Single term: just one filter
+			filters = append(filters, bson.E{Key: metaName, Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]}})
+		} else if len(ors) > 1 {
+			// Multiple terms: OR logic
+			filters = append(filters, bson.E{Key: "$or", Value: ors})
 		}
-		re := primitive.Regex{Pattern: pattern, Options: "i"}
-		filters = append(filters, bson.E{
-			Key:   metaName,
-			Value: bson.M{op: re},
-		})
+	} else {
+		// Non-exact match: build a filter for each term (substring match, OR logic)
+		for _, term := range cleanTerms {
+			re := primitive.Regex{Pattern: regexp.QuoteMeta(term), Options: "i"}
+			ors = append(ors, bson.M{metaName: bson.M{op: re}})
+		}
+		if len(ors) == 1 {
+			filters = append(filters, bson.E{Key: metaName, Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]}})
+		} else if len(ors) > 1 {
+			filters = append(filters, bson.E{Key: "$or", Value: ors})
+		}
 	}
 	return
 }
