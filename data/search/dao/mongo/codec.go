@@ -275,7 +275,7 @@ func (m *Codex) customMetaQueryCodex(s string, q query2.Query, not bool) (string
 			}
 		case *query2.MatchPhraseQuery:
 			if vals := strings.Split(qTyped.MatchPhrase, ","); len(vals) >= 1 {
-				ff := m.regexComaTerms(finalMeta, vals, not, false)
+				ff := m.regexComaTerms(finalMeta, vals, not, true)
 				return finalMeta, ff, true
 			}
 		default:
