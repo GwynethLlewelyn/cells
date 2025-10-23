@@ -223,8 +223,7 @@ func (m *Codex) regexTerm(term string) primitive.Regex {
 	return primitive.Regex{Pattern: pattern, Options: "i"}
 }
 
-// regexComaTerms replaces multiple values by multiple regexes
-func (m *Codex) regexComaTerms(metaName string, terms []string, not bool, exact_match bool) (filters []bson.E) {
+func getCleanRegexTerms(terms []string) []string {
 	var cleanTerms []string
 	for _, part := range terms {
 		tok := strings.TrimSpace(part)
@@ -232,41 +231,37 @@ func (m *Codex) regexComaTerms(metaName string, terms []string, not bool, exact_
 			cleanTerms = append(cleanTerms, tok)
 		}
 	}
+	return cleanTerms
+}
+
+func appendRegexTerm(metaName, term string, not bool, singleTerm bool, filters []bson.E) []bson.E {
 	op := "$regex"
 	if not {
 		op = "$not"
 	}
-	ors := bson.A{}
-	if exact_match {
-		for _, term := range cleanTerms {
-			pattern := "(^|,\\s*)" + regexp.QuoteMeta(term) + "($|,\\s*)"
-			re := primitive.Regex{Pattern: pattern, Options: "i"}
-			ors = append(ors, bson.M{metaName: bson.M{op: re}})
-		}
-		if len(ors) == 1 {
-			// Single term: just one filter
-			filters = append(filters, bson.E{
-				Key:   metaName,
-				Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]},
-			})
-		} else if len(ors) > 1 {
-			// Multiple terms: OR logic
-			filters = append(filters, bson.E{Key: "$or", Value: ors})
-		}
+	var pattern string
+	if singleTerm {
+		// Only one term: match the whole tag
+		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "($|,\\s*)"
 	} else {
-		// Non-exact match: build a filter for each term (substring match, OR logic)
-		for _, term := range cleanTerms {
-			re := primitive.Regex{Pattern: regexp.QuoteMeta(term), Options: "i"}
-			ors = append(ors, bson.M{metaName: bson.M{op: re}})
-		}
-		if len(ors) == 1 {
-			filters = append(filters, bson.E{
-				Key:   metaName,
-				Value: bson.M{op: ors[0].(bson.M)[metaName].(bson.M)[op]},
-			})
-		} else if len(ors) > 1 {
-			filters = append(filters, bson.E{Key: "$or", Value: ors})
-		}
+		// Multiple terms: match the start of a tag
+		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "(,|$)"
+	}
+	re := primitive.Regex{Pattern: pattern, Options: "i"}
+	return append(filters, bson.E{
+		Key:   metaName,
+		Value: bson.M{op: re},
+	})
+}
+
+// TODO: optimize the regex for multiple terms with OR
+//
+//	parts := strings.Split(terms, "|")
+func (m *Codex) regexComaTerms(metaName string, terms []string, not bool) (filters []bson.E) {
+	cleanTerms := getCleanRegexTerms(terms)
+	singleTerm := len(cleanTerms) == 1
+	for _, term := range cleanTerms {
+		filters = appendRegexTerm(metaName, term, not, singleTerm, filters)
 	}
 	return
 }
@@ -292,12 +287,12 @@ func (m *Codex) customMetaQueryCodex(s string, q query2.Query, not bool) (string
 		switch qTyped := q.(type) {
 		case *query2.MatchQuery:
 			if vals := strings.Split(qTyped.Match, ","); len(vals) >= 1 {
-				ff := m.regexComaTerms(finalMeta, vals, not, true)
+				ff := m.regexComaTerms(finalMeta, vals, not)
 				return finalMeta, ff, true
 			}
 		case *query2.MatchPhraseQuery:
 			if vals := strings.Split(qTyped.MatchPhrase, ","); len(vals) >= 1 {
-				ff := m.regexComaTerms(finalMeta, vals, not, true)
+				ff := m.regexComaTerms(finalMeta, vals, not)
 				return finalMeta, ff, true
 			}
 		default:
