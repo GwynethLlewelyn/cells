@@ -242,10 +242,12 @@ func appendRegexTerm(metaName, term string, not bool, singleTerm bool, filters [
 	var pattern string
 	if singleTerm {
 		// Only one term: match the whole tag single term with exact match regex prefix and suffix
+		// tag1 -> (^|,\s*)tag1($|,\s*)
 		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "($|,\\s*)"
 	} else {
 		// For multiple terms, match only full tags at the start or after a comma in the list.
 		// Prevents partial matches inside other tags.
+		// tag1, tag2 -> (^|,\s*)tag1(,|$)  (^|,\s*)tag2(,|$)
 		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "(,|$)"
 	}
 	re := primitive.Regex{Pattern: pattern, Options: "i"}
