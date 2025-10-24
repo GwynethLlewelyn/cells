@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -222,22 +223,48 @@ func (m *Codex) regexTerm(term string) primitive.Regex {
 	return primitive.Regex{Pattern: pattern, Options: "i"}
 }
 
-// regexComaTerms replaces multiple values by multiple regexes
-func (m *Codex) regexComaTerms(metaName string, terms []string, not bool) (filters []bson.E) {
+func getCleanRegexTerms(terms []string) []string {
+	var cleanTerms []string
 	for _, part := range terms {
 		tok := strings.TrimSpace(part)
-		if tok == "" {
-			continue
+		if tok != "" {
+			cleanTerms = append(cleanTerms, tok)
 		}
-		op := "$regex"
-		re := primitive.Regex{Pattern: tok, Options: "i"}
-		if not {
-			op = "$not"
-		}
-		filters = append(filters, bson.E{
-			Key:   metaName,
-			Value: bson.M{op: re},
-		})
+	}
+	return cleanTerms
+}
+
+func appendRegexTerm(metaName, term string, not bool, singleTerm bool, filters []bson.E) []bson.E {
+	op := "$regex"
+	if not {
+		op = "$not"
+	}
+	var pattern string
+	if singleTerm {
+		// Only one term: match the whole tag single term with exact match regex prefix and suffix
+		// tag1 -> (^|,\s*)tag1($|,\s*)
+		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "($|,\\s*)"
+	} else {
+		// For multiple terms, match only full tags at the start or after a comma in the list.
+		// Prevents partial matches inside other tags.
+		// tag1, tag2 -> (^|,\s*)tag1(,|$)  (^|,\s*)tag2(,|$)
+		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "(,|$)"
+	}
+	re := primitive.Regex{Pattern: pattern, Options: "i"}
+	return append(filters, bson.E{
+		Key:   metaName,
+		Value: bson.M{op: re},
+	})
+}
+
+// TODO: optimize the regex for multiple terms with OR
+//
+//	parts := strings.Split(terms, "|")
+func (m *Codex) regexComaTerms(metaName string, terms []string, not bool) (filters []bson.E) {
+	cleanTerms := getCleanRegexTerms(terms)
+	singleTerm := len(cleanTerms) == 1
+	for _, term := range cleanTerms {
+		filters = appendRegexTerm(metaName, term, not, singleTerm, filters)
 	}
 	return
 }

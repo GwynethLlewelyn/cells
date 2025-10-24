@@ -1080,6 +1080,75 @@ func TestMongoTagsNamespace(t *testing.T) {
 			nn, _, er = performSearch(ctx, server, queryObject)
 			So(er, ShouldBeNil)
 			So(nn, ShouldHaveLength, 1)
+			// testing single result matches for substring tags
+			node3 := &tree.Node{
+				Uuid:  "docID3",
+				Path:  "/path/to/node3.txt",
+				MTime: time.Now().Unix(),
+				Type:  1,
+				Size:  24,
+				MetaStore: map[string]string{
+					"tags": "\"value\"",
+				},
+			}
+
+			node4 := &tree.Node{
+				Uuid:  "docID4",
+				Path:  "/path/to/node4.txt",
+				MTime: time.Now().Unix(),
+				Type:  1,
+				Size:  25,
+				MetaStore: map[string]string{
+					"tags": "\"value, Les Ingénieurs\"",
+				},
+			}
+
+			So(server.IndexNode(ctx, node3, false), ShouldBeNil)
+			So(server.IndexNode(ctx, node4, false), ShouldBeNil)
+			So(server.(*commons.Server).Flush(ctx), ShouldBeNil)
+			<-time.After(2 * time.Second)
+
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"value\"",
+			}
+			results, _, err := performSearch(ctx, server, queryObject)
+			So(err, ShouldBeNil)
+			So(results, ShouldHaveLength, 1)
+
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"Les Ing\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 0)
+
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"value1,value2,Les Ingénieurs\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 0)
+
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"value\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 2)
+
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"value, Les Ingénieurs\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 1)
+
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"value Les Ingénieurs\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 0)
 
 		})
 	})
