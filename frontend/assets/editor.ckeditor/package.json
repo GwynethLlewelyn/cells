@@ -6,7 +6,8 @@
   "author": "Abstrium SAS",
   "license": "agpl",
   "dependencies": {
-    "ckeditor": "^4.6.2"
+    "ckeditor": "^4.6.2",
+    "dompurify": "^2.4.0"
   },
   "devDependencies": {
     "@babel/core": "^7.14.6",
