@@ -71,6 +71,14 @@ To run the tests, simply do
 go test -v ./...
 ```
 
+## Running with live reload
+First install [air](https://github.com/air-verse/air)
+`go install github.com/air-verse/air@latest`
+Run with live reload
+```sh
+air -c .air.toml
+```
+
 Please read the [CONTRIBUTING.md](CONTRIBUTING.md) document if you wish to add more tests or contribute to the code.
 
 ## Pre-built Binaries
