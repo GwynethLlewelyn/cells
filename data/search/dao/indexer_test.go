@@ -916,7 +916,7 @@ func TestClearIndex(t *testing.T) {
 			e := server.ClearIndex(ctx)
 			So(e, ShouldBeNil)
 
-			<-time.After(1 * time.Second)
+			<-time.After(5 * time.Second)
 
 			queryObject := &tree.Query{
 				FileName: "node",
