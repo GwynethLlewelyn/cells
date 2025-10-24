@@ -1113,7 +1113,7 @@ func TestMongoTagsNamespace(t *testing.T) {
 			}
 			results, _, err := performSearch(ctx, server, queryObject)
 			So(err, ShouldBeNil)
-			So(results, ShouldHaveLength, 1)
+			So(results, ShouldHaveLength, 2)
 
 			queryObject = &tree.Query{
 				FreeString: "+Meta.tags:\"Les Ing\"",
@@ -1123,7 +1123,7 @@ func TestMongoTagsNamespace(t *testing.T) {
 			So(nn, ShouldHaveLength, 0)
 
 			queryObject = &tree.Query{
-				FreeString: "+Meta.tags:\"value1,value2,Les Ingénieurs\"",
+				FreeString: "+Meta.tags:\"value5, Ingénieurs\"",
 			}
 			nn, _, er = performSearch(ctx, server, queryObject)
 			So(er, ShouldBeNil)
@@ -1145,6 +1145,23 @@ func TestMongoTagsNamespace(t *testing.T) {
 
 			queryObject = &tree.Query{
 				FreeString: "+Meta.tags:\"value Les Ingénieurs\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 0)
+
+			// this will match at least 1 document because the regex will find value1 inside value1,value2
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"value1,value2,Les Ingénieurs\"",
+			}
+			nn, _, er = performSearch(ctx, server, queryObject)
+			So(er, ShouldBeNil)
+			So(nn, ShouldHaveLength, 1)
+
+			// this will match 0
+			// Naturally if the first tag does not match, the result is 0 expected AND behavior
+			queryObject = &tree.Query{
+				FreeString: "+Meta.tags:\"valu,Les Ingénieurs\"",
 			}
 			nn, _, er = performSearch(ctx, server, queryObject)
 			So(er, ShouldBeNil)
