@@ -143,14 +143,14 @@ type managerKey struct{}
 
 var ContextKey = managerKey{}
 
-func NewManager(ctx context.Context, namespace string, logger log.ZapLogger, r ...runtime.Runtime) (Manager, error) {
+func NewManager(ctx context.Context, namespace string, r ...runtime.Runtime) (Manager, error) {
 
 	m := &manager{
 		ctx: ctx,
 		ns:  namespace,
 
-		logger: logger,
-		root:   util.CreateNode(),
+		//logger: logger,
+		root: util.CreateNode(),
 
 		storage: controller.NewController[storage.Storage](),
 		config:  controller.NewController[*openurl.Pool[config.Store]](),
@@ -709,7 +709,7 @@ func (m *manager) initProcesses(ctx context.Context, bootstrap config.Store, bas
 				uri := connections.Val(k, "uri").String()
 				u, err := url.Parse(uri)
 				if err != nil {
-					log.Logger(ctx).Warn("connection url not right: " + uri)
+					m.coreLogger().Warn("connection url not right: " + uri)
 					continue
 				}
 
@@ -1067,13 +1067,13 @@ func (m *manager) initQueues(ctx context.Context, store configx.Values, base str
 	queues := store.Val(base + "/queues")
 	for k := range queues.Map() {
 		if k != common.QueueTypeDebouncer && k != common.QueueTypePersistent {
-			log.Logger(ctx).Error("WARNING - Cache key should be one of ['" + common.QueueTypeDebouncer + "', '" + common.QueueTypePersistent + "']. Key " + k + " will be useless")
+			m.coreLogger().Error("WARNING - Cache key should be one of ['" + common.QueueTypeDebouncer + "', '" + common.QueueTypePersistent + "']. Key " + k + " will be useless")
 			continue
 		}
 		uri := queues.Val(k, "uri").String()
 		pool, err := m.queues.Open(ctx, uri)
 		if err != nil {
-			log.Logger(ctx).Error("initQueues - cannot open pool with URI"+uri, zap.Error(err))
+			m.coreLogger().Error("initQueues - cannot open pool with URI"+uri, zap.Error(err))
 			continue
 		}
 		regKey := "queue-" + k
@@ -1082,9 +1082,9 @@ func (m *manager) initQueues(ctx context.Context, store configx.Values, base str
 			meta[registry.MetaStatusKey] = string(registry.StatusTransient)
 		}).Register(registry.NewRichItem(regKey, regKey, pb.ItemType_GENERIC, pool), registry.WithEdgeTo(m.root.ID(), "queue", nil))
 		if er != nil {
-			log.Logger(ctx).Error("initQueues - cannot register queue pool with URI"+uri, zap.Error(er))
+			m.coreLogger().Error("initQueues - cannot register queue pool with URI"+uri, zap.Error(er))
 		} else {
-			log.Logger(ctx).Info("Registered Queue " + regKey + " with pool from uri " + uri)
+			m.coreLogger().Info("Registered Queue " + regKey + " with pool from uri " + uri)
 		}
 	}
 	//})
@@ -1131,13 +1131,13 @@ func (m *manager) initCaches(ctx context.Context, store configx.Values, base str
 	caches := store.Val(base + "/caches")
 	for k := range caches.Map() {
 		if k != common.CacheTypeShared && k != common.CacheTypeLocal {
-			log.Logger(ctx).Error("WARNING - Cache key should be one of ['" + common.CacheTypeLocal + "', '" + common.CacheTypeShared + "']. Key " + k + " will be useless")
+			m.coreLogger().Error("WARNING - Cache key should be one of ['" + common.CacheTypeLocal + "', '" + common.CacheTypeShared + "']. Key " + k + " will be useless")
 			continue
 		}
 		uri := caches.Val(k, "uri").String()
 		pool, err := m.caches.Open(ctx, uri)
 		if err != nil {
-			log.Logger(ctx).Error("initCaches - cannot open cache pool with URI"+uri, zap.Error(err))
+			m.coreLogger().Error("initCaches - cannot open cache pool with URI"+uri, zap.Error(err))
 			continue
 		}
 		regKey := "cache-" + k
@@ -1146,9 +1146,9 @@ func (m *manager) initCaches(ctx context.Context, store configx.Values, base str
 			meta[registry.MetaStatusKey] = string(registry.StatusTransient)
 		}).Register(registry.NewRichItem(regKey, regKey, pb.ItemType_GENERIC, pool), registry.WithEdgeTo(m.root.ID(), "cache", nil))
 		if er != nil {
-			log.Logger(ctx).Error("initCaches - cannot register pool with URI"+uri, zap.Error(er))
+			m.coreLogger().Error("initCaches - cannot register pool with URI"+uri, zap.Error(er))
 		} else {
-			log.Logger(ctx).Info("Registered Cache " + regKey + " with pool from uri " + uri)
+			m.coreLogger().Info("Registered Cache " + regKey + " with pool from uri " + uri)
 		}
 	}
 	// })
@@ -1251,7 +1251,8 @@ func (m *manager) ServeAll(oo ...server.ServeOption) error {
 		func(srv server.Server) {
 			eg.Go(func() error {
 				if err := m.startServer(srv, oo...); err != nil {
-					return errors.Wrap(err, " from "+srv.ID()+srv.Name())
+					m.coreLogger().Error("Error starting "+srv.Name(), zap.Error(err))
+					return err
 				}
 
 				return nil
@@ -1261,7 +1262,7 @@ func (m *manager) ServeAll(oo ...server.ServeOption) error {
 
 	waitAndServe := func() {
 		if err := eg.Wait(); err != nil && opt.ErrorCallback != nil {
-			log.Logger(m.ctx).Error("Server couldn't start ", zap.Error(err))
+			m.coreLogger().Error("Server couldn't start ", zap.Error(err))
 			opt.ErrorCallback(err)
 		}
 	}
@@ -1505,10 +1506,10 @@ func (m *manager) WatchServicesConfigs() {
 				if ss[0].As(&svc) && svc.Options().AutoRestart {
 					if er := m.stopService(svc); er == nil {
 						if sErr := m.startService(svc); sErr != nil {
-							log.Logger(m.ctx).Error("Cannot start service"+svc.Name(), zap.Error(sErr))
+							m.coreLogger().Error("Cannot start service"+svc.Name(), zap.Error(sErr))
 						}
 					} else {
-						log.Logger(m.ctx).Error("Cannot stop service"+svc.Name(), zap.Error(er))
+						m.coreLogger().Error("Cannot stop service"+svc.Name(), zap.Error(er))
 					}
 				}
 			}
@@ -1852,4 +1853,11 @@ func (m *manager) linkServiceToStorages(svc service.Service) error {
 	}
 
 	return nil
+}
+
+func (m *manager) coreLogger() log.ZapLogger {
+	if m.logger == nil {
+		m.logger = log.Logger(m.ctx).Named("pydio.server.manager")
+	}
+	return m.logger
 }

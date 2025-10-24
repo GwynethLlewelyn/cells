@@ -142,7 +142,7 @@ func DSNtoContextDAO(ctx context.Context, dsn []string, daoFunc any) (context.Co
 		)
 	})
 
-	mgr, err := NewManager(ctx, "test", nil)
+	mgr, err := NewManager(ctx, "test")
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +206,7 @@ func MockServicesToContextDAO(ctx context.Context, dsn map[string]string, servic
 		})
 	}
 
-	mgr, err := NewManager(ctx, ns, nil)
+	mgr, err := NewManager(ctx, ns)
 	if err != nil {
 		return nil, err
 	}

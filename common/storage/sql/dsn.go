@@ -353,7 +353,7 @@ storages:
 		return nil, err
 	}
 	bootstrap.MustReset(ctx, nil)
-	mgr, err := manager.NewManager(ctx, runtime.NsInstall, nil, localRuntime)
+	mgr, err := manager.NewManager(ctx, runtime.NsInstall, localRuntime)
 	if err != nil {
 		return nil, err
 	}

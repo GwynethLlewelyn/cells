@@ -185,7 +185,7 @@ func RunGenericTests[T Testable](testcases []T, t *testing.T, f func(ctx context
 
 	runtime.SetRuntime(v)
 
-	mgr, err := manager.NewManager(ctx, "test", nil)
+	mgr, err := manager.NewManager(ctx, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func RunTests(t *testing.T, init func(context.Context), f func(context.Context))
 
 	init(ctx)
 
-	mgr, err := manager.NewManager(ctx, "test", nil)
+	mgr, err := manager.NewManager(ctx, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

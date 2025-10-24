@@ -342,7 +342,7 @@ ENVIRONMENT
 
 		ctx = context.WithValue(ctx, "managertype", "standard")
 
-		m, err := manager.NewManager(ctx, runtime.NsMain, log.Logger(runtime.WithServiceName(ctx, "pydio.server.manager")))
+		m, err := manager.NewManager(ctx, runtime.NsMain)
 		if err != nil {
 			span.End()
 			return err

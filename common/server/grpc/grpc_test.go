@@ -286,7 +286,7 @@ func TestGetServiceInfo(t *testing.T) {
 		}
 	})
 
-	mgr, err := manager.NewManager(ctx, "test", nil)
+	mgr, err := manager.NewManager(ctx, "test")
 	if err != nil {
 		panic(err)
 	}

@@ -95,7 +95,7 @@ func TestManagerStorage(t *testing.T) {
 
 	ctx := context.Background()
 
-	mg, err := manager.NewManager(ctx, "main", nil)
+	mg, err := manager.NewManager(ctx, "main")
 	if err != nil {
 		t.Error("cannot run test", err)
 		t.Fail()
@@ -175,7 +175,7 @@ func TestManagerConnection(t *testing.T) {
 		}
 	})
 
-	mg, err := manager.NewManager(ctx, "main", nil)
+	mg, err := manager.NewManager(ctx, "main")
 	if err != nil {
 		t.Error("cannot run test", err)
 		t.Fail()
@@ -236,7 +236,7 @@ func TestManagerConnectionAndStorage(t *testing.T) {
 		)
 	})
 
-	mg, err := manager.NewManager(ctx, "main", nil)
+	mg, err := manager.NewManager(ctx, "main")
 	if err != nil {
 		t.Error("cannot run test", err)
 		t.Fail()
@@ -304,7 +304,7 @@ func TestMultiContextManagerStorage(t *testing.T) {
 		)
 	})
 
-	mg, err := manager.NewManager(ctx, "main", nil)
+	mg, err := manager.NewManager(ctx, "main")
 	if err != nil {
 		t.Error("cannot run test", err)
 		t.Fail()
@@ -324,7 +324,7 @@ func TestMultiContextManagerStorage(t *testing.T) {
 			return nil
 		}
 
-		mgctx, err := manager.NewManager(ctx, name, nil)
+		mgctx, err := manager.NewManager(ctx, name)
 		if err != nil {
 			t.Error("cannot run test", err)
 			t.Fail()

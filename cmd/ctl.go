@@ -553,7 +553,7 @@ DESCRIPTION
 		v.Set(runtime.KeyBootstrapYAML, ctlBootstrap)
 		runtime.SetRuntime(v)
 
-		mgr, err := manager.NewManager(ctx, runtime.NsCmd, nil)
+		mgr, err := manager.NewManager(ctx, runtime.NsCmd)
 		if err != nil {
 			return err
 		}

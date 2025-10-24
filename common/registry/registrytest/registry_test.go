@@ -129,7 +129,7 @@ func TestService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m, err := manager.NewManager(ctx, "test", nil)
+	m, err := manager.NewManager(ctx, "test")
 	registry.NewMetaWrapper(m.Registry(), func(m map[string]string) {
 		b, _ := json.Marshal([]map[string]string{{
 			"filter": "\"{{ .Name }} ~= .*\"",
