@@ -139,6 +139,10 @@ func (h *Handler) UpdateUserMeta(ctx context.Context, request *idm.UpdateUserMet
 			nCtx := ctx
 			target := &tree.Node{Uuid: nodeId, MetaStore: make(map[string]string)}
 			if resolved, ok := nodes[nodeId]; ok {
+				if resolved.GetEtag() == common.NodeFlagEtagTemporary {
+					// SKIP EVENT - WE ARE DIRECTLY SETTING USER_META DURING NODE CREATION
+					continue
+				}
 				target = resolved
 				if len(resolved.AppearsIn) > 0 {
 					nCtx = propagator.WithAdditionalMetadata(ctx, map[string]string{

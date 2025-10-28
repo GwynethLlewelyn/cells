@@ -386,6 +386,13 @@ func (u *umClient) fromNodeMeta(ctx context.Context, resolved *tree.Node, meta m
 						delete(def, foundNS.Namespace) // remove from defaults
 					}
 				}
+				// Check value
+				var i interface{}
+				if err = json.Unmarshal([]byte(v), &i); err != nil {
+					err = errors.WithMessage(err, "User metadata values must be JSON-encoded")
+					return
+				}
+				resolved.MustSetMeta(foundNS.GetNamespace(), i)
 				out = append(out, &idm.UserMeta{
 					NodeUuid:     resolved.GetUuid(),
 					Namespace:    foundNS.GetNamespace(),
@@ -440,6 +447,7 @@ func (u *umClient) fromAmzHeaders(ctx context.Context, resolved *tree.Node, meta
 				err = errors.WithMessage(err, "User metadata values must be JSON-encoded")
 				return
 			}
+			resolved.MustSetMeta(namespace.GetNamespace(), i)
 			out = append(out, &idm.UserMeta{
 				NodeUuid:     resolved.Uuid,
 				Namespace:    namespace.GetNamespace(),

@@ -268,7 +268,7 @@ func (d *MinioConfig) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
 	return nil
 }
 
-func (m *DataSourceSingleQuery) Matches(object interface{}) bool {
+func (m *DataSourceSingleQuery) Matches(ctx context.Context, object interface{}) bool {
 	ds, ok := object.(*DataSource)
 	if !ok {
 		return false
