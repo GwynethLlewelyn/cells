@@ -1,13 +1,38 @@
-# Changes between v4.9.92-alpha12 and v4.9.92-alpha13
+# Changes between v4.9.92-alpha13 and v4.9.92-alpha14
 
-[See Full Changelog](https://github.com/pydio/cells/compare/v4.9.92-alpha12...v4.9.92-alpha13)
+[See Full Changelog](https://github.com/pydio/cells/compare/v4.9.92-alpha13...v4.9.92-alpha14)
 
-- [#f05cc39](https://github.com/pydio/cells/commit/f05cc39cc374ef22d592d96d8ab6be69c82fdc2c): fix(logs): CLICKUP #869atbfe1 - Fix logs related flags (level, encoding, to file) in a more logical way : flags are only related to stdout, and if loggers are passed via config, flags are overriding stdout existing values.
-- [#279b49e](https://github.com/pydio/cells/commit/279b49e28d1075d5ce921925bde0b3ddbae32a77): fix(idm): fix user roles ordering not persisted
-- [#c8fcff0](https://github.com/pydio/cells/commit/c8fcff0557ee7770582b5a7eafc0a185fdc3faeb): Merge remote-tracking branch 'origin/v5-dev' into v5-dev
-- [#d5beec0](https://github.com/pydio/cells/commit/d5beec0d3f112a7d1c783f019957112a51b81200): fix(upgrade): fix v4 to v5 upgrade glitches
-- [#bb03f0b](https://github.com/pydio/cells/commit/bb03f0bec31815f217b056efe368e4a36c005074): fix(sql): raise defaults for mysql connections
-- [#a5ccfdb](https://github.com/pydio/cells/commit/a5ccfdbc8423a4227eb8888fef5feb2406c8374f): fix(thumbs): WPB-21131 generate thumbs with the exif orientation (#686)
-- [#b2c37dd](https://github.com/pydio/cells/commit/b2c37dd67fe06992832ecce030ca6f9e6fdc3fe8): fix(cli): silently fails when quiet flag is set
-- [#fe040bb](https://github.com/pydio/cells/commit/fe040bbb88c2a1031074d58d6a755c49fd4f9f96): fix(context): pass context to Init() interface and get rid of RuntimeContext pattern.
-- [#63f54bc](https://github.com/pydio/cells/commit/63f54bcd340192da011db1ef5ee53b7ea78ec7ee): fix(context): pass context to GetParametersForm() interface so that some actions implementations can use config.
+- [#53fa497](https://github.com/pydio/cells/commit/53fa49796457a107f1c14f1b02bcf06776f51e5e): feat(i18n): more Norvegian translations
+- [#cc0b020](https://github.com/pydio/cells/commit/cc0b020fd20a5caec4717c1340aabaa6ec1ec021): chore/add prettier config (#697)
+- [#3f7298b](https://github.com/pydio/cells/commit/3f7298b26a0387d0257006e6d042822326960e78): tests: configure vitest and react-testing library for unit tests (#696)
+- [#58f4ee6](https://github.com/pydio/cells/commit/58f4ee6824864518444b4453d0bf04570d42fed8): fix(meta): improve usermeta propagation in events, along with contexts in jobs Matchers.
+- [#7770aa4](https://github.com/pydio/cells/commit/7770aa45a1e9b91fcfacf188b559aa71a70d0806): fix: WPB-19703 sanitize url for links (#695)
+- [#5ee1965](https://github.com/pydio/cells/commit/5ee1965180a87ed331cdc3bf4ce4eacfe5cdf244): fix(deps): WPB-19702 - update pdfjs and react-pdf to latest version (#694)
+- [#b63feae](https://github.com/pydio/cells/commit/b63feae7a41c281f48a12e6576e3f9256b27407f): fix(errors): fix error catching
+- [#693](https://github.com/pydio/cells/pull/693): fix(ckeditor): Improving content sanitization for ckeditor
+- [#94645b3](https://github.com/pydio/cells/commit/94645b3ef7e96265974bebc9214dd98561ab9b71): chore(ckeditor): prod build
+- [#26ba8fc](https://github.com/pydio/cells/commit/26ba8fc480d1d0459df65319754a198c6870cd0f): fix(ckeditor): - sanitize file content for ckeditor - handle on change with xss sanitize
+- [#ef735f4](https://github.com/pydio/cells/commit/ef735f4dbb4d63224ae52293f81aad4781044230): fix(tests): try to fix flakky test
+- [#ff23e1a](https://github.com/pydio/cells/commit/ff23e1aaaeddd21947417eed349e5441fa89141e): feat(i18n): more messages + DE/FR translations
+- [#691](https://github.com/pydio/cells/pull/691): test(search): Improve unit test coverage and fix failed run
+- [#ddcf92f](https://github.com/pydio/cells/commit/ddcf92fe5e37f09bfe220cb95bededfd67c33972): test(search): - fix unit test - add a no match test for AND regex with multi tags
+- [#add7563](https://github.com/pydio/cells/commit/add75633dbebee89c8f4a996a21c20f9257b6a0e): fix(mongo): re-introduce unique indexes now that upgrade is fixed
+- [#844642f](https://github.com/pydio/cells/commit/844642fcced1f5652dc2a8364d1bcc2b1e2a4669): fix(errors): fix some errors context for proper logger display
+- [#9da7f0b](https://github.com/pydio/cells/commit/9da7f0b55c64130cfece9bd07ad5dbd3ab3cb5cf): fix(storage): missing LastUpdated value on workspaces
+- [#515c40b](https://github.com/pydio/cells/commit/515c40b0846b5999b5acbe94a25fead61cfde731): feat(datasource): totally remove gcs option, and hide structured datasources behind an advanced configuration.
+- [#e23b9bf](https://github.com/pydio/cells/commit/e23b9bfe0ad5c96ec9a2891d3b0ae0da88482f8e): fix(mod): fix missing dep in gomod
+- [#ad896a1](https://github.com/pydio/cells/commit/ad896a16324e67c4e440bf55e982b93500612f75): fix(docs-gen): mkdocs compat
+- [#e6fa7b4](https://github.com/pydio/cells/commit/e6fa7b4cf2f1d5544733d1f9bef172d2e14d4fc9): fix(apiv2): adding cache-control in the PresignedGet
+- [#687](https://github.com/pydio/cells/pull/687): fix(search): ensure tags filter match exactly one result
+- [#685](https://github.com/pydio/cells/pull/685): chore(dev-ex): adding live reload config
+- [#07f8b26](https://github.com/pydio/cells/commit/07f8b2644b15f2d83ceb140f38ea91e88199c037): chore(search): add description and examples
+- [#59f9b59](https://github.com/pydio/cells/commit/59f9b5909e44ee7e64e11706a14d8c4bb7e62194): chore(search): update descriptions
+- [#b03ab09](https://github.com/pydio/cells/commit/b03ab09e432efb2493dba14b59d577919b70e751): test(search): adding more test cases
+- [#9212a75](https://github.com/pydio/cells/commit/9212a751337966d74b53dea1d78fbb358c18b3bb): fix(search): revert logic to combine using AND and simplify
+- [#8d02645](https://github.com/pydio/cells/commit/8d026454e98d81ac2139c9a9a908267ac03720ad): fix(search): prettier
+- [#63a4e34](https://github.com/pydio/cells/commit/63a4e34142e588870da2df92f09a853b2c4d2c0d): fix(search): handle various tag search combinations
+- [#95a27da](https://github.com/pydio/cells/commit/95a27da6afbc3c188d064217cc94073289281108): fix(search): get exact matches for multiword tags
+- [#9d8e8fd](https://github.com/pydio/cells/commit/9d8e8fdb96784cf55598f247ae3f86ea3e14bc1e): fix(search): ensure tags match exactly one result
+- [#a9bc219](https://github.com/pydio/cells/commit/a9bc21941f26e0915f02f52e5c08c8341d9c3b7a): chore(dev-ex) add instructions for live reload in readme
+- [#dbdc1c4](https://github.com/pydio/cells/commit/dbdc1c42a4f2fd207205caa6fc1ed71bd1931911): chore(dev-ex): specifiy folders to watch
+- [#59e5188](https://github.com/pydio/cells/commit/59e5188fed4ce408b5b45da3823042ccccb869ae): chore(dev-ex): adding live reload config
