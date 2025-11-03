@@ -22,6 +22,7 @@ package sql
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -212,6 +213,11 @@ func (s *sqlimpl) StorePolicyGroup(ctx context.Context, group *idm.PolicyGroup) 
 			if er := s.deleteInTransaction(ctx, tx, storeGroup); er != nil {
 				return er
 			}
+			if tx.Name() != sql.SqliteDriver {
+				if er := s.cleanupOrphans(ctx); er != nil {
+					return er
+				}
+			}
 		}
 		tx = tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "uuid"}},
@@ -219,6 +225,12 @@ func (s *sqlimpl) StorePolicyGroup(ctx context.Context, group *idm.PolicyGroup) 
 		}).Create(storeGroup)
 		return tx.Error
 	})
+
+	if deleteFirst && s.instance(ctx).Name() == sql.SqliteDriver {
+		if err := s.cleanupOrphans(ctx); err != nil {
+			return nil, er
+		}
+	}
 
 	return storeGroup, er
 
@@ -274,11 +286,13 @@ func (s *sqlimpl) ListPolicyGroups(ctx context.Context, filter string) (groups [
 // DeletePolicyGroup deletes a policy group and all related policies.
 func (s *sqlimpl) DeletePolicyGroup(ctx context.Context, group *idm.PolicyGroup) error {
 
-	// TODO - cascade ?
-	return s.instance(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.instance(ctx).Transaction(func(tx *gorm.DB) error {
 		return s.deleteInTransaction(ctx, tx, group)
-	})
+	}); err != nil {
+		return err
+	}
 
+	return s.cleanupOrphans(ctx)
 }
 
 func (s *sqlimpl) deleteInTransaction(ctx context.Context, tx *gorm.DB, group *idm.PolicyGroup) error {
@@ -296,18 +310,58 @@ func (s *sqlimpl) deleteInTransaction(ctx context.Context, tx *gorm.DB, group *i
 			return err
 		}
 	}
-	// Clean orphan rows
-	if tx11 := tx.Where("id NOT IN (?)", tx.Model(&idm.PolicyActionRel{}).Select("DISTINCT action")).Delete(&idm.PolicyAction{}); tx11.Error != nil {
-		return tx11.Error
-	}
-	if tx21 := tx.Where("id NOT IN (?)", tx.Model(&idm.PolicySubjectRel{}).Select("DISTINCT subject")).Delete(&idm.PolicySubject{}); tx21.Error != nil {
-		return tx21.Error
-	}
-	if tx31 := tx.Where("id NOT IN (?)", tx.Model(&idm.PolicyResourceRel{}).Select("DISTINCT resource")).Delete(&idm.PolicyResource{}); tx31.Error != nil {
-		return tx31.Error
-	}
+
+	// Orphan rows cleaning is done outside of the transaction to avoid Deadlocks
+	// see cleanupOrphans function
+
 	tx = tx.Where(&idm.PolicyGroup{Uuid: group.GetUuid()}).Delete(&idm.PolicyGroup{})
 	return tx.Error
+}
+
+func (s *sqlimpl) cleanupOrphans(ctx context.Context) error {
+	db := s.instance(ctx)
+	// --- 3. Clean up orphan rows using LEFT JOIN (no NOT IN) ---
+	// Table names are dynamically derived from the model metadata.
+	actionTable := sql.TableNameFromModel(db, &idm.PolicyAction{})
+	actionRelTable := sql.TableNameFromModel(db, &idm.PolicyActionRel{})
+	subjectTable := sql.TableNameFromModel(db, &idm.PolicySubject{})
+	subjectRelTable := sql.TableNameFromModel(db, &idm.PolicySubjectRel{})
+	resourceTable := sql.TableNameFromModel(db, &idm.PolicyResource{})
+	resourceRelTable := sql.TableNameFromModel(db, &idm.PolicyResourceRel{})
+
+	driver := strings.ToLower(db.Name())
+	var sqls []string
+
+	switch driver {
+
+	case sql.MySQLDriver:
+		sqls = []string{
+			fmt.Sprintf(`DELETE a FROM %s AS a LEFT JOIN %s AS r ON a.id = r.action WHERE r.action IS NULL`, actionTable, actionRelTable),
+			fmt.Sprintf(`DELETE s FROM %s AS s LEFT JOIN %s AS r ON s.id = r.subject WHERE r.subject IS NULL`, subjectTable, subjectRelTable),
+			fmt.Sprintf(`DELETE r FROM %s AS r LEFT JOIN %s AS rr ON r.id = rr.resource WHERE rr.resource IS NULL`, resourceTable, resourceRelTable),
+		}
+
+	case sql.SqliteDriver:
+		fallthrough
+	case sql.PostgreDriver:
+		sqls = []string{
+			fmt.Sprintf(`DELETE FROM %s WHERE NOT EXISTS (SELECT 1 FROM %s WHERE %s.action = %s.id)`, actionTable, actionRelTable, actionRelTable, actionTable),
+			fmt.Sprintf(`DELETE FROM %s WHERE NOT EXISTS (SELECT 1 FROM %s WHERE %s.subject = %s.id)`, subjectTable, subjectRelTable, subjectRelTable, subjectTable),
+			fmt.Sprintf(`DELETE FROM %s WHERE NOT EXISTS (SELECT 1 FROM %s WHERE %s.resource = %s.id)`, resourceTable, resourceRelTable, resourceRelTable, resourceTable),
+		}
+
+	default:
+		return fmt.Errorf("unsupported SQL dialect: %s", driver)
+	}
+
+	for _, q := range sqls {
+		if res := db.Exec(q); res.Error != nil {
+			return res.Error
+		} else {
+			log.Logger(ctx).Debugf("Cleaned %d rows", res.RowsAffected)
+		}
+	}
+	return nil
 }
 
 func (s *sqlimpl) deletePolicyById(ctx context.Context, tx *gorm.DB, id string) error {
