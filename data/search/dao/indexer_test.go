@@ -913,10 +913,12 @@ func TestClearIndex(t *testing.T) {
 
 			So(createNodes(ctx, server), ShouldBeNil)
 
+			<-time.After(2 * time.Second)
+
 			e := server.ClearIndex(ctx)
 			So(e, ShouldBeNil)
 
-			<-time.After(5 * time.Second)
+			<-time.After(2 * time.Second)
 
 			queryObject := &tree.Query{
 				FileName: "node",
