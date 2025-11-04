@@ -207,32 +207,33 @@ func (s *sqlimpl) StorePolicyGroup(ctx context.Context, group *idm.PolicyGroup) 
 		}
 	}
 
-	// Insert Policy Group - with transaction retries
-	er := sql.WithTxRetry(ctx, s.instance(ctx), 3, "storing policy group "+storeGroup.GetUuid(), func(tx *gorm.DB) error {
-		if deleteFirst {
+	if deleteFirst {
+		if er := sql.WithTxRetry(ctx, s.instance(ctx), 3, "storing policy group "+storeGroup.GetUuid(), func(tx *gorm.DB) error {
+			// Insert Policy Group - with transaction retries
 			if er := s.deleteInTransaction(ctx, tx, storeGroup); er != nil {
 				return er
 			}
-			if tx.Name() != sql.SqliteDriver {
-				if er := s.cleanupOrphans(ctx); er != nil {
-					return er
-				}
-			}
-		}
-		tx = tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "uuid"}},
-			DoUpdates: clause.AssignmentColumns([]string{"name", "description", "owner_uuid", "resource_group", "last_updated"}), // column needed to be updated
-		}).Create(storeGroup)
-		return tx.Error
-	})
-
-	if deleteFirst && s.instance(ctx).Name() == sql.SqliteDriver {
-		if err := s.cleanupOrphans(ctx); err != nil {
+			return tx.Error
+		}); er != nil {
 			return nil, er
 		}
 	}
 
-	return storeGroup, er
+	tx2 := s.instance(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "uuid"}},
+		DoUpdates: clause.AssignmentColumns([]string{"name", "description", "owner_uuid", "resource_group", "last_updated"}), // column needed to be updated
+	}).Create(storeGroup)
+	if tx2.Error != nil {
+		return nil, tx2.Error
+	}
+
+	if deleteFirst {
+		if err := s.cleanupOrphans(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	return storeGroup, nil
 
 }
 

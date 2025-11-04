@@ -49,6 +49,38 @@ func Test(t *testing.T) {
 							"ctest": {Type: "something", JsonOptions: `{"key":"value"}`},
 						},
 					},
+					{
+						ID:          "policy-2",
+						Description: "Test Policy 2",
+						Actions: []string{
+							"read",
+						},
+						Resources: []string{
+							"resource:2",
+						},
+						Subjects: []string{
+							"user:2",
+						},
+						Conditions: map[string]*idm.PolicyCondition{
+							"ctest": {Type: "something", JsonOptions: `{"key":"value"}`},
+						},
+					},
+					{
+						ID:          "policy-3",
+						Description: "Test Policy3",
+						Actions: []string{
+							"read",
+						},
+						Resources: []string{
+							"resource:3",
+						},
+						Subjects: []string{
+							"user:3",
+						},
+						Conditions: map[string]*idm.PolicyCondition{
+							"ctest": {Type: "something", JsonOptions: `{"key":"value"}`},
+						},
+					},
 				},
 			}
 
@@ -61,6 +93,43 @@ func Test(t *testing.T) {
 			groups, err := dao.ListPolicyGroups(ctx, "")
 			So(err, ShouldBeNil)
 			So(groups, ShouldHaveLength, 1)
+			So(groups[0].Policies, ShouldHaveLength, 3)
+
+			// Add some policies and update
+			group.Policies = append(group.Policies, &idm.Policy{
+				ID:          "policy-4",
+				Description: "Test Policy4",
+				Actions: []string{
+					"read",
+				},
+				Resources: []string{
+					"resource:4",
+				},
+				Subjects: []string{
+					"user:4",
+				},
+			})
+			storedGroup, err = dao.StorePolicyGroup(ctx, group)
+			So(err, ShouldBeNil)
+			So(storedGroup, ShouldNotBeNil)
+
+			// Test: List PolicyGroups
+			groups, err = dao.ListPolicyGroups(ctx, "")
+			So(err, ShouldBeNil)
+			So(groups, ShouldHaveLength, 1)
+			So(groups[0].Policies, ShouldHaveLength, 4)
+
+			// Remove some policies and update
+			group.Policies = group.Policies[:1]
+			storedGroup, err = dao.StorePolicyGroup(ctx, group)
+			So(err, ShouldBeNil)
+			So(storedGroup, ShouldNotBeNil)
+
+			// Test: List PolicyGroups
+			groups, err = dao.ListPolicyGroups(ctx, "")
+			So(err, ShouldBeNil)
+			So(groups, ShouldHaveLength, 1)
+			So(groups[0].Policies, ShouldHaveLength, 1)
 
 			// Test: Delete PolicyGroup
 			sql.TestPrintQueries = true
