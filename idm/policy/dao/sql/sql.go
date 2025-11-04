@@ -207,8 +207,8 @@ func (s *sqlimpl) StorePolicyGroup(ctx context.Context, group *idm.PolicyGroup) 
 		}
 	}
 
-	// Insert Policy Group
-	er := s.instance(ctx).Transaction(func(tx *gorm.DB) error {
+	// Insert Policy Group - with transaction retries
+	er := sql.WithTxRetry(ctx, s.instance(ctx), 3, "storing policy group "+storeGroup.GetUuid(), func(tx *gorm.DB) error {
 		if deleteFirst {
 			if er := s.deleteInTransaction(ctx, tx, storeGroup); er != nil {
 				return er
