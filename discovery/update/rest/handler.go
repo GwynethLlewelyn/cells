@@ -21,14 +21,12 @@
 package rest
 
 import (
-	"fmt"
-
 	restful "github.com/emicklei/go-restful/v3"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/update"
-	"github.com/pydio/cells/v4/common/service"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/update"
 )
 
 type Handler struct{}
@@ -44,43 +42,40 @@ func (h *Handler) Filter() func(string) string {
 	}
 }
 
-func (h *Handler) UpdateRequired(req *restful.Request, rsp *restful.Response) {
+func (h *Handler) UpdateRequired(req *restful.Request, rsp *restful.Response) error {
 
 	ctx := req.Request.Context()
 	var updateRequest update.UpdateRequest
 	if e := req.ReadEntity(&updateRequest); e != nil {
-		service.RestError500(req, rsp, e)
-		return
+		return e
 	}
-	cli := update.NewUpdateServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUpdate))
+	cli := update.NewUpdateServiceClient(grpc.ResolveConn(ctx, common.ServiceUpdateGRPC))
 	response, err := cli.UpdateRequired(ctx, &updateRequest)
 	if err != nil {
-		service.RestError500(req, rsp, err)
+		return err
 	} else {
-		rsp.WriteEntity(response)
+		return rsp.WriteEntity(response)
 	}
 
 }
 
-func (h *Handler) ApplyUpdate(req *restful.Request, rsp *restful.Response) {
+func (h *Handler) ApplyUpdate(req *restful.Request, rsp *restful.Response) error {
 
 	ctx := req.Request.Context()
 	var applyRequest update.ApplyUpdateRequest
 	if e := req.ReadEntity(&applyRequest); e != nil {
-		service.RestError500(req, rsp, e)
-		return
+		return e
 	}
 	if applyRequest.TargetVersion == "" {
-		service.RestError500(req, rsp, fmt.Errorf("please provide a target version"))
-		return
+		return errors.WithMessage(errors.InvalidParameters, "please provide a target version")
 	}
 
-	cli := update.NewUpdateServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUpdate))
+	cli := update.NewUpdateServiceClient(grpc.ResolveConn(ctx, common.ServiceUpdateGRPC))
 	response, err := cli.ApplyUpdate(ctx, &applyRequest)
 	if err != nil {
-		service.RestError500(req, rsp, err)
+		return err
 	} else {
-		rsp.WriteEntity(response)
+		return rsp.WriteEntity(response)
 	}
 
 }

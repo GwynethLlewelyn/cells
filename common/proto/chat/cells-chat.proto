@@ -1,19 +1,23 @@
 syntax="proto3";
 
-package chat;
+import "google/protobuf/timestamp.proto";
 
-option go_package="github.com/pydio/cells/common/proto/chat";
-
+import "cells-setter.proto";
 import "cells-activitystream.proto";
+
+option go_package="github.com/pydio/cells/v5/common/proto/chat";
+package chat;
 
 enum RoomType {
     GLOBAL    = 0;
     WORKSPACE = 1;
     USER      = 2;
     NODE      = 3;
+    ANY       = 4;
 }
 
 message ChatRoom {
+    option (setter.all_fields) = true;
     string Uuid = 1;
     RoomType Type = 2;
     string RoomTypeObject = 3;
@@ -24,6 +28,7 @@ message ChatRoom {
 }
 
 message ChatMessage {
+    option (setter.all_fields) = true;
     string Uuid = 1;
     string RoomUuid = 2;
 
@@ -31,7 +36,9 @@ message ChatMessage {
     string Author = 4;
     int64 Timestamp = 5;
 
+    // Additional information or metadata
     activity.Object Activity = 6;
+    map<string,string> Info = 7;
 }
 
 service ChatService {
@@ -54,6 +61,7 @@ message PutRoomResponse {
 
 message PostMessageRequest {
     repeated ChatMessage Messages = 1;
+    map<string, ChatRoom> KnownRooms = 2;
 }
 message PostMessageResponse {
     bool Success = 1;
@@ -62,6 +70,7 @@ message PostMessageResponse {
 
 message DeleteMessageRequest {
     repeated ChatMessage Messages = 1;
+    map<string, ChatRoom> KnownRooms = 2;
 }
 message DeleteMessageResponse {
     bool Success = 1;
@@ -96,6 +105,7 @@ message DeleteRoomResponse{
 }
 
 message ChatEvent {
+    option (setter.all_fields) = true;
     ChatMessage Message = 1;
     ChatRoom Room = 2;
     string Details = 3;
@@ -112,6 +122,7 @@ enum WsMessageType {
 }
 
 message WebSocketMessage {
+    option (setter.all_fields) = true;
     WsMessageType Type = 1 [json_name="@type"];
     ChatRoom Room = 2;
     ChatMessage Message = 3;

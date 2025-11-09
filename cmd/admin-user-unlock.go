@@ -21,16 +21,15 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/idm"
 )
 
 var (
@@ -53,14 +52,15 @@ EXAMPLE
 `, os.Args[0]),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if userUnlockLogin == "" {
-			return fmt.Errorf("Missing arguments")
+			return errors.New("Missing arguments")
 		}
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		client := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUser))
+		ctx := cmd.Context()
+		client := idmc.UserServiceClient(ctx)
 
-		users, err := searchUser(context.Background(), client, userUnlockLogin)
+		users, err := searchUser(cmd.Context(), client, userUnlockLogin)
 		if err != nil {
 			fmt.Printf("Cannot list users for login %s: %s", userUnlockLogin, err.Error())
 		}
@@ -68,7 +68,7 @@ EXAMPLE
 		for _, user := range users {
 			delete(user.Attributes, "locks")
 			delete(user.Attributes, "failedConnections")
-			if _, err := client.CreateUser(context.Background(), &idm.CreateUserRequest{
+			if _, err := client.CreateUser(cmd.Context(), &idm.CreateUserRequest{
 				User: user,
 			}); err != nil {
 				fmt.Printf("could not unlock user [%s], skipping.\n Error message: %s", user.Login, err.Error())

@@ -32,10 +32,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/sync/endpoints/cells/transport"
-	http2 "github.com/pydio/cells/v4/common/sync/endpoints/cells/transport/http"
-	"github.com/pydio/cells/v4/common/utils/cache"
+	"github.com/pydio/cells/v5/common/sync/endpoints/cells/transport"
+	http2 "github.com/pydio/cells/v5/common/sync/endpoints/cells/transport/http"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	"github.com/pydio/cells/v5/common/utils/cache/gocache"
+
+	_ "github.com/pydio/cells/v5/common/utils/cache/gocache"
 )
 
 var (
@@ -50,7 +52,8 @@ type TokenStore struct {
 }
 
 func NewTokenStore() *TokenStore {
-	c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=20m&cleanWindow=10m")
+	u, _ := url.Parse("pm:///?evictionTime=20m&cleanWindow=10m")
+	c, _ := (&gocache.URLOpener{}).Open(context.TODO(), u)
 	t := &TokenStore{
 		internalCache: c,
 	}

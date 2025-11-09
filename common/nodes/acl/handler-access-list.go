@@ -23,13 +23,12 @@ package acl
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func WithAccessList() nodes.Option {

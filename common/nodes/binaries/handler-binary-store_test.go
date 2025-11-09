@@ -25,18 +25,26 @@ import (
 	"strings"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/utils/openurl"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 var (
 	testBinaryStoreName = "store"
 )
+
+func init() {
+	nodes.SetSourcesPoolOpener(func(ctx context.Context) *openurl.Pool[nodes.SourcesPool] {
+		return nodes.NewTestPool(ctx)
+	})
+
+}
 
 func getStoreTestMock() (nodes.Handler, *nodes.HandlerMock) {
 	mock := nodes.NewHandlerMock()
@@ -46,9 +54,11 @@ func getStoreTestMock() (nodes.Handler, *nodes.HandlerMock) {
 	handler.SetNextHandler(mock)
 
 	nodes.IsUnitTestEnv = true
-	cPool := nodes.NewTestPool(context.TODO())
-	cPool.CreateClientsForDataSource(testBinaryStoreName, &object.DataSource{})
-	handler.SetClientsPool(cPool)
+	ctx := context.TODO()
+	// TODO
+	cl := nodes.GetSourcesPool(ctx)
+	_ = cl.(*nodes.ClientsPool).CreateClientsForDataSource(testBinaryStoreName, &object.DataSource{})
+
 	mock.Nodes["/test/file"] = &tree.Node{Path: "/test/file"}
 	mock.Nodes[testBinaryStoreName+"/thumb1"] = &tree.Node{Path: testBinaryStoreName + "/thumb1"}
 	return handler, mock
@@ -113,7 +123,7 @@ func TestHandler_ReadNode(t *testing.T) {
 // 	handler, mock := getStoreTestMock()
 
 // 	Convey("Test Get Object", t, func() {
-// 		_, e := handler.GetObject(context.Background(), &tree.Node{Path: testBinaryStoreName + "/thumb"}, &GetRequestData{})
+// 		_, e := handler.GetObject(context.Background(), &tree.N{Path: testBinaryStoreName + "/thumb"}, &GetRequestData{})
 // 		So(e, ShouldNotBeNil)
 // 		So(mock.Nodes["in"], ShouldNotBeNil)
 // 		ctx := mock.Context
@@ -130,24 +140,21 @@ func TestHandler_WriteOperations(t *testing.T) {
 	Convey("Test CreateNode in BinaryStore", t, func() {
 
 		_, e := handler.CreateNode(ctx, &tree.CreateNodeRequest{Node: &tree.Node{Path: testBinaryStoreName + "/thumb"}})
-		parsed := errors.FromError(e)
-		So(parsed.Code, ShouldEqual, 403)
+		So(errors.Is(e, errors.StatusForbidden), ShouldBeTrue)
 
 	})
 
 	Convey("Test PutObject in BinaryStore", t, func() {
 
 		_, e := handler.PutObject(ctx, &tree.Node{Path: testBinaryStoreName + "/thumb"}, strings.NewReader(""), &models.PutRequestData{})
-		parsed := errors.FromError(e)
-		So(parsed.Code, ShouldEqual, 403)
+		So(errors.Is(e, errors.StatusForbidden), ShouldBeTrue)
 
 	})
 
 	Convey("Test DeleteNode in BinaryStore", t, func() {
 
 		_, e := handler.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: &tree.Node{Path: testBinaryStoreName + "/thumb"}})
-		parsed := errors.FromError(e)
-		So(parsed.Code, ShouldEqual, 403)
+		So(errors.Is(e, errors.StatusForbidden), ShouldBeTrue)
 
 	})
 
@@ -157,17 +164,13 @@ func TestHandler_WriteOperations(t *testing.T) {
 			From: &tree.Node{Path: testBinaryStoreName + "/thumb"},
 			To:   &tree.Node{Path: testBinaryStoreName + "/thumb1"},
 		})
-		parsed := errors.FromError(e)
-		So(parsed.Code, ShouldEqual, 403)
-
+		So(errors.Is(e, errors.StatusForbidden), ShouldBeTrue)
 	})
 
 	Convey("Test CopyObject in BinaryStore", t, func() {
 
 		_, e := handler.CopyObject(ctx, &tree.Node{Path: testBinaryStoreName + "/thumb"}, &tree.Node{Path: testBinaryStoreName + "/thumb1"}, &models.CopyRequestData{})
-		parsed := errors.FromError(e)
-		So(parsed.Code, ShouldEqual, 403)
-
+		So(errors.Is(e, errors.StatusForbidden), ShouldBeTrue)
 	})
 
 }

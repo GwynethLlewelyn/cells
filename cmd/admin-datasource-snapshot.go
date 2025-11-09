@@ -21,17 +21,15 @@
 package cmd
 
 import (
-	"context"
 	"os"
-	"time"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/sync"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/sync"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 var (
@@ -82,10 +80,10 @@ EXAMPLES
 			cmd.Help()
 			return
 		}
-		syncService := "pydio.grpc.data.sync." + snapshotDsName
-
-		cli := sync.NewSyncEndpointClient(grpc.GetClientConnFromCtx(ctx, syncService, grpc.WithCallTimeout(30*time.Minute)))
-		c := metadata.WithUserNameMetadata(context.Background(), common.PydioSystemUsername)
+		syncService := common.ServiceDataSyncGRPC_ + snapshotDsName
+		ctx := cmd.Context()
+		cli := sync.NewSyncEndpointClient(grpc.ResolveConn(ctx, syncService, longGrpcCallTimeout()))
+		c := propagator.WithUserNameMetadata(cmd.Context(), common.PydioContextUserKey, common.PydioSystemUsername)
 		req := &sync.ResyncRequest{}
 		if snapshotOperation == "delete" {
 			req.Path = "delete/" + snapshotBasename

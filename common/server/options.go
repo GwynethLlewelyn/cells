@@ -22,18 +22,19 @@ package server
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/registry"
 	"net"
+
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type ServeOptions struct {
-	HttpBindAddress string
-	GrpcBindAddress string
+	Context         context.Context
+	Listener        net.Listener
 	ErrorCallback   func(error)
 	BlockUntilServe bool
-
-	BeforeServe []func(oo ...registry.RegisterOption) error
-	AfterServe  []func(oo ...registry.RegisterOption) error
+	BeforeServe     []func(oo ...registry.RegisterOption) error
+	AfterServe      []func(oo ...registry.RegisterOption) error
 
 	RegistryOptions []registry.RegisterOption
 }
@@ -46,16 +47,12 @@ func WithErrorCallback(cb func(err error)) ServeOption {
 	}
 }
 
-func WithGrpcBindAddress(a string) ServeOption {
-	return func(o *ServeOptions) {
-		o.GrpcBindAddress = a
-	}
+func WithContext(ctx context.Context) ServeOption {
+	return func(o *ServeOptions) { o.Context = ctx }
 }
 
-func WithHttpBindAddress(a string) ServeOption {
-	return func(o *ServeOptions) {
-		o.HttpBindAddress = a
-	}
+func WithListener(l net.Listener) ServeOption {
+	return func(o *ServeOptions) { o.Listener = l }
 }
 
 func WithBeforeServe(f func(oo ...registry.RegisterOption) error) ServeOption {
@@ -80,6 +77,9 @@ func WithBlockUntilServe() ServeOption {
 type Options struct {
 	Context  context.Context
 	Listener *net.Listener
+	Metadata map[string]string
+
+	interceptors *[]propagator.IncomingContextModifier
 }
 
 // Option is a function to set Options

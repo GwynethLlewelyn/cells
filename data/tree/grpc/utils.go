@@ -22,85 +22,97 @@ package grpc
 
 import (
 	"context"
-
 	"strings"
-	"time"
 
-	"go.uber.org/zap"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/registry"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/config"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 var (
 	UnitTests = false
 )
 
-func updateServicesList(ctx context.Context, treeServer *TreeServer, retry int) {
+// TODO - changed for registry listing to config listing
+func (s *TreeServer) UpdateServicesList(ctx context.Context, retry int) {
 
 	if UnitTests {
 		return
 	}
 
-	treeServer.Lock()
-	initialLength := len(treeServer.DataSources)
-	treeServer.Unlock()
+	k, _ := s.sourcesCaches.Get(ctx)
+	// all, _ := k.KeysByPrefix("")
+	_ = k.Reset()
+	// initialLength := len(all)
 
-	reg := servicecontext.GetRegistry(ctx)
-	items, err := reg.List(registry.WithType(pb.ItemType_SERVICE), registry.WithFilter(func(item registry.Item) bool {
-		return strings.HasPrefix(item.Name(), common.ServiceGrpcNamespace_+common.ServiceDataSync_) && item.Name() != common.ServiceGrpcNamespace_+common.ServiceDataSync_
-	}))
-	if err != nil {
-		return
-	}
+	/*
+		var reg registry.Registry
+		propagator.Get(ctx, registry.ContextSOTWKey, &reg)
+
+		items, err := reg.List(registry.WithType(pb.ItemType_SERVICE), registry.WithFilter(func(item registry.Item) bool {
+			return strings.HasPrefix(item.Name(), common.ServiceGrpcNamespace_+common.ServiceDataSync_) && item.Name() != common.ServiceGrpcNamespace_+common.ServiceDataSync_
+		}))
+		if err != nil {
+			return
+		}
+	*/
+
+	ss := config.ListSourcesFromConfig(ctx)
 
 	var dsKeys []string
-	dataSources := make(map[string]DataSource)
-	for _, i := range items {
-		var syncService registry.Service
-		if !i.As(&syncService) {
+
+	//	for _, i := range items {
+	//		var syncService registry.Service
+	//		if !i.As(&syncService) {
+	//			continue
+	//		}
+	//		dataSourceName := strings.TrimPrefix(syncService.Name(), common.ServiceDataSyncGRPC_)
+
+	for _, s := range ss {
+		if s.Disabled {
 			continue
 		}
-		dataSourceName := strings.TrimPrefix(syncService.Name(), common.ServiceGrpcNamespace_+common.ServiceDataSync_)
-		indexService := common.ServiceDataIndex_ + dataSourceName
-		dataSources[dataSourceName] = DataSource{
-			Name:   dataSourceName,
-			writer: tree.NewNodeReceiverClient(grpc.GetClientConnFromCtx(ctx, indexService)),
-			reader: tree.NewNodeProviderClient(grpc.GetClientConnFromCtx(ctx, indexService)),
+		dataSourceName := s.GetName()
+		indexService := common.ServiceDataIndexGRPC_ + dataSourceName
+		obj := DataSource{
+			Name:       dataSourceName,
+			IsInternal: s.IsInternal(),
+			writer:     tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, indexService)),
+			reader:     tree.NewNodeProviderClient(grpc.ResolveConn(ctx, indexService)),
 		}
 		dsKeys = append(dsKeys, dataSourceName)
-		log.Logger(ctx).Debug("[Tree:updateServicesList] Add datasource " + dataSourceName)
+		_ = k.Set(dataSourceName, obj)
+		log.Logger(ctx).Debug("[Tree:UpdateServicesList] Add datasource " + dataSourceName)
 	}
 
-	treeServer.Lock()
-	treeServer.DataSources = dataSources
-	treeServer.Unlock()
-
+	// TODO - retest with new connections
 	// If registry event comes too soon, running services may not be loaded yet
-	if retry < 4 && initialLength == len(dataSources) {
+	/*if retry < 4 && initialLength == len(dsKeys) {
 		<-time.After(10 * time.Second)
-		updateServicesList(ctx, treeServer, retry+1)
+		s.UpdateServicesList(ctx, retry+1)
 	}
 	if retry == 5 {
 		log.Logger(ctx).Debug("Force UpdateServicesList", zap.Strings("datasources", dsKeys))
-	}
+	}*/
 }
 
 // TODO - should be using the resolver for this ?
-func watchRegistry(ctx context.Context, treeServer *TreeServer) {
+func (s *TreeServer) WatchRegistry(ctx context.Context) {
 
-	reg := servicecontext.GetRegistry(ctx)
+	var reg registry.Registry
+	propagator.Get(ctx, registry.ContextKey, &reg)
 
 	w, err := reg.Watch(registry.WithType(pb.ItemType_SERVICE), registry.WithAction(pb.ActionType_FULL_DIFF))
 	if err != nil {
 		return
 	}
+
+	defer w.Stop()
 
 	for {
 		r, err := w.Next()
@@ -119,8 +131,9 @@ func watchRegistry(ctx context.Context, treeServer *TreeServer) {
 				break
 			}
 		}
+
 		if do {
-			updateServicesList(ctx, treeServer, 0)
+			s.UpdateServicesList(ctx, 0)
 		}
 	}
 }

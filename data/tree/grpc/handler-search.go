@@ -25,12 +25,12 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 
-	"go.uber.org/zap"
-
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 // StreamConverter wraps a Searcher_SearchStream into a NodesProvider_ListNodesStream
@@ -58,12 +58,15 @@ func (sc *StreamConverter) Context() context.Context {
 func (sc *StreamConverter) SendMsg(i interface{}) error {
 	return sc.wrapped.SendMsg(i)
 }
+
 func (sc *StreamConverter) RecvMsg(i interface{}) error {
 	return sc.wrapped.RecvMsg(i)
 }
 
 func (sc *StreamConverter) Send(response *tree.ListNodesResponse) error {
-	return sc.wrapped.Send(&tree.SearchResponse{Node: response.GetNode()})
+	return sc.wrapped.Send(&tree.SearchResponse{
+		Data: &tree.SearchResponse_Node{Node: response.GetNode()},
+	})
 }
 
 // Search implements the SearchServer handler method. It will transform a tree.SearchRequest into an underlying ListNode query
@@ -71,16 +74,18 @@ func (s *TreeServer) Search(request *tree.SearchRequest, stream tree.Searcher_Se
 	ctx := stream.Context()
 	q := request.GetQuery()
 	if q == nil {
-		return fmt.Errorf("request.Query should not be nil")
+		return errors.New("request.Query should not be nil")
 	}
 	if q.Content != "" {
-		return fmt.Errorf("this service does not support request.Query.Content")
+		return errors.New("this service does not support request.Query.Content")
 	}
 
 	listReq := &tree.ListNodesRequest{
-		Node:      &tree.Node{},
-		Offset:    int64(request.From),
-		Recursive: true,
+		Node:        &tree.Node{},
+		Offset:      int64(request.From),
+		SortField:   request.GetSortField(),
+		SortDirDesc: request.GetSortDirDesc(),
+		Recursive:   true,
 	}
 	if request.Size > 0 {
 		listReq.Limit = int64(request.Size)

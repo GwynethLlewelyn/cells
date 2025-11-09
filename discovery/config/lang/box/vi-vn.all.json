@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Không cần ràng buộc"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "JSON Path"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Tên máy truy cập"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Request Host"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Request Port"
   },
   "contextMetaField.RequestMethod": {
     "other": "Phương thức truy cập"
@@ -256,6 +265,9 @@
   },
   "treeQuery.UUIDs": {
     "other": "UUID của nodes"
+  },
+  "treeQuery.ETag": {
+    "other": "ETag"
   },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Có giá trị bất kỳ"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Bộ kích hoạt"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Triggered by Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Webhook Api Slug"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Run Parameter Name"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Run Parameter Value"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Hướng dẫn kích hoạt"

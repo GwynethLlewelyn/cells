@@ -22,40 +22,74 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
+	"time"
 
 	"github.com/manifoldco/promptui"
-	"github.com/pydio/cells/v4/common/config"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
+	yaml "gopkg.in/yaml.v3"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	clientcontext "github.com/pydio/cells/v4/common/client/context"
-	clientgrpc "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	nodescontext "github.com/pydio/cells/v4/common/nodes/context"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/runtime/manager"
-	"github.com/pydio/cells/v4/common/server"
-	servercontext "github.com/pydio/cells/v4/common/server/context"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/utils/filex"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+
+	_ "embed"
 )
 
 var (
-	configChecks []func(ctx context.Context) error
+	//go:embed start-bootstrap.yaml
+	bootstrapYAML string
+
+	//go:embed start-storages.yaml
+	storagesYAML string
+
+	allSettingsYAML string
+	bootstrap       *manager.Bootstrap
+	configChecks    []func(ctx context.Context) error
+	bootstrapHooks  []*bootstrapHook
 )
+
+var (
+	niBindUrl          string
+	niExtUrl           string
+	niNoTls            bool
+	niModeCli          bool
+	niCertFile         string
+	niKeyFile          string
+	niLeEmailContact   string
+	niLeAcceptEula     bool
+	niLeUseStagingCA   bool
+	niYamlFile         string
+	niJsonFile         string
+	niExitAfterInstall bool
+)
+
+type bootstrapHook struct {
+	Name     string
+	Callback func(ctx context.Context, bs *manager.Bootstrap) error
+}
 
 func RegisterConfigChecker(f func(ctx context.Context) error) {
 	configChecks = append(configChecks, f)
+}
+
+func RegisterBootstrapHook(hookName string, cb func(ctx context.Context, bs *manager.Bootstrap) error) {
+	bootstrapHooks = append(bootstrapHooks, &bootstrapHook{Name: hookName, Callback: cb})
 }
 
 // StartCmd represents the start command
@@ -104,9 +138,9 @@ ENVIRONMENT
 
   All the command flags documented below are mapped to their associated ENV var, using upper case and CELLS_ prefix.
   For example :
-  $ ` + os.Args[0] + ` start --grpc_external 54545
+  $ ` + os.Args[0] + ` start --grpc_port 54545
   is equivalent to 
-  $ export CELLS_GRPC_EXTERNAL=54545; ` + os.Args[0] + ` start
+  $ export CELLS_GRPC_PORT=54545; ` + os.Args[0] + ` start
 
   2. Working Directories 
 
@@ -122,210 +156,263 @@ ENVIRONMENT
   - CELLS_UPDATE_HTTP_PROXY: if your server uses a client proxy to access outside world, this can be set to query update server.
   - HTTP_PROXY, HTTPS_PROXY, NO_PROXY: golang-specific environment variables to configure a client proxy for all external http calls.
 
-  4. Development variables
-
-  - CELLS_ENABLE_WIP_LANGUAGES: show partially translated languages in the UX language picker. 
-  - CELLS_ENABLE_LIVEKIT: enable experimental support for video calls in the chat window, using a livekit-server.
-  - CELLS_ENABLE_FORMS_DEVEL: display a basic UX form with all possible fields types in the UX (for React developers)
-  - CELLS_DEFAULT_DS_STRUCT: if true, create default datasources using structured format instead of flat
-  - CELLS_TRACE_FATAL: if true, tries to better display root cause of process crashes
+  4. Other environment variables (development or advanced fine-tuning)
 
 `,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
+
 		bindViperFlags(cmd.Flags(), map[string]string{
-			runtime.KeyFork: runtime.KeyForkLegacy,
+			runtime.KeyFork:              runtime.KeyForkLegacy,
+			runtime.KeyInstallYamlLegacy: runtime.KeyInstallYaml,
+			runtime.KeyInstallJsonLegacy: runtime.KeyInstallJson,
+			runtime.KeyInstallCliLegacy:  runtime.KeyInstallCli,
 		})
+
+		b, err := yaml.Marshal(runtime.GetRuntime().AllSettings())
+		if err != nil {
+			return err
+		}
+		allSettingsYAML = string(b)
+
+		// Manually bind to viper instead of flags.StringVar, flags.BoolVar, etc
+		niModeCli = runtime.GetBool(runtime.KeyInstallCli)
+		niYamlFile = runtime.GetString(runtime.KeyInstallYaml)
+		niJsonFile = runtime.GetString(runtime.KeyInstallJson)
+		niExitAfterInstall = runtime.GetBool(runtime.KeyInstallExitAfter)
+
+		niBindUrl = runtime.GetString(runtime.KeySiteBind)
+		niExtUrl = runtime.GetString(runtime.KeySiteExternal)
+		niNoTls = runtime.GetBool(runtime.KeySiteNoTLS)
+		niCertFile = runtime.GetString(runtime.KeySiteTlsCertFile)
+		niKeyFile = runtime.GetString(runtime.KeySiteTlsKeyFile)
+		niLeEmailContact = runtime.GetString(runtime.KeySiteLetsEncryptEmail)
+		niLeAcceptEula = runtime.GetBool(runtime.KeySiteLetsEncryptAgree)
+		niLeUseStagingCA = runtime.GetBool(runtime.KeySiteLetsEncryptStaging)
 
 		runtime.SetArgs(args)
 		initLogLevel()
 		handleSignals(args)
 
-		return nil
-	},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		managerLogger := log.Logger(servicecontext.WithServiceName(ctx, "pydio.server.manager"))
+		cv := common.MakeCellsVersion()
+		cmd.Println("\033[1mStarting " + cv.PackageLabel + "\033[0m ")
+		cmd.Println("Version:\t" + cv.Version + " (" + cv.GitCommit + ") built on " + cv.BuildTime)
+		cmd.Println("Go Build:\t" + cv.GoVersion + " (" + cv.Arch + ")")
+		cmd.Println("Working Dir: \t" + runtime.ApplicationWorkingDir())
+		cmd.Println("")
 
-		if needs, gU := runtime.NeedsGrpcDiscoveryConn(); needs {
-			u, err := url.Parse(gU)
-			if err != nil {
-				return err
-			}
-			discoveryConn, err := grpc.Dial(u.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				return err
-			}
-			ctx = clientcontext.WithClientConn(ctx, discoveryConn)
-		}
+		installConf := &install.InstallConfig{}
+		var proxyConf *install.ProxyConfig
 
-		configFile := filepath.Join(runtime.ApplicationWorkingDir(), runtime.DefaultConfigFileName)
-		if runtime.ConfigIsLocalFile() && !filex.Exists(configFile) {
-			return triggerInstall(
-				"We cannot find a configuration file ... "+configFile,
-				"Do you want to create one now",
-				cmd, args)
-		}
-
-		// Init config
-		isNew, keyring, er := initConfig(ctx, true)
+		ctx, er := initManagerContext(cmd.Context())
 		if er != nil {
 			return er
 		}
-		if isNew && runtime.ConfigIsLocalFile() {
-			return triggerInstall(
-				"Oops, the configuration is not right ... "+configFile,
-				"Do you want to reset the initial configuration", cmd, args)
+
+		// Checking if we need to install something
+		if niYamlFile != "" || niJsonFile != "" {
+
+			if err := config.SaveNewFromSample(ctx); err != nil {
+				return err
+			}
+
+			installConf, err = nonInteractiveInstall(ctx)
+			fatalIfError(cmd, err)
+
+			// we only non-interactively configured the proxy, launching browser install
+			// make sure default bind is set here
+			proxyConf = installConf.GetProxyConfig()
+			if len(proxyConf.Binds) == 0 {
+				fatalIfError(cmd, errors.New("no bind was found in default site, non interactive install probably has a wrong format"))
+			}
+
+			if niExitAfterInstall {
+				<-time.After(time.Second)
+				cmd.Println("")
+				cmd.Println(promptui.IconGood + "\033[1m Installation Finished\033[0m")
+				cmd.Println("")
+				os.Exit(0)
+			}
+
+		} else {
+			// We don't have anything to install, we are going to populate the InstallConf with the config we have to prepare the environment
+			installConf.DbManualDSN = config.Get(ctx, "defaults/database/dsn").String()
+			if !strings.Contains(installConf.DbManualDSN, "?") {
+				installConf.DbManualDSN += "?" // URL maybe appended with &key=value string
+			}
 		}
-		ctx = servicecontext.WithKeyring(ctx, keyring)
+
+		hasCustomBind := routing.EnvOverrideDefaultBind()
+		if hasCustomBind {
+			cmd.Printf("Binding service to '%s'\n", niBindUrl)
+		}
+
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+
+		ctx, cancel := context.WithCancel(cmd.Context())
+		defer cancel()
+
+		//configFile := filepath.Join(runtime.ApplicationWorkingDir(), runtime.DefaultConfigFileName)
+		//if runtime.ConfigIsLocalFile() && !filex.Exists(configFile) {
+		//	return nil
+		//	//return triggerInstall(
+		//	//	"We cannot find a configuration file ... "+configFile,
+		//	//	"Do you want to create one now",
+		//	//	cmd, args)
+		//}
+
+		/* Init config
+		var er error
+		var isNew bool
+		ctx, isNew, er = initConfig(ctx, true)
+		if er != nil {
+			return er
+		}
+		// TODO - RECHECK BLANK INSTALL
+		if isNew && runtime.ConfigIsLocalFile() {
+			return nil
+			//return triggerInstall(
+			//	"Oops, the configuration is not right ... "+configFile,
+			//	"Do you want to reset the initial configuration", cmd, args)
+		}
+
+		// TODO - RECHECK USE OTHER FUNCS
 		for _, cc := range configChecks {
 			if e := cc(ctx); e != nil {
 				return e
 			}
-		}
+		}*/
 
-		// Init registry
-		reg, err := registry.OpenRegistry(ctx, runtime.RegistryURL())
+		bootstrap, err := manager.NewBootstrap(ctx)
 		if err != nil {
 			return err
 		}
-		ctx = servercontext.WithRegistry(ctx, reg)
 
-		// Init broker
-		broker.Register(broker.NewBroker(runtime.BrokerURL(), broker.WithContext(ctx)))
+		// A tracer may be configured, create a start trace
+		var span trace.Span
+		ctx, span = otel.GetTracerProvider().Tracer("cells-command").Start(ctx, "start", trace.WithSpanKind(trace.SpanKindInternal))
 
-		if !runtime.IsFork() {
-			data := []runtime.InfoGroup{binaryInfo()}
-			data = append(data, runtime.Describe()...)
-			for _, group := range data {
-				cmd.Println(group.Name + ":")
-				for _, pair := range group.Pairs {
-					cmd.Println("  " + pair.Key + ":\t" + pair.Value)
-				}
-				cmd.Println("")
+		ctx = runtime.AsCoreContext(ctx)
+
+		// Optionally fully override the template based on arguments
+		if yaml := runtime.GetString(runtime.KeyBootstrapYAML); yaml != "" {
+			if err := bootstrap.RegisterTemplate(ctx, "yaml", yaml); err != nil {
+				return err
 			}
-		}
+		} else if file := runtime.GetString(runtime.KeyBootstrapFile); file != "" {
+			b, err := os.ReadFile(file)
+			if err != nil {
+				return err
+			}
 
-		// Starting discovery server containing registry, broker, config and log
-		var discovery manager.Manager
-		if !runtime.IsGrpcScheme(runtime.RegistryURL()) {
-			if discovery, err = startDiscoveryServer(ctx, reg, managerLogger); err != nil {
+			if err := bootstrap.RegisterTemplate(ctx, strings.TrimPrefix(filepath.Ext(file), "."), string(b)); err != nil {
+				return err
+			}
+		} else {
+			tmpl := template.New("bootstrap").Delims("{{{{", "}}}}")
+			if _, err := tmpl.Parse(bootstrapYAML); err != nil {
+				return err
+			}
+
+			var b strings.Builder
+			if err := tmpl.Execute(&b, nil); err != nil {
+				return err
+			}
+
+			if err := bootstrap.RegisterTemplate(ctx, "yaml", b.String()); err != nil {
 				return err
 			}
 		}
 
-		// Create a main client connection
-		clientgrpc.WarnMissingConnInContext = true
-		conn, err := grpc.Dial("cells:///", clientgrpc.DialOptionsForRegistry(reg)...)
+		for _, bh := range bootstrapHooks {
+			if bh.Name == "loaded" {
+				if er := bh.Callback(ctx, bootstrap); er != nil {
+					return er
+				}
+			}
+		}
+
+		if er := bootstrap.RegisterTemplate(ctx, "yaml", string(allSettingsYAML)); er != nil {
+			return er
+		}
+		bootstrap.MustReset(ctx, nil)
+
+		broker.Register(broker.NewBroker(runtime.BrokerURL(), broker.WithContext(ctx)))
+
+		ctx = context.WithValue(ctx, "managertype", "standard")
+
+		m, err := manager.NewManager(ctx, runtime.NsMain)
 		if err != nil {
-			return err
-		}
-		ctx = clientcontext.WithClientConn(ctx, conn)
-		ctx = nodescontext.WithSourcesPool(ctx, nodes.NewPool(ctx, reg))
-
-		m := manager.NewManager(reg, "mem:///?cache=plugins&byname=true", "main", managerLogger)
-		if err := m.Init(ctx); err != nil {
+			span.End()
 			return err
 		}
 
-		// Logging Stuff
-		runtime.InitGlobalConnConsumers(ctx, "main")
-		go initLogLevelListener(ctx)
+		// Retrieve the config store from the new context manager
+		var configStore config.Store
+		propagator.Get(m.Context(), config.ContextKey, &configStore)
 
-		go m.WatchServicesConfigs()
-		go m.WatchBroker(ctx, broker.Default())
-
-		if replaced := config.EnvOverrideDefaultBind(); replaced {
-			// Bind sites are replaced by flags/env values - warn that it will take precedence
-			if ss, e := config.LoadSites(true); e == nil && len(ss) > 0 && !runtime.IsFork() {
-				fmt.Println("*****************************************************************")
-				fmt.Println("*  Dynamic bind flag detected, overriding any configured sites  *")
-				fmt.Println("*****************************************************************")
-			}
+		if configStore == nil {
+			return errors.New("no config store found")
 		}
 
-		if os.Args[1] == "daemon" {
-			msg := "| Starting daemon, use '" + os.Args[0] + " ctl' to control services |"
-			line := strings.Repeat("-", len(msg))
-			cmd.Println(line)
-			cmd.Println(msg)
-			cmd.Println(line)
-			m.SetServeOptions(
-				server.WithGrpcBindAddress(runtime.GrpcBindAddress()),
-				server.WithHttpBindAddress(runtime.HttpBindAddress()),
-			)
-		} else {
-			select {
-			case <-ctx.Done():
-				fmt.Println(promptui.IconBad + " Context is cancelled, do not start services")
-				return nil
-			default:
-			}
-			m.ServeAll(
-				server.WithGrpcBindAddress(runtime.GrpcBindAddress()),
-				server.WithHttpBindAddress(runtime.HttpBindAddress()),
-				server.WithErrorCallback(func(err error) {
-					cmd.Println(promptui.IconBad + " - There was an error while starting:" + err.Error())
-				}),
-			)
+		// Reading template
+		tmpl := template.New("storages").Delims("{{", "}}")
+		yml, err := tmpl.Parse(storagesYAML)
+		fatalIfError(cmd, err)
+
+		var b strings.Builder
+		if err := yml.Execute(&b, map[string]any{
+			"storages": configStore.Val("databases").Map(),
+		}); err != nil {
+			return err
 		}
 
-		select {
-		case <-ctx.Done():
+		if err := bootstrap.RegisterTemplate(ctx, "yaml", b.String()); err != nil {
+			return err
 		}
+
+		span.End()
+
+		bootstrap.MustReset(ctx, nil)
+
+		m.Bootstrap(bootstrap.String())
+
+		if err := m.ServeAll(); err != nil {
+			return err
+		}
+
+		// Do the initial migration
+		cli := service.NewMigrateServiceClient(grpc.ResolveConn(ctx, common.ServiceInstallGRPC))
+		if _, err := cli.Migrate(m.Context(), &service.MigrateRequest{Version: common.Version().String()}); err != nil {
+			log.Logger(m.Context()).Warn("Ignoring migration failure", zap.Error(err))
+		}
+
+		<-ctx.Done()
 
 		m.StopAll()
-
-		if discovery != nil {
-			managerLogger.Info("Stopping discovery services now")
-			discovery.StopAll()
-		}
 
 		return nil
 	},
 }
 
-func startDiscoveryServer(ctx context.Context, reg registry.Registry, logger log.ZapLogger) (manager.Manager, error) {
-
-	m := manager.NewManager(reg, "mem:///", "discovery", logger)
-	if er := m.Init(ctx); er != nil {
-		return nil, er
-	}
-
-	errorCallback := func(err error) {
-		if !strings.Contains(err.Error(), "context canceled") {
-			fmt.Println("************************************************************")
-			fmt.Println(promptui.IconBad + " Error while starting discovery server:")
-			fmt.Println(promptui.IconBad + " " + err.Error())
-			fmt.Println(promptui.IconBad + " FATAL : shutting down now!")
-			fmt.Println("************************************************************")
-			cancel()
-		} else {
-			fmt.Println(err)
-		}
-	}
-
-	m.ServeAll(
-		server.WithErrorCallback(errorCallback),
-		server.WithGrpcBindAddress(runtime.GrpcDiscoveryBindAddress()),
-		server.WithBlockUntilServe(),
-	)
-
-	logger.Info("Discovery services started, carry on to other services")
-
-	return m, nil
-}
-
 func init() {
 	// Flags for selecting / filtering services
+	StartCmd.Flags().String(runtime.KeyBootstrapFile, "", "Name for the file")
+	StartCmd.Flags().String(runtime.KeyBootstrapTpl, "", "Template to use to generate bootstrap YAML")
+	StartCmd.Flags().String(runtime.KeyBootstrapRoot, "#", "Lookup path inside bootstrap for this process")
+
+	StartCmd.Flags().String(runtime.KeyName, "default", "Name for the node")
 	StartCmd.Flags().StringArrayP(runtime.KeyArgTags, "t", []string{}, "Select services to start by tags, possible values are 'broker', 'data', 'datasource', 'discovery', 'frontend', 'gateway', 'idm', 'scheduler'")
 	StartCmd.Flags().StringArrayP(runtime.KeyArgExclude, "x", []string{}, "Select services to start by filtering out some specific ones by name")
 
-	StartCmd.Flags().String(runtime.KeyBindHost, "0.0.0.0", "Address on which servers will bind. Binding port depends on the server type (grpc, http, etc).")
+	StartCmd.Flags().String(runtime.KeyBindHost, "127.0.0.1", "Address on which servers will bind. Binding port depends on the server type (grpc, http, etc).")
 	StartCmd.Flags().String(runtime.KeyAdvertiseAddress, "", "Address that should be advertised to other members of the cluster (leave it empty for default advertise address)")
 	StartCmd.Flags().String(runtime.KeyGrpcPort, runtime.DefaultGrpcPort, "Default gRPC server port (all gRPC services, except discovery ones)")
 	StartCmd.Flags().String(runtime.KeyGrpcDiscoveryPort, runtime.DefaultDiscoveryPort, "Default discovery gRPC server port (registry, broker, config, and log services).")
+	StartCmd.Flags().String(runtime.KeyGrpcExternal, "", "Fix the gRPC Gateway public port, not necessary unless a reverse-proxy does not support HTTP/2 protocol.")
 
-	StartCmd.Flags().String(runtime.KeyHttpServer, "caddy", "HTTP Server Type")
+	StartCmd.Flags().String(runtime.KeyHttpServer, "http", "HTTP Server Type")
 	StartCmd.Flags().String(runtime.KeyHttpPort, runtime.DefaultHttpPort, "HTTP Server Port")
 	StartCmd.Flags().Bool(runtime.KeyFork, false, "Used internally by application when forking processes")
 	StartCmd.Flags().StringArray(runtime.KeyNodeCapacity, []string{}, "Node capacity declares externally supported features for this node")
@@ -335,18 +422,33 @@ func init() {
 		_ = StartCmd.Flags().MarkHidden(runtime.KeyHttpPort)
 		_ = StartCmd.Flags().MarkHidden(runtime.KeyFork)
 		_ = StartCmd.Flags().MarkHidden(runtime.KeyNodeCapacity)
+		_ = StartCmd.Flags().MarkHidden(runtime.KeyGrpcExternal)
 	}
 
-	addCacheFlags(StartCmd.Flags())
 	addRegistryFlags(StartCmd.Flags())
 	addSiteOverrideFlags(StartCmd.Flags(), true)
 
 	StartCmd.Flags().String(runtime.KeyLog, "info", "Output log level: debug, info, warn, error (production is equivalent to log_json+info)")
 	StartCmd.Flags().Bool(runtime.KeyLogJson, false, "Output log formatted as JSON instead of text")
 	StartCmd.Flags().Bool(runtime.KeyLogToFile, common.MustLogFileDefaultValue(), "Write logs on-file in CELLS_LOG_DIR")
-	StartCmd.Flags().Bool(runtime.KeyEnableMetrics, false, "Instrument code to expose internal metrics")
-	StartCmd.Flags().Bool(runtime.KeyEnablePprof, false, "Enable pprof remote debugging")
-	StartCmd.Flags().Int(runtime.KeyHealthCheckPort, 0, "Healthcheck port number")
+	StartCmd.Flags().Bool(runtime.KeyLogSQL, false, "Print sql requests in logs")
+
+	// Deprecate in favor of config-based metrics setup
+	StartCmd.Flags().Bool(runtime.KeyEnableMetrics, false, "[Deprecated] Instrument code to expose internal metrics (to local JSON file, or service discovery if Metrics Basic Auth is set)")
+	StartCmd.Flags().Bool(runtime.KeyEnablePprof, false, "[Deprecated] Enable pprof remote debugging")
+	_ = StartCmd.Flags().MarkDeprecated(runtime.KeyEnableMetrics, "This flag is deprecated, but the env variable is still working. Switch to config-based metrics declaration instead")
+	_ = StartCmd.Flags().MarkDeprecated(runtime.KeyEnablePprof, "This flag is deprecated, but the env variable is still working. Switch to config-based profiling declaration instead")
+
+	//StartCmd.Flags().Int(runtime.KeyHealthCheckPort, 0, "Healthcheck port number")
+	StartCmd.Flags().StringSlice(runtime.KeyBootstrapSet, []string{}, "Set value")
+	StartCmd.Flags().String(runtime.KeyBootstrapSetsFile, "", "File containing one key=value per line as would be passed by multiple --set flags")
+
+	flags := StartCmd.Flags()
+
+	flags.Bool(runtime.KeyInstallCliLegacy, false, "Do not prompt for install mode, use CLI mode by default")
+	flags.String(runtime.KeyInstallYamlLegacy, "", "Points toward a configuration in YAML format")
+	flags.String(runtime.KeyInstallJsonLegacy, "", "Points toward a configuration in JSON format")
+	flags.Bool(runtime.KeyInstallExitAfter, false, "Simply exits main process after the installation is done")
 
 	RootCmd.AddCommand(StartCmd)
 }

@@ -23,10 +23,10 @@ package lib
 import (
 	"fmt"
 
-	"github.com/pydio/cells/v4/common/proto/install"
-	"github.com/pydio/cells/v4/common/runtime"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/net"
+	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/runtime"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/net"
 )
 
 var (
@@ -71,7 +71,7 @@ func GenerateDefaultConfig() *install.InstallConfig {
 
 	c := &install.InstallConfig{}
 	c.DbConnectionType = "tcp"
-	c.DbTCPHostname = "localhost"
+	c.DbTCPHostname = "127.0.0.1"
 	c.DbTCPPort = "3306"
 	c.DbTCPName = "cells"
 	c.DbTCPUser = "root"
@@ -80,7 +80,7 @@ func GenerateDefaultConfig() *install.InstallConfig {
 	c.DbSocketName = "cells"
 	c.DbSocketUser = "root"
 	c.DbSocketPassword = ""
-	c.DbManualDSN = "root@tcp(localhost=3306)/cells"
+	c.DbManualDSN = "mysql://root@tcp(127.0.0.1:3306)/cells?parseTime=true"
 	c.DsName = "pydiods1"
 	c.DsPort = fmt.Sprintf("%d", net.GetAvailablePort())
 	c.DsFolder = runtime.ApplicationWorkingDir(runtime.ApplicationDirData)

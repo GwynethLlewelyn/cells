@@ -29,15 +29,16 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/archive"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
-	"github.com/pydio/cells/v4/scheduler/actions/tools"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes/archive"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
+	"github.com/pydio/cells/v5/scheduler/actions/tools"
 )
 
 var (
@@ -71,7 +72,7 @@ func (c *CompressAction) GetDescription(lang ...string) actions.ActionDescriptio
 		ID:                compressActionName,
 		Category:          actions.ActionCategoryArchives,
 		Label:             "Create Archive",
-		Icon:              "package-down",
+		Icon:              "archive-plus",
 		Description:       "Create a Zip, Tar or Tar.gz archive from the input",
 		InputDescription:  "Selection of node(s). Folders will be recursively walked through.",
 		OutputDescription: "One single node pointing to the created archive file.",
@@ -81,7 +82,7 @@ func (c *CompressAction) GetDescription(lang ...string) actions.ActionDescriptio
 }
 
 // GetParametersForm returns a UX form
-func (c *CompressAction) GetParametersForm() *forms.Form {
+func (c *CompressAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -119,7 +120,7 @@ func (c *CompressAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *CompressAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CompressAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if format, ok := action.Parameters["format"]; ok {
 		c.Format = format
 	} else {
@@ -133,7 +134,7 @@ func (c *CompressAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (c *CompressAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *CompressAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil
@@ -152,8 +153,7 @@ func (c *CompressAction) Run(ctx context.Context, channels *actions.RunnableChan
 	}
 	if c.filter != nil {
 		compressor.WalkFilter = func(ctx context.Context, node *tree.Node) bool {
-			in := jobs.ActionMessage{}
-			in = in.WithNode(node)
+			in := (&jobs.ActionMessage{}).WithNode(node)
 			_, _, pass := c.filter.Filter(ctx, in)
 			return pass
 		}
@@ -177,13 +177,13 @@ func (c *CompressAction) Run(ctx context.Context, channels *actions.RunnableChan
 		case ".tar.gz":
 			format = tarGzFormat
 		default:
-			e := fmt.Errorf("could not detect archive format from file name " + base)
-			return input.WithError(e), e
+			er := fmt.Errorf("could not detect archive format from file name %s", base)
+			return input.WithError(er), er
 		}
 	}
 	// Final check for format
 	if format != zipFormat && format != tarFormat && format != tarGzFormat {
-		er := fmt.Errorf("unsupported archive format")
+		er := fmt.Errorf("unsupported archive format %s", format)
 		return input.WithError(er), er
 	}
 	// Remove extension
@@ -223,6 +223,17 @@ func (c *CompressAction) Run(ctx context.Context, channels *actions.RunnableChan
 	})
 
 	log.TasksLogger(ctx).Info(fmt.Sprintf("Archive %s was created in %s", path.Base(targetFile), path.Dir(targetFile)))
+	var pp []string
+	for _, n := range nn {
+		pp = append(pp, n.GetPath())
+	}
+	log.Auditer(ctx).Info(
+		fmt.Sprintf("Archive [%s] created from [%s]", targetFile, strings.Join(pp, ",")),
+		log.GetAuditId(common.AuditNodeCreate),
+		zap.String("archive", targetFile),
+		zap.Strings("sources", pp),
+		zap.Int64(common.KeyTransferSize, written),
+	)
 
 	// Reload node
 	output := input

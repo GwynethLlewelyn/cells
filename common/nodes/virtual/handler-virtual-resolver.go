@@ -23,10 +23,10 @@ package virtual
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 func WithResolver() nodes.Option {
@@ -59,10 +59,10 @@ func NewVirtualNodesHandler() *ResolverHandler {
 // updateInput Updates BranchInfo and AccessList in context with resolved values for virtual nodes
 func (v *ResolverHandler) updateInput(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
-	virtualManager := abstract.GetVirtualNodesManager(v.RuntimeCtx)
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, identifier); ok && !branchInfo.Binary && branchInfo.Root != nil {
+	virtualManager := abstract.GetVirtualProvider()
+	if branchInfo, er := nodes.GetBranchInfo(ctx, identifier); er == nil && !branchInfo.Binary && branchInfo.Root != nil {
 		originalUuid := branchInfo.Root.Uuid
-		if virtual, exists := virtualManager.ByUuid(branchInfo.Root.Uuid); exists {
+		if virtual, exists := virtualManager.ByUuid(ctx, branchInfo.Root.Uuid); exists {
 			resolvedRoot, e := virtualManager.ResolveInContext(ctx, virtual, true)
 			if e != nil {
 				return ctx, node, e
@@ -71,7 +71,7 @@ func (v *ResolverHandler) updateInput(ctx context.Context, node *tree.Node, iden
 			branchInfo.Root = resolvedRoot
 			ctx = nodes.WithBranchInfo(ctx, identifier, branchInfo)
 			if accessList, ok := acl.FromContext(ctx); ok {
-				if copied := accessList.ReplicateBitmask(originalUuid, resolvedRoot.Uuid); copied {
+				if copied := accessList.ReplicateBitmask(ctx, originalUuid, resolvedRoot.Uuid); copied {
 					ctx = acl.ToContext(ctx, accessList)
 				}
 			}

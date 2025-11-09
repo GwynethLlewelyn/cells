@@ -22,92 +22,110 @@ package tasks
 
 import (
 	"context"
-	"sync"
+	"sync/atomic"
 	"time"
 
-	"google.golang.org/protobuf/proto"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/slug"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 type Task struct {
 	*jobs.Job
-	sync.RWMutex
-	common.RuntimeHolder
 	runID string
 
 	context  context.Context
 	cancel   context.CancelFunc
 	finished chan bool
-	rc       int
+	span     trace.Span
+
+	rci atomic.Int32
 
 	chi int
 	di  int
 
 	event interface{}
 	task  *jobs.Task
-	last  *jobs.Task
-	err   error
+
+	lastStatus                    jobs.TaskStatus
+	lastStatusMsg                 string
+	lastHasProgress, lastCanPause bool
+	lastProgress                  float32
+
+	err error
 }
 
 // NewTaskFromEvent creates a task based on incoming job and event
-func NewTaskFromEvent(runtime, ctx context.Context, job *jobs.Job, event interface{}) *Task {
-	ctxUserName, _ := permissions.FindUserNameInContext(ctx)
+func NewTaskFromEvent(ctx context.Context, job *jobs.Job, event interface{}) *Task {
+	log.Logger(ctx).Debug("NewTaskFromEvent " + job.ID)
+	ctxUserName := claim.UserNameFromContext(ctx)
 	taskID := uuid.New()
 	if trigger, ok := event.(*jobs.JobTriggerEvent); ok && trigger.RunTaskId != "" {
 		taskID = trigger.RunTaskId
 	}
 	operationID := job.ID + "-" + taskID[0:8]
-	c := servicecontext.WithOperationID(ctx, operationID)
+	c := propagator.WithAdditionalMetadata(ctx, map[string]string{common.CtxSchedulerOperationId: operationID})
+
+	span := trace.SpanFromContext(ctx)
+	c, span = span.TracerProvider().Tracer("cells").Start(c, "/scheduler/"+slug.Make(job.Label), trace.WithNewRoot())
+
+	// Inject evaluated job parameters if it's not already here
+	if c.Value(ContextJobParametersKey{}) == nil {
+		params := jobs.RunParametersComputer(c, &jobs.ActionMessage{}, job, event)
+		c = context.WithValue(c, ContextJobParametersKey{}, params)
+	}
+
 	t := &Task{
 		context:  c,
 		Job:      job,
 		runID:    taskID,
 		finished: make(chan bool, 1),
+		span:     span,
 		event:    event,
 		task: &jobs.Task{
 			ID:            taskID,
 			JobID:         job.ID,
 			Status:        jobs.TaskStatus_Queued,
 			StatusMessage: "Pending",
-			ActionsLogs:   []*jobs.ActionLog{},
 			TriggerOwner:  ctxUserName,
 			CanStop:       true,
 		},
 	}
-	t.SetRuntimeContext(runtime)
+
 	return t
 }
 
-// Queue send this new task to the global queue
-func (t *Task) Queue(queue chan Runnable) {
-	var ct context.Context
-	var can context.CancelFunc
-	if d, o := itemTimeout(t.Job.Timeout); o {
-		ct, can = context.WithTimeout(t.context, d)
+// Queue send this new task to the dispatcher queue.
+// If a second queue is passed, it may differ from main input queue, so it is used for children queuing
+func (t *Task) Queue(queue ...chan RunnerFunc) {
+	if d, o := itemTimeout(t.context, t.Job.Timeout); o {
+		t.context, t.cancel = context.WithTimeout(t.context, d)
 	} else {
-		ct, can = context.WithCancel(t.context)
+		t.context, t.cancel = context.WithCancel(t.context)
 	}
-	t.context = ct
-	t.cancel = can
 	jobId := t.Job.ID
 	taskId := t.runID
 
-	ch := PubSub.Sub(PubSubTopicControl)
+	bus := GetBus(t.context)
+	ch := bus.Sub(PubSubTopicControl)
 	go func() {
 		defer func() {
-			PubSub.Unsub(ch, PubSubTopicControl)
+			bus.UnSubWithFlush(ch, PubSubTopicControl)
 		}()
 		for {
 			select {
 			case <-t.finished:
 				return
-			case <-t.RuntimeContext.Done():
+			case <-t.context.Done():
 				t.cancel()
 			case val := <-ch:
 				cmd, ok := val.(*jobs.CtrlCommand)
@@ -127,9 +145,24 @@ func (t *Task) Queue(queue chan Runnable) {
 			}
 		}
 	}()
+	defer func() {
+		if e := recover(); e != nil {
+			log.Logger(t.context).Error("could not enqueue task", zap.Any("e", e))
+		}
+	}()
 	r := RootRunnable(t.context, t)
-	logStartMessageFromEvent(r.Context, t, t.event)
-	go r.Dispatch(r.ActionPath, createMessageFromEvent(t.event), t.Actions, queue)
+	var secondaryQueue = queue[0]
+	if len(queue) > 1 {
+		secondaryQueue = queue[1]
+	}
+	if t.Job.MergeAction != nil {
+		r.SetupCollector(t.context, t.Job.MergeAction, secondaryQueue)
+	}
+	logStartMessageFromEvent(r.Context, t.event)
+	msg := createMessageFromEvent(t.event)
+	queue[0] <- func(queue chan RunnerFunc) {
+		r.Dispatch(msg, t.Actions, secondaryQueue)
+	}
 }
 
 // CleanUp is triggered after a task has no more subroutines running.
@@ -140,45 +173,66 @@ func (t *Task) CleanUp() {
 	} else {
 		t.SetStatus(jobs.TaskStatus_Finished, "Complete")
 	}
+	if t.span != nil {
+		t.span.End()
+	}
 	t.Save()
 	close(t.finished)
 }
 
 // Add increments task internal retain counter
 func (t *Task) Add(delta int) {
-	t.Lock()
-	defer t.Unlock()
-	if t.rc == 0 {
+	rc := t.rci.Load()
+	if rc == 0 {
 		if t.task.StartTime == 0 {
 			t.task.StartTime = int32(time.Now().Unix())
 		}
 		t.SetStatus(jobs.TaskStatus_Running, "Starting...")
 		t.Save()
 	}
-	t.rc += delta
+	t.rci.Add(int32(delta))
 }
 
 // Done decrements task internal retain counter - When reaching 0, it triggers the CleanUp operation
 func (t *Task) Done(delta int) {
-	t.Lock()
-	defer t.Unlock()
-	t.rc -= delta
-	if t.rc == 0 {
+	newVal := t.rci.Add(-int32(delta))
+	if newVal == 0 {
 		t.CleanUp()
 	}
 }
 
-// Save publish task to PubSub topic
 func (t *Task) Save() {
-	if t.last == nil || t.taskChanged(t.last, t.task) {
-		PubSub.Pub(t.task, PubSubTopicTaskStatuses)
-		t.last = t.GetJobTaskClone()
+	t.SaveStatus(nil, 0)
+}
+
+// SaveStatus publish task to Bus topic, including Runnable context if passed
+func (t *Task) SaveStatus(runnableContext context.Context, runnableStatus jobs.TaskStatus) {
+	if t.lastStatus == jobs.TaskStatus_Unknown || t.taskChanged() {
+		cl := t.Clone()
+		t.lastStatus = cl.Status
+		t.lastStatusMsg = cl.StatusMessage
+		t.lastHasProgress = cl.HasProgress
+		t.lastCanPause = cl.CanPause
+		t.lastProgress = cl.Progress
+		if runnableContext != nil {
+			GetBus(t.context).Pub(&TaskStatusUpdate{
+				Task:            cl,
+				RunnableContext: runnableContext,
+				RunnableStatus:  runnableStatus,
+			}, PubSubTopicTaskStatuses)
+		} else {
+			GetBus(t.context).Pub(cl, PubSubTopicTaskStatuses)
+		}
 	}
 }
 
-// GetJobTaskClone creates a protobuf clone of this task
-func (t *Task) GetJobTaskClone() *jobs.Task {
-	return proto.Clone(t.task).(*jobs.Task)
+// Clone creates a protobuf clone of this task
+func (t *Task) Clone() *jobs.Task {
+	bb, _ := protojson.Marshal(t.task)
+	cl := &jobs.Task{}
+	_ = protojson.Unmarshal(bb, cl)
+	return cl
+	//return proto.Clone(t.task).(*jobs.Task)
 }
 
 // GetRunUUID returns the task internal run UUID
@@ -221,48 +275,14 @@ func (t *Task) SetHasProgress() {
 	t.task.HasProgress = true
 }
 
-// AppendLog appends logs from an action to the task OutputChain
-func (t *Task) AppendLog(a *jobs.Action, in *jobs.ActionMessage, out *jobs.ActionMessage) {
-	// Remove unnecessary fields
-	// Action
-	cleanedAction := proto.Clone(a).(*jobs.Action)
-	cleanedAction.ChainedActions = nil
-	// Input
-	cleanedInput := proto.Clone(in).(*jobs.ActionMessage)
-	cleanedInput.Event = nil
-	cleanedInput.OutputChain = nil
-	// Output
-	cleanedOutput := proto.Clone(out).(*jobs.ActionMessage)
-	cleanedOutput.Event = nil
-	lastMessage := out.GetLastOutput()
-	cleanedOutput.OutputChain = []*jobs.ActionOutput{}
-	if lastMessage != nil {
-		cleanedOutput.OutputChain = append(cleanedOutput.OutputChain, lastMessage)
-	}
-
-	t.task.ActionsLogs = append(t.task.ActionsLogs, &jobs.ActionLog{
-		Action:        cleanedAction,
-		InputMessage:  cleanedInput,
-		OutputMessage: cleanedOutput,
-	})
-}
-
 // SetError set task in error globally
 func (t *Task) SetError(e error, appendLog bool) {
 	t.err = e
-	if appendLog {
-		t.task.ActionsLogs = append(t.task.ActionsLogs, &jobs.ActionLog{
-			OutputMessage: &jobs.ActionMessage{OutputChain: []*jobs.ActionOutput{{
-				Time:        int32(time.Now().Unix()),
-				ErrorString: e.Error(),
-			}}},
-		})
-	}
 }
 
 // GetRunnableChannels prepares a set of data channels for action actual Run method.
-func (t *Task) GetRunnableChannels(controllable bool) (*actions.RunnableChannels, chan bool) {
-	status, statusMsg, progress, done := t.createStatusesChannels()
+func (t *Task) GetRunnableChannels(runnableCtx context.Context, controllable bool) (*actions.RunnableChannels, chan bool) {
+	status, statusMsg, progress, done := t.createStatusesChannels(runnableCtx)
 	c := &actions.RunnableChannels{
 		Status:    status,
 		StatusMsg: statusMsg,
@@ -276,7 +296,7 @@ func (t *Task) GetRunnableChannels(controllable bool) (*actions.RunnableChannels
 
 // createStatusesChannels provides a set of channel used by the runnable to send
 // updates about its status to the outside world
-func (t *Task) createStatusesChannels() (chan jobs.TaskStatus, chan string, chan float32, chan bool) {
+func (t *Task) createStatusesChannels(runnableCtx context.Context) (chan jobs.TaskStatus, chan string, chan float32, chan bool) {
 
 	status := make(chan jobs.TaskStatus)
 	statusMsg := make(chan string)
@@ -293,10 +313,10 @@ func (t *Task) createStatusesChannels() (chan jobs.TaskStatus, chan string, chan
 			select {
 			case s := <-status:
 				t.task.Status = s
-				t.Save()
+				t.SaveStatus(runnableCtx, jobs.TaskStatus_Running)
 			case s := <-statusMsg:
 				t.task.StatusMessage = s
-				t.Save()
+				t.SaveStatus(runnableCtx, jobs.TaskStatus_Running)
 			case p := <-progress:
 				diff := p - t.task.Progress
 				save := false
@@ -305,7 +325,7 @@ func (t *Task) createStatusesChannels() (chan jobs.TaskStatus, chan string, chan
 					save = true
 				}
 				if save {
-					t.Save()
+					t.SaveStatus(runnableCtx, jobs.TaskStatus_Running)
 				}
 			case <-done:
 				return
@@ -326,12 +346,13 @@ func (t *Task) createControlChannels(done chan bool) (pause chan interface{}, re
 	jobId := t.Job.ID
 	taskId := t.task.ID
 
-	ch := PubSub.Sub(PubSubTopicControl)
+	bus := GetBus(t.context)
+	ch := bus.Sub(PubSubTopicControl)
 	go func() {
 		defer func() {
 			close(pause)
 			close(resume)
-			PubSub.Unsub(ch, PubSubTopicControl)
+			bus.UnSubWithFlush(ch, PubSubTopicControl)
 		}()
 		for {
 			select {
@@ -359,11 +380,11 @@ func (t *Task) createControlChannels(done chan bool) (pause chan interface{}, re
 	return
 }
 
-func (t *Task) taskChanged(lastT, newT *jobs.Task) bool {
-	if lastT.Status != newT.Status || lastT.StatusMessage != newT.StatusMessage {
+func (t *Task) taskChanged() bool {
+	if t.lastStatus != t.task.Status || t.lastStatusMsg != t.task.StatusMessage {
 		return true
 	}
-	if lastT.HasProgress != newT.HasProgress || lastT.CanPause != newT.CanPause || lastT.Progress != newT.Progress {
+	if t.lastHasProgress != t.task.HasProgress || t.lastCanPause != t.task.CanPause || t.lastProgress != t.task.Progress {
 		return true
 	}
 	return false

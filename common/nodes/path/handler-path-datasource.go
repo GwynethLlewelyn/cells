@@ -27,11 +27,12 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func WithDatasource() nodes.Option {
@@ -59,9 +60,9 @@ func (v *DataSourceHandler) Adapt(c nodes.Handler, options nodes.RouterOptions) 
 
 func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
-	branchInfo, ok := nodes.GetBranchInfo(ctx, identifier)
-	if !ok {
-		return ctx, node, nodes.ErrBranchInfoMissing(identifier)
+	branchInfo, er := nodes.GetBranchInfo(ctx, identifier)
+	if er != nil {
+		return ctx, node, er
 	}
 	if branchInfo.Client != nil {
 		// DS Is already set by a previous middleware, ignore.
@@ -74,7 +75,7 @@ func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.No
 			// Get Data Source from first segment, leave tree path unchanged
 			parts := strings.Split(strings.Trim(node.Path, "/"), "/")
 			dsName := parts[0]
-			source, e := v.ClientsPool.GetDataSourceInfo(dsName)
+			source, e := nodes.GetSourcesPool(ctx).GetDataSourceInfo(dsName)
 			if e != nil {
 				return ctx, node, e
 			}
@@ -103,7 +104,7 @@ func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.No
 
 		wsRoot := branchInfo.Root
 		dsName := wsRoot.GetStringMeta(common.MetaNamespaceDatasourceName)
-		source, err := v.ClientsPool.GetDataSourceInfo(dsName)
+		source, err := nodes.GetSourcesPool(ctx).GetDataSourceInfo(dsName)
 		if err != nil {
 			log.Logger(ctx).Error("Cannot find DataSourceInfo for "+dsName, zap.Error(err))
 			return nil, out, err
@@ -122,7 +123,7 @@ func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.No
 
 	} else {
 
-		return ctx, node, nodes.ErrBranchInfoRootMissing(identifier)
+		return ctx, node, errors.WithMessage(errors.BranchInfoRootMissing, identifier)
 
 	}
 
@@ -133,15 +134,15 @@ func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.No
 func (v *DataSourceHandler) updateOutputNode(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
 	// Reload DS info - may be necessary for outputFiltering case
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, identifier); (!ok || branchInfo.DataSource == nil) && node.GetStringMeta(common.MetaNamespaceDatasourceName) != "" {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, identifier); (er != nil || branchInfo.DataSource == nil) && node.GetStringMeta(common.MetaNamespaceDatasourceName) != "" {
 		dsName := node.GetStringMeta(common.MetaNamespaceDatasourceName)
-		if source, err := v.ClientsPool.GetDataSourceInfo(dsName); err == nil {
+		if source, err := nodes.GetSourcesPool(ctx).GetDataSourceInfo(dsName); err == nil {
 			branchInfo.LoadedSource = source
 			ctx = nodes.WithBranchInfo(ctx, identifier, branchInfo)
 		}
 	}
 
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, identifier); ok && branchInfo.DataSource != nil && branchInfo.LoadedSource.ObjectsBucket == "" {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, identifier); er == nil && branchInfo.DataSource != nil && branchInfo.LoadedSource.ObjectsBucket == "" {
 		sLen := len(strings.Split(strings.Trim(node.Path, "/"), "/"))
 		if sLen == 1 {
 			// The root of the datasource is at the bucket level, set flag readonly

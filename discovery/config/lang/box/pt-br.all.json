@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Condição Livre"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "JSON Path"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Solicitar Hostname"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Servidor da Requisição"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Porta da Requisição"
   },
   "contextMetaField.RequestMethod": {
     "other": "Método de solicitação"
@@ -256,6 +265,9 @@
   },
   "treeQuery.UUIDs": {
     "other": "UUIDs do nó"
+  },
+  "treeQuery.ETag": {
+    "other": "ETag"
   },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Tem algum valor"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Desencadeamento agendado"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Acionado por Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Slug da Api de Webhook"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Nome do Parâmetro de Execução"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Valor do Parâmetro de Execução"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Desencadeamento manual"

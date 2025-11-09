@@ -21,42 +21,54 @@
 package config
 
 import (
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"context"
+
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 // HasDatabase checks if DB key is set
-func HasDatabase(key string) bool {
-	return Get("#/databases/" + key).StringMap()["driver"] != ""
+func HasDatabase(ctx context.Context, key string) bool {
+	return Get(ctx, "#/databases/"+key).StringMap()["driver"] != ""
 }
 
 // GetStorageDriver looks up for a storage driver/dsn definition
 // It may find databases/[(services/{serviceName}/storage)|{serviceName}|default]
-func GetStorageDriver(configKey, serviceName string) (driver string, dsn string, defined bool) {
+func GetStorageDriver(store Store, configKey, serviceName string) (driver string, dsn string, defined bool) {
 
 	// By default, we check #/databases/serviceName for backward compat
 	dbKey := serviceName
-	if sKey := Get("services", serviceName, configKey).String(); sKey != "" {
+	if sKey := store.Val("services", serviceName, configKey).String(); sKey != "" {
 		// Otherwise, check if service defines a storage key, and then use it for #databases/DB_ID
 		dbKey = sKey
 	}
-	defined = Get("#/databases/" + dbKey).StringMap()["driver"] != ""
+	defined = store.Val("#/databases/" + dbKey).StringMap()["driver"] != ""
 	// Finally, use #/defaults/database value
-	c := Get("#/databases/" + dbKey).Default(configx.Reference("#/defaults/database")).StringMap()
+	c := store.Val("#/databases/" + dbKey).Default(store.Val("#/defaults/database").Get()).StringMap()
 
 	return c["driver"], c["dsn"], defined
 }
 
 // GetDatabase retrieves the database data from the config
-func GetDatabase(key string) (string, string) {
+func GetDatabase(ctx context.Context, key string) (string, string) {
 
-	c := Get("#/databases/" + key).Default(configx.Reference("#/defaults/database")).StringMap()
+	c := Get(ctx, "#/databases/"+key).Default(Get(ctx, "#/defaults/database").Get()).StringMap()
 
 	return c["driver"], c["dsn"]
 }
 
-func SetDatabase(key string, driver string, dsn string) error {
-	return Get("#/databases/" + key).Set(map[string]string{
+// SetDatabase adds a database entry, plus an optional reference in the defaults
+func SetDatabase(ctx context.Context, key string, driver string, dsn string, defaultsKey string) error {
+	e := Get(ctx, "#/databases/"+key).Set(map[string]string{
 		"driver": driver,
 		"dsn":    dsn,
 	})
+	if e != nil {
+		return e
+	}
+
+	// If defaultsKey is set and value is not already set, add it
+	if defaultsKey != "" && Get(ctx, "defaults", defaultsKey).Get() == nil {
+		return Set(ctx, configx.Reference("#/databases/"+key), "defaults", defaultsKey)
+	}
+	return nil
 }

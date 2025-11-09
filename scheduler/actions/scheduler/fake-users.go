@@ -23,22 +23,22 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net/http"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/service"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/slug"
-	"github.com/pydio/cells/v4/common/utils/std"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/slug"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -46,7 +46,6 @@ var (
 )
 
 type FakeUsersAction struct {
-	common.RuntimeHolder
 	prefix string
 	number string
 }
@@ -66,7 +65,7 @@ func (f *FakeUsersAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (f *FakeUsersAction) GetParametersForm() *forms.Form {
+func (f *FakeUsersAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -114,7 +113,7 @@ func (f *FakeUsersAction) ProvidesProgress() bool {
 }
 
 // Init passes parameters to the action
-func (f *FakeUsersAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (f *FakeUsersAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	f.prefix = "user-"
 	if prefix, ok := action.Parameters["prefix"]; ok {
 		f.prefix = prefix
@@ -127,7 +126,7 @@ func (f *FakeUsersAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (f *FakeUsersAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (f *FakeUsersAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 	log.TasksLogger(ctx).Info("Starting fake users creation")
 
 	var number int64
@@ -142,12 +141,12 @@ func (f *FakeUsersAction) Run(ctx context.Context, channels *actions.RunnableCha
 		prefix = jobs.EvaluateFieldStr(ctx, input, f.prefix)
 	}
 
-	outputMessage := input
+	outputMessage := input.Clone()
 	outputMessage.AppendOutput(&jobs.ActionOutput{StringBody: "Creating random users"})
 
-	userServiceClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(f.GetRuntimeContext(), common.ServiceUser))
-	rolesServiceClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(f.GetRuntimeContext(), common.ServiceRole))
-	builder := service.NewResourcePoliciesBuilder()
+	userServiceClient := idm.NewUserServiceClient(grpc.ResolveConn(ctx, common.ServiceUserGRPC))
+	rolesServiceClient := idm.NewRoleServiceClient(grpc.ResolveConn(ctx, common.ServiceRoleGRPC))
+	builder := permissions.NewResourcePoliciesBuilder()
 
 	groupPaths := []string{"/"}
 	// Create Groups
@@ -185,7 +184,7 @@ func (f *FakeUsersAction) Run(ctx context.Context, channels *actions.RunnableCha
 	var values []Value
 
 	if response, err := http.Get(fmt.Sprintf("https://uinames.com/api/?region=france&amount=%d", number)); err == nil {
-		if contents, err := ioutil.ReadAll(response.Body); err == nil {
+		if contents, err := io.ReadAll(response.Body); err == nil {
 			type Response struct {
 				Name    string `json:"name"`
 				Surname string `json:"surname"`
@@ -230,7 +229,7 @@ func (f *FakeUsersAction) Run(ctx context.Context, channels *actions.RunnableCha
 					"country":     v.Region,
 					"profile":     "standard",
 				},
-				Policies: builder.Reset().WithStandardUserPolicies(v.Login).Policies(),
+				Policies: builder.Reset().WithStandardUserPolicies().Policies(),
 			},
 		}); err != nil {
 			output := input.WithError(err)
@@ -242,7 +241,11 @@ func (f *FakeUsersAction) Run(ctx context.Context, channels *actions.RunnableCha
 					Uuid:     response.User.Uuid,
 					Label:    slug.Make(v.Label),
 					UserRole: true,
-					Policies: builder.Reset().WithStandardUserPolicies(v.Login).Policies(),
+					Policies: builder.Reset().
+						WithProfileWrite(common.PydioProfileAdmin).
+						WithProfileRead(common.PydioProfileStandard).
+						WithSubjectWrite(response.User.Uuid).
+						Policies(),
 				},
 			})
 			if e != nil {

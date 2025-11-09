@@ -21,7 +21,7 @@
 // Package cmd provides default implementation for command-line-like actions.
 package cmd
 
-import "github.com/pydio/cells/v4/scheduler/actions"
+import "github.com/pydio/cells/v5/scheduler/actions"
 
 func init() {
 
@@ -37,6 +37,10 @@ func init() {
 
 	manager.Register(resyncActionName, func() actions.ConcreteAction {
 		return &ResyncAction{}
+	})
+
+	manager.Register(captureActionName, func() actions.ConcreteAction {
+		return &CaptureAction{}
 	})
 
 }

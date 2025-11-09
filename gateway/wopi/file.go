@@ -33,12 +33,13 @@ import (
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth/claim"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type File struct {
@@ -110,6 +111,25 @@ func uploadStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if LastModifiedTime changed, ask user to resolve the conflict
+	coolTimeStr := r.Header.Get("X-COOL-WOPI-Timestamp")
+	if coolTimeStr != "" {
+		coolTime, err := time.Parse(time.RFC3339, coolTimeStr)
+
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if !coolTime.Equal(n.GetModTime()) {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"COOLStatusCode": 1010,
+			})
+			return
+		}
+	}
+
 	var size int64
 	if h, ok := r.Header["Content-Length"]; ok && len(h) > 0 {
 		size, _ = strconv.ParseInt(h[0], 10, 64)
@@ -119,8 +139,8 @@ func uploadStream(w http.ResponseWriter, r *http.Request) {
 		Size: size,
 	})
 	if err != nil {
-		log.Logger(r.Context()).Error("cannot put object", zap.Int64("already written data Length", written), zap.Error(err))
-		if written == 0 {
+		log.Logger(r.Context()).Error("cannot put object", zap.Int64("already written data Length", written.Size), zap.Error(err))
+		if written.Size == 0 {
 			w.WriteHeader(http.StatusForbidden)
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -128,8 +148,20 @@ func uploadStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Logger(r.Context()).Debug("uploaded node", n.Zap(), zap.Int64("Data Length", written))
+	log.Logger(r.Context()).Debug("uploaded node", n.Zap(), zap.Int64("Data Length", written.Size))
+
+	// Readnode for info
+	n, err = findNodeFromRequest(r)
+
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"LastModifiedTime": n.GetModTime().Format(time.RFC3339),
+	})
 }
 
 func buildFileFromNode(ctx context.Context, n *tree.Node) *File {
@@ -144,18 +176,18 @@ func buildFileFromNode(ctx context.Context, n *tree.Node) *File {
 	}
 
 	// Find user info in claims, if any
-	if cValue := ctx.Value(claim.ContextKey); cValue != nil {
-		if claims, ok := cValue.(claim.Claims); ok {
-
-			f.UserId = claims.Name
+	if claims, ok := claim.FromContext(ctx); ok {
+		f.UserId = claims.Name
+		if claims.DisplayName == "" {
+			f.UserFriendlyName = claims.Name
+		} else {
 			f.UserFriendlyName = claims.DisplayName
-
-			pydioReadOnly := n.GetStringMeta(common.MetaFlagReadonly)
-			if pydioReadOnly == "true" {
-				f.UserCanWrite = false
-			} else {
-				f.UserCanWrite = true
-			}
+		}
+		pydioReadOnly := n.GetStringMeta(common.MetaFlagReadonly)
+		if pydioReadOnly == "true" {
+			f.UserCanWrite = false
+		} else {
+			f.UserCanWrite = true
 		}
 	} else {
 		log.Logger(ctx).Debug("No Claims Found", zap.Any("ctx", ctx))
@@ -171,7 +203,7 @@ func findNodeFromRequest(r *http.Request) (*tree.Node, error) {
 	vars := mux.Vars(r)
 	uuid := vars["uuid"]
 	if uuid == "" {
-		return nil, fmt.Errorf("Cannot find uuid in parameters")
+		return nil, errors.New("Cannot find uuid in parameters")
 	}
 
 	// Now go through all the authorization mechanisms

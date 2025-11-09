@@ -3,13 +3,13 @@ package file
 import (
 	"path/filepath"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/config/revisions"
-	"github.com/pydio/cells/v4/common/utils/filex"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/revisions"
+	"github.com/pydio/cells/v5/common/utils/filex"
 )
 
 // AsRevisionsStore implements RevisionsProvider interface
-func (f *file) AsRevisionsStore(oo ...config.RevisionsStoreOption) (config.Store, revisions.Store) {
+func (f *fileStore) AsRevisionsStore(oo ...config.RevisionsStoreOption) (config.Store, revisions.Store) {
 	opt := &config.RevisionsStoreOptions{}
 	for _, o := range oo {
 		o(opt)

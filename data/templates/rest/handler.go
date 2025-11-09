@@ -23,11 +23,15 @@ package rest
 
 import (
 	restful "github.com/emicklei/go-restful/v3"
-	"github.com/pydio/cells/v4/common/service"
 
-	"github.com/pydio/cells/v4/common/proto/rest"
-	"github.com/pydio/cells/v4/data/templates"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/data/templates"
 )
+
+func NewTemplatesHandler(dao templates.DAO) service.WebHandler {
+	return &Handler{Dao: dao}
+}
 
 type Handler struct {
 	Dao templates.DAO
@@ -45,18 +49,17 @@ func (a *Handler) Filter() func(string) string {
 	}
 }
 
-func (a *Handler) ListTemplates(req *restful.Request, rsp *restful.Response) {
+func (a *Handler) ListTemplates(req *restful.Request, rsp *restful.Response) error {
 
 	nodes, er := a.Dao.List(req.Request.Context())
 	if er != nil {
-		service.RestErrorDetect(req, rsp, er)
-		return
+		return er
 	}
 	response := &rest.ListTemplatesResponse{}
 	for _, node := range nodes {
 		response.Templates = append(response.Templates, node.AsTemplate())
 	}
 
-	rsp.WriteEntity(response)
+	return rsp.WriteEntity(response)
 
 }

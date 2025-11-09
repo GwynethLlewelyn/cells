@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package auth;
 
-option go_package="github.com/pydio/cells/common/proto/auth";
+option go_package="github.com/pydio/cells/v5/common/proto/auth";
 
 message Token {
     string AccessToken = 1;
@@ -81,7 +81,9 @@ message AcceptLoginRequest {
     string Subject = 3;
 }
 
-message AcceptLoginResponse {}
+message AcceptLoginResponse {
+    string Challenge = 1;
+}
 
 service ConsentProvider {
     rpc GetConsent    (GetConsentRequest) returns (GetConsentResponse) {};
@@ -115,9 +117,11 @@ message AcceptConsentRequest {
     repeated string Audiences = 3;
     map<string,string> AccessToken = 4;
     map<string,string> IDToken = 5;
+    string Verifier = 6;
 }
 
 message AcceptConsentResponse {
+    string Challenge = 1;
 }
 
 service LogoutProvider {
@@ -191,6 +195,20 @@ message ExchangeResponse {
     int64 Expiry = 4 [json_name="expiry"];
 }
 
+service PasswordCredentialsCode {
+    rpc PasswordCredentialsCode(PasswordCredentialsCodeRequest) returns(PasswordCredentialsCodeResponse) {};
+}
+
+message PasswordCredentialsCodeRequest {
+    string Username = 1 [json_name="username"];
+    string Password = 2 [json_name="password"];
+    string Challenge = 3 [json_name="challenge"];
+}
+
+message PasswordCredentialsCodeResponse {
+    string Code = 1 [json_name="code"];
+}
+
 service PasswordCredentialsToken {
     rpc PasswordCredentialsToken(PasswordCredentialsTokenRequest) returns (PasswordCredentialsTokenResponse) {};
 }
@@ -205,6 +223,21 @@ message PasswordCredentialsTokenResponse {
     string IDToken = 2 [json_name="id_token"];
     string RefreshToken = 3 [json_name="refresh_token"];
     int64 Expiry = 4 [json_name="expiry"];
+}
+
+service LoginChallengeCode {
+    rpc LoginChallengeCode(LoginChallengeCodeRequest) returns (LoginChallengeCodeResponse) {};
+}
+
+message LoginChallengeCodeRequest {
+    string Challenge = 1 ;
+    map<string,string> Claims = 2 ;
+    CreateLoginRequest DefaultCreateLogin = 3;
+}
+
+message LoginChallengeCodeResponse {
+    string Code = 1;
+    GetLoginResponse LoginResponse = 2;
 }
 
 service AuthTokenRefresher {
@@ -245,6 +278,10 @@ message PersonalAccessToken {
     string CreatedBy = 9;
     int64 CreatedAt = 10;
     int64 UpdatedAt = 11;
+
+    string CacheKey = 12;
+    string RevocationKey = 13;
+    string SecretPair = 14;
 }
 
 message PatGenerateRequest{
@@ -256,10 +293,15 @@ message PatGenerateRequest{
     int64 ExpiresAt = 6;
     string Issuer = 7;
     repeated string Scopes = 8;
+
+    string CacheKey = 9;
+    string RevocationKey = 10;
+    bool GenerateSecretPair = 11;
 }
 message PatGenerateResponse{
     string AccessToken = 1;
     string TokenUuid = 2;
+    string SecretPair = 3;
 }
 
 message PatListRequest{
@@ -272,6 +314,7 @@ message PatListResponse{
 
 message PatRevokeRequest{
     string Uuid = 1;
+    string ByRevocationKey = 2;
 }
 message PatRevokeResponse{
     bool Success = 1;

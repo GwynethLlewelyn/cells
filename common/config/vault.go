@@ -21,21 +21,14 @@
 package config
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/watch"
 )
-
-// Vault returns the default vault
-func Vault() configx.Entrypoint {
-	return stdvault
-}
-
-// RegisterVault sets the default vault
-func RegisterVault(store Store) {
-	stdvault = store
-}
 
 // Config holds the main structure of a configuration
 type vault struct {
@@ -43,20 +36,12 @@ type vault struct {
 	vault  Store
 }
 
-// NewVault creates a new vault with a standard config store and a vault store
+// NewVault creates a new vault with a standard config wrappedStore and a vault wrappedStore
 func NewVault(vaultStore, configStore Store) Store {
 	return &vault{
 		configStore,
 		vaultStore,
 	}
-}
-
-// Save the config in the underlying storage
-func (v *vault) Save(ctxUser string, ctxMessage string) error {
-	if err := v.vault.Save(ctxUser, ctxMessage); err != nil {
-		return err
-	}
-	return v.config.Save(ctxUser, ctxMessage)
 }
 
 func (v *vault) Lock() {
@@ -69,14 +54,71 @@ func (v *vault) Unlock() {
 	v.vault.Unlock()
 }
 
+func (v *vault) Close(ctx context.Context) error {
+	if err := v.config.Close(ctx); err != nil {
+		return err
+	}
+
+	if err := v.vault.Close(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (v *vault) Key() []string {
+	return v.config.Key()
+}
+
+func (v *vault) Done() <-chan struct{} {
+	return v.config.Done()
+}
+
+func (v *vault) As(out any) bool { return false }
+
+// Save the config in the underlying storage
+func (v *vault) Save(ctxUser string, ctxMessage string) error {
+	if err := v.vault.Save(ctxUser, ctxMessage); err != nil {
+		return err
+	}
+	return v.config.Save(ctxUser, ctxMessage)
+}
+
+type vaultStoreLocker struct {
+	configLocker sync.Locker
+	vaultLocker  sync.Locker
+}
+
+func (v *vaultStoreLocker) Lock() {
+	if v.configLocker != nil {
+		v.configLocker.Lock()
+	}
+	if v.vaultLocker != nil {
+		v.vaultLocker.Lock()
+	}
+}
+
+func (v *vaultStoreLocker) Unlock() {
+	if v.configLocker != nil {
+		v.configLocker.Unlock()
+	}
+	if v.vaultLocker != nil {
+		v.vaultLocker.Unlock()
+	}
+}
+
 // Get access to the underlying structure at a certain path
-func (v *vault) Get() configx.Value {
-	return v.vault.Get()
+func (v *vault) Get() any {
+	return v.config.Get()
 }
 
 // Set new value
-func (v *vault) Set(val interface{}) error {
-	return v.config.Set(val)
+func (v *vault) Set(value interface{}) error {
+	return v.config.Set(value)
+}
+
+func (v *vault) Options() *configx.Options {
+	return v.config.Options()
 }
 
 // Val of the path
@@ -84,8 +126,24 @@ func (v *vault) Val(s ...string) configx.Values {
 	return &vaultvalues{strings.Join(s, "/"), v.config.Val(s...), v.vault.Val()}
 }
 
+func (v *vault) Context(ctx context.Context) configx.Values {
+	return &vaultvalues{Values: v.config.Context(ctx), vault: v.vault.Context(ctx)}
+}
+
+func (v *vault) Default(d any) configx.Values {
+	return nil
+}
+
+func (v *vault) Flush() {
+	v.config.Flush()
+}
+
+func (v *vault) Reset() {
+	v.config.Reset()
+}
+
 // Watch changes to the path
-func (v *vault) Watch(opts ...configx.WatchOption) (configx.Receiver, error) {
+func (v *vault) Watch(opts ...watch.WatchOption) (watch.Receiver, error) {
 	return v.config.Watch(opts...)
 }
 
@@ -100,6 +158,10 @@ type vaultvalues struct {
 	vault configx.Values
 }
 
+func (v *vaultvalues) Context(ctx context.Context) configx.Values {
+	return &vaultvalues{v.path, v.Values.Context(ctx), v.vault.Context(ctx)}
+}
+
 // Val of the path
 func (v *vaultvalues) Val(s ...string) configx.Values {
 	return &vaultvalues{v.path + "/" + strings.Join(s, "/"), v.Values.Val(s...), v.vault.Val()}
@@ -107,24 +169,26 @@ func (v *vaultvalues) Val(s ...string) configx.Values {
 
 // Get retrieves the value as saved in the config (meaning the uuid if it is a registered key)
 // Data will need to be retrieved from the vault via other means
-func (v *vaultvalues) Get() configx.Value {
-	return v.Values
+func (v *vaultvalues) Get() any {
+	return v.Values.Get()
 }
 
 // Set ensures that the keys that have been target are saved encrypted in the vault
-func (v *vaultvalues) Set(val interface{}) error {
+func (v *vaultvalues) Set(value interface{}) error {
 	// Checking we have a registered value
 	for _, p := range registeredVaultKeys {
-		if v.path == p {
-			return v.set(val)
+		vPath := strings.TrimPrefix(v.path, "/")
+
+		if vPath == p {
+			return v.set(value)
 		}
 
-		if strings.HasPrefix(p, v.path) {
+		if strings.HasPrefix(p, vPath) {
 			// First removing keys that don't exist anymore
 			current := v.Values.Map()
 
 			// Need to loop through all below
-			switch m := val.(type) {
+			switch m := value.(type) {
 			case map[string]string:
 				for k := range current {
 					if _, ok := m[k]; !ok {
@@ -159,7 +223,7 @@ func (v *vaultvalues) Set(val interface{}) error {
 		}
 	}
 
-	vval, ok := val.(configx.Values)
+	vval, ok := value.(configx.Values)
 	if ok {
 		if vval.Get() == nil {
 			// Nothing to set
@@ -168,62 +232,62 @@ func (v *vaultvalues) Set(val interface{}) error {
 		return v.Values.Set(vval.Get())
 	}
 
-	return v.Values.Set(val)
+	return v.Values.Set(value)
 }
 
 // Default value
-func (v *vaultvalues) Default(i interface{}) configx.Value {
-	return v.Get().Default(i)
+func (v *vaultvalues) Default(i interface{}) configx.Values {
+	return v.Values.Default(i)
 }
 
 // Bool value
 func (v *vaultvalues) Bool() bool {
-	return v.Get().Bool()
+	return v.Values.Bool()
 }
 
 // Int value
 func (v *vaultvalues) Int() int {
-	return v.Get().Int()
+	return v.Values.Int()
 }
 
 // Int64 value
 func (v *vaultvalues) Int64() int64 {
-	return v.Get().Int64()
+	return v.Values.Int64()
 }
 
 // Bytes value
 func (v *vaultvalues) Bytes() []byte {
-	return v.Get().Bytes()
+	return v.Values.Bytes()
 }
 
 // Duration value
 func (v *vaultvalues) Duration() time.Duration {
-	return v.Get().Duration()
+	return v.Values.Duration()
 }
 
 // String value
 func (v *vaultvalues) String() string {
-	return v.Get().Default("").String()
+	return v.Values.Default("").String()
 }
 
 // StringMap value
 func (v *vaultvalues) StringMap() map[string]string {
-	return v.Get().StringMap()
+	return v.Values.StringMap()
 }
 
 // StringArray value
 func (v *vaultvalues) StringArray() []string {
-	return v.Get().StringArray()
+	return v.Values.StringArray()
 }
 
 // Slice value
 func (v *vaultvalues) Slice() []interface{} {
-	return v.Get().Slice()
+	return v.Values.Slice()
 }
 
 // Map value
 func (v *vaultvalues) Map() map[string]interface{} {
-	return v.Get().Map()
+	return v.Values.Map()
 }
 
 // MarshalJSON

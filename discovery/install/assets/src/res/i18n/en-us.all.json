@@ -24,6 +24,12 @@
   "database.legend.bold":{
     "other": "Please make sure that your database is running MySQL version 5.6 or higher"
   },
+  "database.legend1": {
+    "other":"Pydio requires at least one SQL storage for configuration and data indexation."
+  },
+  "database.legend2": {
+    "other":"Supported databases are MySQL/MariaDB or PostgreSQL or SQLite."
+  },
   "database.installDetected":{
     "other" : "There seem to be a Cells installation already setup in this database. Please confirm to continue or "
   },
@@ -140,11 +146,20 @@
   "form.dbConnectionType.label":{
     "other":"Connection Type"
   },
-  "form.dbConnectionType.tcp":{
-    "other":"TCP"
+  "form.dbConnectionType.mysql_tcp":{
+    "other":"MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket":{
-    "other":"Socket"
+  "form.dbConnectionType.mysql_socket":{
+    "other":"MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp":{
+    "other":"PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket":{
+    "other":"PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite":{
+    "other":"SQLite (dev purpose only)"
   },
   "form.dbConnectionType.manual":{
     "other":"Manual"
@@ -153,7 +168,7 @@
     "other":"Host Name"
   },
   "form.dbTCPHostname.legend":{
-    "other":"Server where mysql is running"
+    "other":"Database server host"
   },
   "form.dbName.label":{
     "other":"Database Name"
@@ -165,7 +180,7 @@
     "other":"Port"
   },
   "form.dbTCPPort.legend":{
-    "other":"Port to connect to mysql"
+    "other":"Database server port"
   },
   "form.dbUser.label":{
     "other":"Database User"
@@ -184,6 +199,18 @@
   },
   "form.dbSocketFile.legend":{
     "other":"Enter the location of the socket file to use to connect"
+  },
+  "form.dbSocketFileSQLite.label":{
+    "other":"Database Path"
+  },
+  "form.dbSocketFileSQLite.legend":{
+    "other":"Enter the location of the SQLite database"
+  },
+  "form.dbSqliteFile.label":{
+    "other":"File Path"
+  },
+  "form.dbSqliteFile.legend":{
+    "other":"Enter the location of the file to use as database"
   },
   "form.dbManualDSN.label":{
     "other":"DSN"
@@ -224,6 +251,9 @@
   "form.dsFolder.legend":{
     "other":"Use an absolute path on the server"
   },
+  "form.dsType.Label":{
+    "other": "Storage Type"
+  },
   "form.dsType.FS":{
     "other": "Local FS (store all data on this server)"
   },
@@ -231,7 +261,7 @@
     "other": "Amazon S3 / S3-compatible (store inside S3 buckets)"
   },
   "form.dsS3Custom.label":{
-    "other": "S3-Compatible storage endpoint"
+    "other": "URL, append ?minio=true if Minio."
   },
   "form.dsS3Custom.legend":{
     "other": "Leave empty for Amazon"

@@ -22,17 +22,22 @@ package mc
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/utils/configx"
 	"io"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/minio/minio-go/v7/pkg/notification"
+	"github.com/minio/minio-go/v7/pkg/s3utils"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 // Client wraps a minio.Core client in the nodes.StorageClient interface
@@ -46,31 +51,79 @@ func init() {
 		key := cfg.Val("key").String()
 		secret := cfg.Val("secret").String()
 		secure := cfg.Val("secure").Bool()
-		return New(ep, key, secret, secure)
+		region := cfg.Val("region").String()
+		sigDef := "v4"
+		if cfg.Val("minioServer").Bool() {
+			sigDef = "v2"
+		}
+		signature := cfg.Val("signature").Default(sigDef).String()
+		sc, e := New(ep, key, secret, signature, secure, region, cfg)
+		return sc, e
 	})
 }
 
 // New creates a new minio.Core with the most standard options
-func New(endpoint, accessKey, secretKey string, secure bool, customRegion ...string) (*Client, error) {
+func New(endpoint, accessKey, secretKey, signatureVersion string, secure bool, customRegion string, other configx.Values) (nodes.StorageClient, error) {
 	rt, e := customHeadersTransport(secure)
 	if e != nil {
 		return nil, e
 	}
+	var raw string
+	if secure {
+		if strings.HasSuffix(endpoint, ":443") {
+			endpoint = strings.TrimSuffix(endpoint, ":443")
+		}
+		raw = "https://" + endpoint
+	} else {
+		if strings.HasSuffix(endpoint, ":80") {
+			endpoint = strings.TrimSuffix(endpoint, ":80")
+		}
+		raw = "http://" + endpoint
+	}
+	u, e := url.Parse(raw)
+	if e != nil {
+		return nil, e
+	}
+
+	var creds *credentials.Credentials
+	if signatureVersion == "v4" {
+		creds = credentials.NewStaticV4(accessKey, secretKey, "")
+	} else if signatureVersion == "v2" {
+		creds = credentials.NewStaticV2(accessKey, secretKey, "")
+	} else {
+		return nil, errors.New("unsupported signature version, please provide 'v2' or 'v4'")
+	}
+
 	options := &minio.Options{
-		Creds:     credentials.NewStaticV2(accessKey, secretKey, ""),
+		Creds:     creds,
 		Secure:    secure,
 		Transport: rt,
 	}
-	if len(customRegion) > 0 {
-		options.Region = customRegion[0]
+	if customRegion != "" {
+		options.Region = customRegion
+	} else if r := s3utils.GetRegionFromURL(*u); r != "" {
+		options.Region = r
 	}
+
 	c, err := minio.NewCore(endpoint, options)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
-		mc: c,
-	}, nil
+	cli := &Client{mc: c}
+	if ua := other.Val("userAgentAppName").String(); ua != "" {
+		uv := other.Val("userAgentVersion").String()
+		c.SetAppInfo(ua, uv)
+	}
+	if u.Hostname() == object.AmazonS3Endpoint {
+		hCli := &HiddenFoldersWrapper{
+			Client:          cli,
+			translateHidden: common.PydioSyncHiddenFile,
+		}
+		return hCli, nil
+
+	} else {
+		return cli, nil
+	}
 }
 
 func (c *Client) ListBuckets(ctx context.Context) ([]models.BucketInfo, error) {
@@ -96,8 +149,20 @@ func (c *Client) RemoveBucket(ctx context.Context, bucketName string) error {
 	return c.mc.RemoveBucket(ctx, bucketName)
 }
 
+func (c *Client) BucketTags(ctx context.Context, bucketName string) (map[string]string, error) {
+	tg, er := c.mc.GetBucketTagging(ctx, bucketName)
+	if er != nil {
+		return nil, er
+	}
+	out := make(map[string]string)
+	for k, v := range tg.ToMap() {
+		out[k] = v
+	}
+	return out, nil
+}
+
 func (c *Client) GetObject(ctx context.Context, bucketName, objectName string, opts models.ReadMeta) (io.ReadCloser, models.ObjectInfo, error) {
-	rc, oi, _, e := c.mc.GetObject(ctx, bucketName, objectName, readMetaToMinioOpts(ctx, opts))
+	rc, oi, _, e := c.mc.GetObject(ctx, bucketName, objectName, c.readMetaToMinioOpts(ctx, opts))
 	if e != nil {
 		return nil, models.ObjectInfo{}, e
 	}
@@ -106,25 +171,28 @@ func (c *Client) GetObject(ctx context.Context, bucketName, objectName string, o
 
 func (c *Client) StatObject(ctx context.Context, bucketName, objectName string, opts models.ReadMeta) (models.ObjectInfo, error) {
 
-	oi, e := c.mc.StatObject(ctx, bucketName, objectName, readMetaToMinioOpts(ctx, opts))
+	oi, e := c.mc.StatObject(ctx, bucketName, objectName, c.readMetaToMinioOpts(ctx, opts))
 	return minioInfoToModelsInfo(oi), e
 }
 
-func (c *Client) PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64,
-	opts models.PutMeta) (n int64, err error) {
-	if objectSize < 0 {
-		ui, er := c.mc.Client.PutObject(ctx, bucketName, objectName, reader, objectSize, putMetaToMinioOpts(opts))
+func (c *Client) PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, opts models.PutMeta) (n models.ObjectInfo, err error) {
+	if objectSize < 0 || objectSize > c.CopyObjectMultipartThreshold() {
+		mo := putMetaToMinioOpts(opts)
+		_, partSize, _ := optimalPartInfo(objectSize)
+		mo.PartSize = uint64(partSize)
+
+		ui, er := c.mc.Client.PutObject(ctx, bucketName, objectName, reader, objectSize, mo)
 		if er != nil {
-			return 0, er
+			return models.ObjectInfo{}, er
 		} else {
-			return ui.Size, er
+			return minioUploadInfoToModelsInfo(opts, ui), er
 		}
 	}
 	ui, e := c.mc.PutObject(ctx, bucketName, objectName, reader, objectSize, "", "", putMetaToMinioOpts(opts))
 	if e != nil {
-		return 0, e
+		return models.ObjectInfo{}, e
 	} else {
-		return ui.Size, e
+		return minioUploadInfoToModelsInfo(opts, ui), e
 	}
 }
 
@@ -254,11 +322,16 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, bucket, object, up
 			ETag:       p.ETag,
 		}
 	}
-	return c.mc.CompleteMultipartUpload(ctx, bucket, object, uploadID, cparts, minio.PutObjectOptions{})
+	ui, er := c.mc.CompleteMultipartUpload(ctx, bucket, object, uploadID, cparts, minio.PutObjectOptions{})
+	if er != nil {
+		return "", er
+	} else {
+		return ui.ETag, nil
+	}
 }
 
 func (c *Client) PutObjectPart(ctx context.Context, bucket, object, uploadID string, partID int, data io.Reader, size int64, md5Base64, sha256Hex string) (models.MultipartObjectPart, error) {
-	pp, e := c.mc.PutObjectPart(ctx, bucket, object, uploadID, partID, data, size, md5Base64, sha256Hex, nil)
+	pp, e := c.mc.PutObjectPart(ctx, bucket, object, uploadID, partID, data, size, minio.PutObjectPartOptions{Md5Base64: md5Base64, Sha256Hex: sha256Hex})
 	if e != nil {
 		return models.MultipartObjectPart{}, e
 	}
@@ -275,9 +348,6 @@ func (c *Client) AbortMultipartUpload(ctx context.Context, bucket, object, uploa
 }
 
 func (c *Client) CopyObject(ctx context.Context, sourceBucket, sourceObject, destBucket, destObject string, srcMeta, metadata map[string]string, progress io.Reader) (models.ObjectInfo, error) {
-	if strings.Contains(sourceObject, "#") {
-		sourceObject = strings.ReplaceAll(sourceObject, "#", "%23")
-	}
 	srcOptions := minio.CopySrcOptions{
 		Bucket: sourceBucket,
 		Object: sourceObject,
@@ -304,18 +374,27 @@ func (c *Client) CopyObject(ctx context.Context, sourceBucket, sourceObject, des
 	}
 }
 
-// ListenBucketNotification hooks to events - Not part of the interface
-func (c *Client) ListenBucketNotification(ctx context.Context, bucketName, prefix, suffix string, events []string) <-chan notification.Info {
-	return c.mc.ListenBucketNotification(ctx, bucketName, prefix, suffix, events)
+// BucketNotifications hooks to events
+func (c *Client) BucketNotifications(ctx context.Context, bucketName string, prefix string, events []string) (<-chan interface{}, error) {
+	notificationInfoCh := make(chan interface{}, 1)
+	go func() {
+		defer close(notificationInfoCh)
+		for n := range c.mc.ListenBucketNotification(ctx, bucketName, prefix, "", events) {
+			notificationInfoCh <- n
+		}
+	}()
+	return notificationInfoCh, nil
 }
 
-func readMetaToMinioOpts(ctx context.Context, meta models.ReadMeta) minio.GetObjectOptions {
+func (c *Client) readMetaToMinioOpts(ctx context.Context, meta models.ReadMeta) minio.GetObjectOptions {
 	opt := minio.GetObjectOptions{}
-	if mm, ok := metadata.MinioMetaFromContext(ctx); ok {
-		for k, v := range mm {
-			opt.Set(k, v)
+	/*
+		if mm, ok := metadata.MinioMetaFromContext(ctx, !c.minioServer); ok {
+			for k, v := range mm {
+				opt.Set(k, v)
+			}
 		}
-	}
+	*/
 	for k, v := range meta {
 		opt.Set(k, v)
 	}
@@ -350,5 +429,24 @@ func minioInfoToModelsInfo(oi minio.ObjectInfo) models.ObjectInfo {
 		Owner:        &models.ObjectInfoOwner{DisplayName: oi.Owner.DisplayName, ID: oi.Owner.ID},
 		StorageClass: oi.StorageClass,
 		Err:          oi.Err,
+	}
+}
+
+func minioUploadInfoToModelsInfo(opts models.PutMeta, oi minio.UploadInfo) models.ObjectInfo {
+	om := http.Header{}
+	for k, v := range opts.UserMetadata {
+		om.Set(k, v)
+	}
+	if oi.LastModified.IsZero() {
+		oi.LastModified = time.Now()
+	}
+	return models.ObjectInfo{
+		ETag:         oi.ETag,
+		Key:          oi.Key,
+		LastModified: oi.LastModified,
+		Size:         oi.Size,
+		ContentType:  opts.ContentType,
+		Metadata:     om,
+		StorageClass: opts.StorageClass,
 	}
 }

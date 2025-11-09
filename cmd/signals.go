@@ -30,14 +30,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/pprof"
-	"strings"
 	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 var (
@@ -62,18 +61,18 @@ func handleSignals(args []string) {
 				fallthrough
 			case syscall.SIGINT:
 				// Stopping the main context will trigger the stop of all services
-				log.Info("Cancelling main context")
+				//log.Debug("Cancelling main context")
 				cancel()
 			case syscall.SIGUSR1, syscall.SIGUSR2:
 
 				if !profiling {
 
-					startTags := "main-process"
-					if len(args) > 0 {
-						startTags = strings.Join(args, "-")
-					}
+					//startTags := "main-process"
+					//if len(args) > 0 {
+					//	startTags = strings.Join(args, "-")
+					//}
 
-					targetDir := filepath.Join(runtime.ApplicationWorkingDir(runtime.ApplicationDirLogs), "profiles", startTags)
+					targetDir := filepath.Join(runtime.ApplicationWorkingDir(runtime.ApplicationDirLogs), "profiles", runtime.Name())
 					os.MkdirAll(targetDir, 0755)
 					tStamp := time.Now().Format("2006-01-02T15:04:05")
 

@@ -21,9 +21,12 @@
 package util
 
 import (
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/merger"
+	"golang.org/x/exp/maps"
+
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/merger"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
 func ToProtoDao(d registry.Dao) *pb.Dao {
@@ -32,16 +35,16 @@ func ToProtoDao(d registry.Dao) *pb.Dao {
 	}
 	return &pb.Dao{
 		Driver: d.Driver(),
-		Dsn:    d.Dsn(),
+		Dsn:    d.DSN(),
 	}
 }
 
 func ToDao(i *pb.Item, d *pb.Dao) registry.Dao {
-	return &dao{i: i, d: d}
+	return &dao{I: i, d: d}
 }
 
 type dao struct {
-	i *pb.Item
+	I *pb.Item
 	d *pb.Dao
 }
 
@@ -69,15 +72,18 @@ func (d *dao) Merge(differ merger.Differ, m map[string]string) (merger.Differ, e
 }
 
 func (d *dao) Name() string {
-	return d.i.Name
+	return d.I.Name
 }
 
 func (d *dao) ID() string {
-	return d.i.Id
+	return d.I.Id
 }
 
 func (d *dao) Metadata() map[string]string {
-	return d.i.Metadata
+	if d.I.Metadata == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(d.I.Metadata)
 }
 
 func (d *dao) As(i interface{}) bool {
@@ -92,6 +98,15 @@ func (d *dao) Driver() string {
 	return d.d.Driver
 }
 
-func (d *dao) Dsn() string {
+func (d *dao) DSN() string {
 	return d.d.Dsn
+}
+
+func (d *dao) Clone() interface{} {
+	clone := &dao{}
+
+	clone.I = std.DeepClone(d.I)
+	clone.d = std.DeepClone(d.d)
+
+	return clone
 }

@@ -23,16 +23,17 @@ package nodes
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"io"
+	"sync/atomic"
 
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
-// NodeWrappingStreamer wraps an existing Node Streamer.
+// NodeWrappingStreamer wraps an existing N Streamer.
 type NodeWrappingStreamer struct {
 	*wrappingStreamer
 }
@@ -71,7 +72,7 @@ type wrappingStreamer struct {
 	parent context.Context
 	w      *io.PipeWriter
 	r      *io.PipeReader
-	closed bool
+	closed atomic.Bool
 }
 
 func newWrappingStreamer(c context.Context) *wrappingStreamer {
@@ -80,7 +81,7 @@ func newWrappingStreamer(c context.Context) *wrappingStreamer {
 	return &wrappingStreamer{
 		w:      w,
 		r:      r,
-		closed: false,
+		closed: atomic.Bool{},
 		parent: c,
 	}
 }
@@ -111,15 +112,15 @@ func (l *wrappingStreamer) Send(in interface{}) error {
 	case error:
 		msg.Error = v.Error()
 	default:
-		return fmt.Errorf("unknown format")
+		return errors.New("unknown format")
 	}
 
 	if out, err := proto.Marshal(msg); err != nil {
 		return err
 	} else {
 		// First sending the message size 2 bytes
-		b := make([]byte, 2)
-		binary.BigEndian.PutUint16(b, uint16(len(out)))
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, uint32(len(out)))
 		if _, err := l.w.Write(b); err != nil {
 			return err
 		}
@@ -141,17 +142,17 @@ func (l *wrappingStreamer) SendError(err error) error {
 }
 
 func (l *wrappingStreamer) Recv() (*tree.WrappingStreamerResponse, error) {
-	if l.closed {
+	if l.closed.Load() {
 		return nil, io.EOF
 	}
 
 	// Getting the Next message size
-	size := make([]byte, 2)
+	size := make([]byte, 4)
 	if _, err := l.r.Read(size); err != nil {
 		return nil, err
 	}
 
-	in := make([]byte, binary.BigEndian.Uint16(size))
+	in := make([]byte, binary.BigEndian.Uint32(size))
 
 	if _, err := l.r.Read(in); err != nil {
 		return nil, err
@@ -164,7 +165,7 @@ func (l *wrappingStreamer) Recv() (*tree.WrappingStreamerResponse, error) {
 	}
 
 	if resp.Error != "" {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
 	return resp, nil
@@ -182,7 +183,7 @@ func (l *wrappingStreamer) RecvMsg(m interface{}) error {
 }
 
 func (l *wrappingStreamer) CloseSend() error {
-	l.closed = true
+	l.closed.Store(true)
 	l.w.Close()
 	return nil
 }

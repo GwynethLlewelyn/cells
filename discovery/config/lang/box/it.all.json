@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Condizioni Libere"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "Percorso JSON"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -102,7 +105,7 @@
     "other": "pattern"
   },
   "conditionBooleanCondition.value": {
-    "other": "True"
+    "other": "Vero"
   },
   "contextMetaCondition.CIDRCondition": {
     "other": "Condizione CIDR"
@@ -138,7 +141,7 @@
     "other": "Glob Matcher"
   },
   "contextMetaCondition.BooleanCondition": {
-    "other": "Boolean Value"
+    "other": "Valore Booleano"
   },
   "contextMetaField.ContentType": {
     "other": "Tipo di contenuto"
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Richiedi Hostname"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Richiedi Host"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Richiedi Porta"
   },
   "contextMetaField.RequestMethod": {
     "other": "Richiedi Metodo"
@@ -257,6 +266,9 @@
   "treeQuery.UUIDs": {
     "other": "UUID del Nodo"
   },
+  "treeQuery.ETag": {
+    "other": "ETag"
+  },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Ha qualsiasi valore"
   },
@@ -354,7 +366,7 @@
     "other": "Tipo di Workspace"
   },
   "workspaceSingleQuery.scope.ADMIN": {
-    "other": "Workspace"
+    "other": "Spazio di lavoro"
   },
   "workspaceSingleQuery.scope.ANY": {
     "other": "Qualsiasi"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Trigger Pianificato"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Attivato da Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Webhook Api Slug"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Esegui Nome Parametro"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Esegui Valore Parametro"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Attivazione Manuale"

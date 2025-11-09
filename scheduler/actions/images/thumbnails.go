@@ -26,29 +26,28 @@ import (
 	"fmt"
 	"image"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 
-	"github.com/disintegration/imaging"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/image/colornames"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
+	"github.com/pydio/cells/v5/scheduler/actions/images/encoding"
 )
 
 const (
@@ -72,14 +71,15 @@ type ThumbnailData struct {
 }
 
 type ThumbnailsMeta struct {
-	Processing bool
-	Thumbnails []ThumbnailData `json:"thumbnails"`
+	Processing bool            `json:"Processing,omitempty"`
+	Error      bool            `json:"Error,omitempty"`
+	Thumbnails []ThumbnailData `json:"thumbnails,omitempty"`
 }
 
 type ThumbnailExtractor struct {
-	common.RuntimeHolder
 	thumbSizes map[string]int
 	metaClient tree.NodeReceiverClient
+	codec      encoding.ImageCodec
 }
 
 // GetDescription returns action description
@@ -87,7 +87,7 @@ func (t *ThumbnailExtractor) GetDescription(_ ...string) actions.ActionDescripti
 	return actions.ActionDescription{
 		ID:                thumbnailsActionName,
 		Label:             "Create Thumbs",
-		Icon:              "image-filter",
+		Icon:              "image-size-select-large",
 		Description:       "Create thumbnails on image creation/modification",
 		SummaryTemplate:   "",
 		HasForm:           true,
@@ -98,7 +98,7 @@ func (t *ThumbnailExtractor) GetDescription(_ ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (t *ThumbnailExtractor) GetParametersForm() *forms.Form {
+func (t *ThumbnailExtractor) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -122,7 +122,7 @@ func (t *ThumbnailExtractor) GetName() string {
 }
 
 // Init passes parameters to the action.
-func (t *ThumbnailExtractor) Init(job *jobs.Job, action *jobs.Action) error {
+func (t *ThumbnailExtractor) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if action.Parameters != nil {
 		t.thumbSizes = make(map[string]int)
 		if params, ok := action.Parameters["ThumbSizes"]; ok {
@@ -137,13 +137,13 @@ func (t *ThumbnailExtractor) Init(job *jobs.Job, action *jobs.Action) error {
 		t.thumbSizes = map[string]int{"sm": 300}
 	}
 	if !nodes.IsUnitTestEnv {
-		t.metaClient = tree.NewNodeReceiverClient(grpc.GetClientConnFromCtx(t.GetRuntimeContext(), common.ServiceMeta))
+		t.metaClient = tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC))
 	}
 	return nil
 }
 
 // Run the actual action code.
-func (t *ThumbnailExtractor) Run(ctx context.Context, _ *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (t *ThumbnailExtractor) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 || input.Nodes[0].Size == -1 || input.Nodes[0].Etag == common.NodeFlagEtagTemporary {
 		// Nothing to do
@@ -151,15 +151,24 @@ func (t *ThumbnailExtractor) Run(ctx context.Context, _ *actions.RunnableChannel
 		return input.WithIgnore(), nil
 	}
 
+	fileFormat := strings.ToLower(filepath.Ext(input.Nodes[0].GetStringMeta(common.MetaNamespaceNodeName)))
+	t.codec = encoding.NewImageCodec(fileFormat)
+
 	log.Logger(ctx).Debug("[THUMB EXTRACTOR] Resizing image...")
 	node := input.Nodes[0]
-	err := t.resize(ctx, node, t.thumbSizes)
+	meta, err := t.resize(ctx, node, t.thumbSizes)
+	if err == nil && meta != nil {
+		node.MustSetMeta(MetadataThumbnails, meta)
+	} else {
+		node.MustSetMeta(MetadataThumbnails, &ThumbnailsMeta{Error: true, Processing: false})
+	}
+	_, _ = t.metaClient.UpdateNode(ctx, &tree.UpdateNodeRequest{From: node, To: node})
 	if err != nil {
 		return input.WithError(err), err
 	}
 
-	output := input
-	output.Nodes[0] = node
+	// Clone and replace node
+	output := input.WithNode(node)
 	log.TasksLogger(ctx).Info("Created thumbnails for "+node.GetPath(), node.ZapPath())
 	output.AppendOutput(&jobs.ActionOutput{Success: true})
 
@@ -173,14 +182,15 @@ func displayMemStat(_ context.Context, _ string) {
 	//stdlog.Printf("%s : \nAlloc = %v\nTotalAlloc = %v\nSys = %v\nNumGC = %v\n\n", position, m.Alloc / 1024 / 1024, m.TotalAlloc / 1024 / 1024, m.Sys / 1024, m.NumGC)
 }
 
-func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes map[string]int) error {
+func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes map[string]int) (*ThumbnailsMeta, error) {
 	displayMemStat(ctx, "START RESIZE")
 	// Open the test image.
 	if !node.HasSource() {
-		return fmt.Errorf("node does not have enough metadata for Resize (missing Source data)")
+		return nil, errors.New("node does not have enough metadata for Resize (missing Source data)")
 	}
 
 	log.Logger(ctx).Debug("[THUMB EXTRACTOR] Getting object content", zap.String("Path", node.Path), zap.Int64("Size", node.Size))
+	var router nodes.Client
 	var reader io.ReadCloser
 	var err error
 	var errPath string
@@ -191,18 +201,19 @@ func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes 
 	} else {
 		// Security in case Router is not transmitting nodes immutably
 		routerNode := proto.Clone(node).(*tree.Node)
-		reader, err = getRouter(t.GetRuntimeContext()).GetObject(ctx, routerNode, &models.GetRequestData{Length: -1})
+		router = getRouter(ctx)
+		reader, err = router.GetObject(ctx, routerNode, &models.GetRequestData{Length: -1})
 		errPath = routerNode.Path
 	}
 	if err != nil {
-		return errors.Wrap(err, errPath)
+		return nil, errors.Wrap(err, errPath)
 	}
 	defer reader.Close()
 
 	displayMemStat(ctx, "BEFORE DECODE")
-	src, err := imaging.Decode(reader)
+	src, err := t.codec.Decode(reader)
 	if err != nil {
-		return errors.Wrap(err, errPath)
+		return nil, errors.Wrap(err, errPath)
 	}
 	displayMemStat(ctx, "AFTER DECODE")
 
@@ -210,6 +221,7 @@ func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes 
 	bounds := src.Bounds()
 	width := bounds.Max.X
 	height := bounds.Max.Y
+
 	// Send update event right now
 	node.MustSetMeta(MetadataImageDimensions, struct {
 		Width  int
@@ -219,13 +231,12 @@ func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes 
 		Height: height,
 	})
 	node.MustSetMeta(MetadataCompatIsImage, true)
-	node.MustSetMeta(MetadataThumbnails, &ThumbnailsMeta{Processing: true})
 	node.MustSetMeta(MetadataCompatImageHeight, height)
 	node.MustSetMeta(MetadataCompatImageWidth, width)
 	node.MustSetMeta(MetadataCompatImageReadableDimensions, fmt.Sprintf("%dpx X %dpx", width, height))
 
 	if _, err = t.metaClient.UpdateNode(ctx, &tree.UpdateNodeRequest{From: node, To: node}); err != nil {
-		return errors.Wrap(err, errPath)
+		return nil, errors.Wrap(err, errPath)
 	}
 
 	log.Logger(ctx).Debug("Thumbnails - Extracted dimension and saved in metadata", zap.Any("dimension", bounds))
@@ -239,12 +250,9 @@ func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes 
 		}
 
 		displayMemStat(ctx, "BEFORE WRITE SIZE FROM SRC")
-		updateMeta, err := t.writeSizeFromSrc(ctx, src, node, size)
+		updateMeta, err := t.writeSizeFromSrc(ctx, src, node, size, router)
 		if err != nil {
-			// Remove processing state from Metadata
-			node.MustSetMeta(MetadataThumbnails, nil)
-			t.metaClient.UpdateNode(ctx, &tree.UpdateNodeRequest{From: node, To: node})
-			return errors.Wrap(err, errPath)
+			return nil, errors.Wrap(err, errPath)
 		}
 		displayMemStat(ctx, "AFTER WRITE SIZE FROM SRC")
 		if updateMeta {
@@ -261,28 +269,14 @@ func (t *ThumbnailExtractor) resize(ctx context.Context, node *tree.Node, sizes 
 
 	displayMemStat(ctx, "AFTER TRIGGERING GC")
 
-	if (meta != &ThumbnailsMeta{}) {
-		node.MustSetMeta(MetadataThumbnails, meta)
-	} else {
-		node.MustSetMeta(MetadataThumbnails, nil)
-	}
-
-	log.TasksLogger(ctx).Info("Thumbs Generated for", zap.String(common.KeyNodePath, errPath), zap.Any("meta", meta))
-	_, err = t.metaClient.UpdateNode(ctx, &tree.UpdateNodeRequest{From: node, To: node})
-	if err != nil {
-		err = errors.Wrap(err, errPath)
-	}
-
-	return err
+	return meta, err
 }
 
-func (t *ThumbnailExtractor) writeSizeFromSrc(ctx context.Context, img image.Image, node *tree.Node, targetSize int) (bool, error) {
+func (t *ThumbnailExtractor) writeSizeFromSrc(ctx context.Context, img image.Image, node *tree.Node, targetSize int, router nodes.Client) (bool, error) {
 
 	localTest := false
 	localFolder := ""
 
-	var thumbsClient nodes.StorageClient
-	var thumbsBucket string
 	objectName := fmt.Sprintf("%s-%d.jpg", node.Uuid, targetSize)
 
 	if localFolder = node.GetStringMeta(common.MetaNamespaceNodeTestLocalFolder); localFolder != "" {
@@ -292,14 +286,13 @@ func (t *ThumbnailExtractor) writeSizeFromSrc(ctx context.Context, img image.Ima
 
 	if !localTest {
 
-		var e error
-		thumbsClient, thumbsBucket, e = nodes.GetGenericStoreClient(ctx, common.PydioThumbstoreNamespace)
-		if e != nil {
-			logger.Error("Cannot find client for thumbstore", zap.Error(e))
+		dsi, e := router.GetClientsPool(ctx).GetDataSourceInfo(common.PydioThumbstoreNamespace)
+		if e != nil || dsi.Client == nil {
+			logger.Error("Cannot find ds info for thumbnail store", zap.Error(e))
 			return false, e
 		}
 		// First Check if thumb already exists with same original etag
-		oi, check := thumbsClient.StatObject(ctx, thumbsBucket, objectName, nil)
+		oi, check := dsi.Client.StatObject(ctx, dsi.ObjectsBucket, objectName, nil)
 		logger.Debug("Object Info", zap.Any("object", oi), zap.Error(check))
 		if check == nil {
 			foundOriginal := oi.Metadata.Get("X-Amz-Meta-Original-Etag")
@@ -316,20 +309,20 @@ func (t *ThumbnailExtractor) writeSizeFromSrc(ctx context.Context, img image.Ima
 	var dst *image.NRGBA
 	if img.Bounds().Max.X >= img.Bounds().Max.Y {
 		// Resize the cropped image to width = 256px preserving the aspect ratio.
-		dst = imaging.Resize(img, targetSize, 0, imaging.Lanczos)
+		dst = t.codec.Resize(img, targetSize, 0, encoding.Lanczos).(*image.NRGBA)
 	} else {
 		// Resize the cropped image to height = 256px preserving the aspect ratio.
-		dst = imaging.Resize(img, 0, targetSize, imaging.Lanczos)
+		dst = t.codec.Resize(img, 0, targetSize, encoding.Lanczos).(*image.NRGBA)
 	}
-	ol := imaging.New(dst.Bounds().Dx(), dst.Bounds().Dy(), colornames.Lightgrey)
-	ol = imaging.Overlay(ol, dst, image.Pt(0, 0), 1.0)
+	ol := t.codec.New(dst.Bounds().Dx(), dst.Bounds().Dy(), colornames.Lightgrey)
+	ol = t.codec.Overlay(ol, dst, image.Pt(0, 0), 1.0)
 	dst = nil
 	runtime.GC()
 
 	displayMemStat(ctx, "BEFORE ENCODE")
 	var thumbBytes []byte
 	buf := bytes.NewBuffer(thumbBytes)
-	err := imaging.Encode(buf, ol, imaging.JPEG)
+	err := t.codec.Encode(buf, ol, encoding.JPEG)
 	ol = nil
 	runtime.GC()
 	if err != nil {
@@ -346,24 +339,27 @@ func (t *ThumbnailExtractor) writeSizeFromSrc(ctx context.Context, img image.Ima
 		}
 		logger.Debug("Writing thumbnail to thumbs bucket", zap.Any("image size", targetSize))
 		displayMemStat(ctx, "BEFORE PUT OBJECT WITH CONTEXT")
-		tCtx, tNode, e := getThumbLocation(t.GetRuntimeContext(), ctx, objectName)
+		tCtx, tNode, e := getThumbLocation(router, ctx, objectName)
 		if e != nil {
 			return false, e
 		}
 		tNode.Size = int64(buf.Len())
-		written, err := getRouter(t.GetRuntimeContext()).PutObject(tCtx, tNode, buf, &models.PutRequestData{
+		oi, err := router.PutObject(tCtx, tNode, buf, &models.PutRequestData{
 			Size:     tNode.Size,
 			Metadata: requestMeta,
+			CheckedMetadata: map[string]interface{}{
+				common.MetaNamespaceAclRefNodeUuid: node.Uuid,
+			},
 		})
 		if err != nil {
 			return false, err
 		} else {
-			logger.Debug("Finished putting thumb for size", zap.Int64("written", written), zap.Int("size ", targetSize))
+			logger.Debug("Finished putting thumb for size", zap.Int64("written", oi.Size), zap.Int("size ", targetSize))
 		}
 		displayMemStat(ctx, "AFTER PUT OBJECT WITH CONTEXT")
 
 	} else {
-		e := ioutil.WriteFile(filepath.Join(localFolder, objectName), buf.Bytes(), 0755)
+		e := os.WriteFile(filepath.Join(localFolder, objectName), buf.Bytes(), 0755)
 		if e != nil {
 			return false, e
 		}

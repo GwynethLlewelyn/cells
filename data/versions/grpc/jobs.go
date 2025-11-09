@@ -21,21 +21,19 @@
 package grpc
 
 import (
-	"github.com/pydio/cells/v4/common/proto/object"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	service "github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/data/versions/lang"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/object"
+	service "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/data/versions/lang"
 )
 
-func getVersioningJob() *jobs.Job {
+func GetVersioningJob(language string) *jobs.Job {
 
-	T := lang.Bundle().GetTranslationFunc(i18n.GetDefaultLanguage(config.Get()))
+	T := lang.Bundle().T(language)
 
 	triggerCreate := &jobs.TriggerFilter{
 		Label:       "Create/Update",

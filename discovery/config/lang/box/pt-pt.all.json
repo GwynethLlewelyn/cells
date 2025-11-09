@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Condição livre"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "Caminho JSON"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -99,10 +102,10 @@
     "other": "ocorrências"
   },
   "conditionPathGlobCondition.glob": {
-    "other": "pattern"
+    "other": "padrão"
   },
   "conditionBooleanCondition.value": {
-    "other": "True"
+    "other": "Verdadeiro"
   },
   "contextMetaCondition.CIDRCondition": {
     "other": "Condição CIDR"
@@ -135,10 +138,10 @@
     "other": "Data após"
   },
   "contextMetaCondition.PathGlobCondition": {
-    "other": "Glob Matcher"
+    "other": "Padrão para correspondência de ficheiros"
   },
   "contextMetaCondition.BooleanCondition": {
-    "other": "Boolean Value"
+    "other": "Valor booleano"
   },
   "contextMetaField.ContentType": {
     "other": "Tipo de conteúdo"
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Solicitar Hostname"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Servidor a contactar"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Porta a contactar"
   },
   "contextMetaField.RequestMethod": {
     "other": "Método de solicitação"
@@ -256,6 +265,9 @@
   },
   "treeQuery.UUIDs": {
     "other": "UUIDs do nó"
+  },
+  "treeQuery.ETag": {
+    "other": "ETag"
   },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Tem algum valor"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Desencadeamento agendado"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Accionado por um Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Slug para a API dos Webhooks"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Nome do parâmetro de execução"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Valor do parâmetro de execução"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Desencadeamento manual"

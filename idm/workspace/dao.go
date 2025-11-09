@@ -26,26 +26,22 @@ package workspace
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/sql"
-	"github.com/pydio/cells/v4/common/sql/resources"
+	service2 "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/storage/sql/resources"
 )
+
+var Drivers = service.StorageDrivers{}
 
 // DAO interface
 type DAO interface {
 	resources.DAO
 
+	Migrate(ctx context.Context) error
+
 	// Add creates or updates a workspace in the database.
 	// It returns true in case of an update.
-	Add(interface{}) (bool, error)
-	Del(sql.Enquirer) (numRows int64, e error)
-	Search(sql.Enquirer, *[]interface{}) error
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{Handler: v.(*sql.Handler)}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+	Add(context.Context, interface{}) (bool, error)
+	Del(context.Context, service2.Enquirer) (numRows int64, e error)
+	Search(context.Context, service2.Enquirer, *[]interface{}) error
 }

@@ -25,35 +25,59 @@ import (
 	"errors"
 	"io"
 
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/registry/util"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
 )
 
 type streamWatcher struct {
-	stream pb.Registry_WatchClient
-	closed chan bool
+	stream  pb.Registry_WatchClient
+	options registry.Options
+	closed  chan bool
 }
 
 func (s *streamWatcher) Next() (registry.Result, error) {
-	// check if closed
-	select {
-	case <-s.closed:
-		return nil, errors.New("watcher stopped")
-	default:
-	}
+	for {
+		if s.stream == nil {
+			continue
+		}
 
-	r, err := s.stream.Recv()
-	if err != nil {
-		return nil, err
-	}
+		// check if closed
+		select {
+		case <-s.closed:
+			return nil, errors.New("watcher stopped")
+		default:
+		}
 
-	var items []registry.Item
-	for _, i := range r.Items {
-		items = append(items, util.ToItem(i))
+		r, err := s.stream.Recv()
+		if err != nil {
+			return nil, err
+		}
+
+		var items []registry.Item
+		for _, i := range r.Items {
+			item := util.ToItem(i)
+			foundFilter := true
+			for _, filter := range s.options.Filters {
+				if !filter(item) {
+					foundFilter = false
+					break
+				}
+			}
+
+			if !foundFilter {
+				continue
+			}
+
+			items = append(items, item)
+		}
+
+		if len(items) == 0 {
+			continue
+		}
+
+		return registry.NewResult(r.Action, items), nil
 	}
-	//fmt.Println("Got NEXT on streamWatcher", r.Action, len(r.Items))
-	return registry.NewResult(r.Action, items), nil
 }
 
 func (s *streamWatcher) Stop() {
@@ -66,10 +90,11 @@ func (s *streamWatcher) Stop() {
 	}
 }
 
-func newStreamWatcher(stream pb.Registry_WatchClient) registry.Watcher {
+func newStreamWatcher(stream pb.Registry_WatchClient, options registry.Options) registry.Watcher {
 	return &streamWatcher{
-		stream: stream,
-		closed: make(chan bool),
+		stream:  stream,
+		options: options,
+		closed:  make(chan bool),
 	}
 }
 

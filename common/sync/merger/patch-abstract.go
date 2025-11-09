@@ -25,12 +25,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/log"
-
 	"go.uber.org/zap/zapcore"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/sync/model"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type AbstractPatch struct {
@@ -148,11 +147,11 @@ func (b *AbstractPatch) SetSessionData(providerContext context.Context, silentSe
 	b.sessionSilent = silentSession
 }
 
-func (b *AbstractPatch) StartSession(rootNode *tree.Node) (*tree.IndexationSession, error) {
+func (b *AbstractPatch) StartSession(rootNode tree.N) (string, error) {
 	if sessionProvider, ok := b.Target().(model.SessionProvider); ok && b.sessionProviderContext != nil {
 		return sessionProvider.StartSession(b.sessionProviderContext, rootNode, b.sessionSilent)
 	} else {
-		return &tree.IndexationSession{Uuid: "fake-session", Description: "Noop Session"}, nil
+		return "fake-session", nil
 	}
 }
 

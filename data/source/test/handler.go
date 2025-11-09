@@ -32,28 +32,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/tree"
-
 	minio "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/notification"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/nodes/objects/mc"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/proto/test"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/utils/std"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/test"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 type Handler struct {
 	test.UnimplementedTesterServer
 }
+
 type runImpl func(ctx context.Context, oc nodes.StorageClient, req *test.RunTestsRequest, conf *object.DataSource) (*test.TestResult, error)
 
 func NewHandler() *Handler {
@@ -72,14 +72,14 @@ func (h *Handler) Run(ctx context.Context, req *test.RunTestsRequest) (*test.Run
 	// Assume there is a "cellsdata" datasource
 	var dsConf *object.DataSource
 	srvName := common.ServiceGrpcNamespace_ + common.ServiceDataSync_ + "cellsdata"
-	if e := config.Get("services", srvName).Scan(&dsConf); e != nil {
-		return nil, fmt.Errorf("cannot read config for " + srvName)
+	if e := config.Get(ctx, "services", srvName).Scan(&dsConf); e != nil {
+		return nil, errors.New("cannot read config for " + srvName)
 	}
 	dsConf.ApiKey = "mycustomapikey"
 	dsConf.ApiSecret = "mycustomapisecret"
 	dsConf.ObjectsHost = "127.0.0.1"
 	dsConf.ObjectsPort = 9000
-	oc, e := nodes.NewStorageClient(dsConf.ClientConfig())
+	oc, e := nodes.NewStorageClient(dsConf.ClientConfig(ctx, config.GetSecret))
 	if e != nil {
 		return nil, fmt.Errorf("cannot initialize client: %v", e)
 	}
@@ -94,7 +94,7 @@ func (h *Handler) Run(ctx context.Context, req *test.RunTestsRequest) (*test.Run
 	// Try same tests on a gateway
 	var gatewayConf *object.DataSource
 	gatewayName := common.ServiceGrpcNamespace_ + common.ServiceDataSync_ + "s3ds"
-	if e := config.Get("services", gatewayName).Scan(&gatewayConf); e != nil || gatewayConf == nil {
+	if e := config.Get(ctx, "services", gatewayName).Scan(&gatewayConf); e != nil || gatewayConf == nil {
 		res := test.NewTestResult("Testing on gateways3 datasource")
 		res.Log("[SKIPPED] Cannot read config for " + gatewayName + " - Please create an S3 datasource named gateways3")
 		resp.Results = append(resp.Results, res)
@@ -119,7 +119,7 @@ func (h *Handler) TestAuthorization(ctx context.Context, oc nodes.StorageClient,
 
 	emptyContext := context.Background()
 	authCtx := context.WithValue(emptyContext, common.PydioContextUserKey, common.PydioSystemUsername)
-	authCtx = metadata.NewContext(authCtx, map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
+	authCtx = propagator.NewContext(authCtx, map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
 
 	result := test.NewTestResult("Test Authorization Header is required")
 	key := uuid.New() + ".txt"
@@ -134,11 +134,11 @@ func (h *Handler) TestAuthorization(ctx context.Context, oc nodes.StorageClient,
 
 	_, e = oc.PutObject(authCtx, dsConf.ObjectsBucket, key, strings.NewReader(content), int64(len(content)), models.PutMeta{})
 	if e != nil {
-		return result, fmt.Errorf("PutObject error (with X-Pydio-User Header): " + e.Error())
+		return result, errors.New("PutObject error (with X-Pydio-User Header): " + e.Error())
 	}
 	e = oc.RemoveObject(authCtx, dsConf.ObjectsBucket, key)
 	if e != nil {
-		return result, fmt.Errorf("PutObject with X-Pydio-User header passed but RemoteObjectWithContext failed")
+		return result, errors.New("PutObject with X-Pydio-User header passed but RemoteObjectWithContext failed")
 	}
 	result.Log("PutObject with X-Pydio-User header passed")
 
@@ -152,7 +152,7 @@ func (h *Handler) TestEtags(ctx context.Context, oc nodes.StorageClient, req *te
 
 	// Load File Info going through Object Service
 	opts := map[string]string{common.PydioContextUserKey: common.PydioSystemUsername}
-	authCtx := metadata.NewContext(context.Background(), map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
+	authCtx := propagator.NewContext(context.Background(), map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
 
 	var localFolder string
 	var ok bool
@@ -167,7 +167,7 @@ func (h *Handler) TestEtags(ctx context.Context, oc nodes.StorageClient, req *te
 			return result, e
 		} else {
 			defer os.Remove(filePath)
-			fmt.Fprintf(f, fileContent)
+			fmt.Fprint(f, fileContent)
 			f.Close()
 			result.Log("Created random data directly on local FS in " + filePath)
 		}
@@ -250,22 +250,20 @@ func (h *Handler) TestEtags(ctx context.Context, oc nodes.StorageClient, req *te
 // TestEvents checks that metadata sent using the client is propagated to the corresponding s3 event
 func (h *Handler) TestEvents(ctx context.Context, oc nodes.StorageClient, req *test.RunTestsRequest, dsConf *object.DataSource) (*test.TestResult, error) {
 
-	min, ok := oc.(*mc.Client)
-	if !ok {
-		return nil, fmt.Errorf("Client is not a MinioClient")
-	}
-
 	result := test.NewTestResult("Events Metadata Propagation")
 
 	opts := minio.StatObjectOptions{}
 	opts.Set(common.PydioContextUserKey, common.PydioSystemUsername)
 	//authCtx := context.WithValue(context.Background(), common.PydioContextUserKey, common.PydioSystemUsername)
-	authCtx := metadata.NewContext(context.Background(), map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
+	authCtx := propagator.NewContext(context.Background(), map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
 	listenCtx, cancel := context.WithCancel(authCtx)
 	defer cancel()
 
 	result.Log("Setting up events listener")
-	eventChan := min.ListenBucketNotification(listenCtx, dsConf.ObjectsBucket, "", "", []string{string(notification.ObjectCreatedAll)})
+	eventChan, e := oc.BucketNotifications(listenCtx, dsConf.ObjectsBucket, "", []string{string(notification.ObjectCreatedAll)})
+	if e != nil {
+		return result, e
+	}
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	var receivedInfo notification.Info
@@ -274,7 +272,7 @@ func (h *Handler) TestEvents(ctx context.Context, oc nodes.StorageClient, req *t
 		for {
 			select {
 			case i := <-eventChan:
-				receivedInfo = i
+				receivedInfo = i.(notification.Info)
 				return
 			case <-time.After(10 * time.Second):
 				fmt.Println("Breaking after timeout - No Events returned!")
@@ -285,8 +283,7 @@ func (h *Handler) TestEvents(ctx context.Context, oc nodes.StorageClient, req *t
 	key := uuid.New() + ".txt"
 	content := uuid.New()
 	<-time.After(3 * time.Second)
-	_, e := oc.PutObject(authCtx, dsConf.ObjectsBucket, key, strings.NewReader(content), int64(len(content)), models.PutMeta{})
-	if e != nil {
+	if _, e = oc.PutObject(authCtx, dsConf.ObjectsBucket, key, strings.NewReader(content), int64(len(content)), models.PutMeta{}); e != nil {
 		return result, e
 	}
 
@@ -299,7 +296,7 @@ func (h *Handler) TestEvents(ctx context.Context, oc nodes.StorageClient, req *t
 	fmt.Println("Finished listening, checking event info: ", receivedInfo)
 	result.Log("Finished listening, checking event info: ", receivedInfo)
 	if receivedInfo.Records == nil || len(receivedInfo.Records) == 0 {
-		return result, fmt.Errorf("NotificationInfo is empty")
+		return result, errors.New("NotificationInfo is empty")
 	}
 	metaFound := false
 	for _, r := range receivedInfo.Records {
@@ -316,7 +313,7 @@ func (h *Handler) TestEvents(ctx context.Context, oc nodes.StorageClient, req *t
 	if metaFound {
 		result.Log("Received correct event with initial metadata")
 	} else {
-		return result, fmt.Errorf("Could not find initial metadata in received events")
+		return result, errors.New("Could not find initial metadata in received events")
 	}
 
 	return result, nil
@@ -326,7 +323,7 @@ func (h *Handler) TestEvents(ctx context.Context, oc nodes.StorageClient, req *t
 func (h *Handler) TestNodesClient(ctx context.Context) (*test.TestResult, error) {
 	res := &test.TestResult{}
 
-	cl := compose.PathClient(ctx, nodes.AsAdmin())
+	cl := compose.PathClient(nodes.AsAdmin())
 	err := cl.ListNodesWithCallback(ctx, &tree.ListNodesRequest{Node: &tree.Node{Path: "pydiods1"}}, func(ctx context.Context, node *tree.Node, err error) error {
 		res.Log("Got node", node.Zap())
 		return nil

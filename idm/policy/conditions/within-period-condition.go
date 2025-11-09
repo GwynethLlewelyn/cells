@@ -28,7 +28,7 @@ import (
 	"github.com/ory/ladon"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 // WithinPeriodCondition is a condition which is fulfilled if the
@@ -39,7 +39,7 @@ type WithinPeriodCondition struct {
 
 // Fulfills returns true if the given value is a Time and is between start and end date.
 // It expects a iso 8601 formatted string, e.g: "2006-01-02T15:04-0700"
-func (c *WithinPeriodCondition) Fulfills(value interface{}, _ *ladon.Request) bool {
+func (c *WithinPeriodCondition) Fulfills(ctx context.Context, value interface{}, _ *ladon.Request) bool {
 
 	if value == nil {
 		return false
@@ -47,15 +47,13 @@ func (c *WithinPeriodCondition) Fulfills(value interface{}, _ *ladon.Request) bo
 
 	s, ok := value.(string)
 	if !ok {
-		log.Logger(context.Background()).Error("passed value must be a string", zap.Any("input param", value))
+		log.Logger(ctx).Error("passed value must be a string", zap.Any("input param", value))
 		return false
 	}
 
-	// log.Logger(context.Background()).Error("checking time period condition for date: " + s)
-
 	t, parseErr := time.Parse(timeLayout, s)
 	if parseErr != nil {
-		log.Logger(context.Background()).Error("cannot parse passed value. reference layout is "+timeLayout, zap.String("input param", s), zap.Error(parseErr))
+		log.Logger(ctx).Error("cannot parse passed value. reference layout is "+timeLayout, zap.String("input param", s), zap.Error(parseErr))
 		return false
 	}
 

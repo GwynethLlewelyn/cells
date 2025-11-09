@@ -22,17 +22,16 @@ package mailer
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
 
 	"github.com/pkg/errors"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/mailer"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/filex"
+	"github.com/pydio/cells/v5/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/filex"
 )
 
 type Sendmail struct {
@@ -59,7 +58,7 @@ func (s *Sendmail) Check(ctx context.Context) error {
 
 }
 
-func (d *Sendmail) Send(email *mailer.Mail) error {
+func (d *Sendmail) Send(ctx context.Context, email *mailer.Mail) error {
 
 	m, e := NewGomailMessage(email)
 	if e != nil {
@@ -74,12 +73,12 @@ func (d *Sendmail) Send(email *mailer.Mail) error {
 	var rxEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
 	for _, user := range email.To {
 		if len(user.Address) > 254 || !rxEmail.MatchString(user.Address) {
-			return fmt.Errorf("string does not seems a valid email address")
+			return errors.New("string does not seems a valid email address")
 		}
 		toStr += user.Address + ", "
 	}
 	if toStr == "" {
-		return fmt.Errorf("cannot send mail without any recipient")
+		return errors.New("cannot send mail without any recipient")
 	}
 	toStr = "\"" + toStr + "\""
 

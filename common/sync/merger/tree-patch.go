@@ -29,11 +29,11 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/sync/model"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/mtree"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/filesystem"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 // TreePatch is an implement of the Patch interface representing a sequence of operations as a tree structure.
@@ -116,7 +116,7 @@ func (t *TreePatch) Enqueue(op Operation) {
 }
 
 // OperationsByType collects operations for a given type and return them in a slice
-func (t *TreePatch) OperationsByType(types []OperationType, sorted ...bool) (events []Operation) {
+func (t *TreePatch) OperationsByType(types []OperationType, _ ...bool) (events []Operation) {
 	// walk tree to collect operations
 	t.WalkOperations(types, func(operation Operation) {
 		events = append(events, operation)
@@ -140,10 +140,13 @@ func (t *TreePatch) BranchesWithOperations(endpoint model.Endpoint) (branches []
 		unique[d] = d
 	}, endpoint)
 	for _, d := range unique {
+		if d == "" {
+			return []string{""} // Return one branch for root!
+		}
 		branches = append(branches, d)
 	}
 	if len(branches) > 5 {
-		c := mtree.CommonPrefix('/', branches...)
+		c := filesystem.CommonPrefix('/', branches...)
 		if c != "" && c != "." {
 			//fmt.Println("Loading common prefix", c)
 			branches = []string{c}
@@ -162,11 +165,27 @@ func (t *TreePatch) CachedBranchFromEndpoint(ctx context.Context, endpoint model
 	}
 	if cacheProvider, ok := endpoint.(model.CachedBranchProvider); ok {
 		if len(branches) > 5 {
-			log.Logger(ctx).Info("Loading branches in cache", zap.Int("count", len(branches)))
+			log.Logger(ctx).Info("[BranchCache] Loading multiple branches in cache...", zap.Int("count", len(branches)), zap.String("endpoint", endpoint.GetEndpointInfo().URI))
+		} else if branches[0] == "" {
+			log.Logger(ctx).Info("[BranchCache] Loading whole branch in cache, this may take some time...", zap.String("endpoint", endpoint.GetEndpointInfo().URI))
 		} else {
-			log.Logger(ctx).Info("Loading branches in cache", log.DangerouslyZapSmallSlice("branches", branches))
+			log.Logger(ctx).Info("[BranchCache] Loading multiple branches in cache...", log.DangerouslyZapSmallSlice("branches", branches))
 		}
-		inMemory := cacheProvider.GetCachedBranches(ctx, branches...)
+		done := make(chan bool)
+		timer := time.NewTicker(10 * time.Second).C
+		go func() {
+			for {
+				select {
+				case <-done:
+					log.Logger(ctx).Info("[BranchCache] Finished")
+					return
+				case <-timer:
+					log.Logger(ctx).Info("[BranchCache] Still Processing, please wait...")
+				}
+			}
+		}()
+		inMemory, _ := cacheProvider.GetCachedBranches(ctx, branches...)
+		close(done)
 		return inMemory, true
 	}
 	return nil, false
@@ -239,7 +258,7 @@ func (t *TreePatch) ProgressTotal() int64 {
 			case OpCreateFolder, OpMoveFolder, OpMoveFile, OpDelete:
 				total++
 			case OpCreateFile, OpUpdateFile:
-				total += operation.GetNode().Size
+				total += operation.GetNode().GetSize()
 			}
 		})
 		return total

@@ -18,9 +18,7 @@
  * The latest code can be found at <https://pydio.com>.
  */
 
-// ## Frontend-related services.
-//
-// This package contains services required to serve the web interface. It is composed of the following services :
+// Package frontend contains services required to serve the web interface. It is composed of the following services :
 //
 // ### pydio.web.statics
 // This is a simple HTTP server for accessing to the basic resources like
@@ -32,6 +30,6 @@
 // Provides a couple of frontend-specific REST APIs that are used only by the frontend clients.
 // It has the particularity to implement a Web Session mechanism (using a CookieStore).
 //
-// See rest/plugins.go
+// See rest/service/service.go
 // Services under this folder are called directly by the Http frontend
 package frontend

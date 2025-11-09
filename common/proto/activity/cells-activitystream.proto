@@ -1,8 +1,9 @@
 syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
+import "cells-setter.proto";
 
-option go_package="github.com/pydio/cells/common/proto/activity";
+option go_package="github.com/pydio/cells/v5/common/proto/activity";
 
 package activity;
 
@@ -82,6 +83,7 @@ enum ObjectType{
 }
 
 message Object{
+    option (setter.all_fields) = true;
 
     string jsonLdContext = 53 [json_name="@context"];
 
@@ -90,7 +92,7 @@ message Object{
     string name = 3;
     string summary = 4;
     string markdown = 62;
-    Object context = 5;
+//    Object objectContext = 5;
 
     Object attachment = 6;
     Object attributedTo = 7;

@@ -21,20 +21,22 @@
 package frontend
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"io/ioutil"
+	"os"
 	"path"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	runtime2 "github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/routing"
+	runtime2 "github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 type BackendConf struct {
@@ -59,6 +61,7 @@ type CustomWording struct {
 type BootConf struct {
 	AjxpResourcesFolder          string `json:"ajxpResourcesFolder"`
 	ENDPOINT_REST_API            string
+	ENDPOINT_REST_API_V2         string
 	ENDPOINT_S3_GATEWAY          string
 	ENDPOINT_WEBSOCKET           string
 	PUBLIC_BASEURI               string
@@ -85,16 +88,17 @@ type BootConf struct {
 
 var versionHash string
 
-func VersionHash() string {
+func VersionHash(ctx context.Context) string {
 	if versionHash != "" {
 		return versionHash
 	}
 	// Create version seed
-	vSeed := config.Get("frontend", "versionSeed").Default("").String()
+	vSeedVal := config.Get(ctx, "frontend", "versionSeed")
+	vSeed := vSeedVal.Default("").String()
 	if vSeed == "" {
 		vSeed = uuid.New()
-		config.Set(vSeed, "frontend", "versionSeed")
-		config.Save(common.PydioSystemUsername, "Generating version seed")
+		vSeedVal.Set(vSeed)
+		config.Save(ctx, common.PydioSystemUsername, "Generating version seed")
 	}
 	md := md5.New()
 	md.Write([]byte(vSeed + common.Version().String()))
@@ -103,18 +107,19 @@ func VersionHash() string {
 }
 
 var packagingOnce sync.Once
+
 var packagingData []byte
 
 // ComputeBootConf creates a JSON for web interface with a lot of useful info.
 // There is no proto associated
-func ComputeBootConf(pool *PluginsPool, showVersion ...bool) (*BootConf, error) {
+func ComputeBootConf(ctx context.Context, pool *PluginsPool, showVersion ...bool) (*BootConf, error) {
 
-	lang := config.Get("frontend", "plugin", "core.pydio", "DEFAULT_LANGUAGE").Default("en-us").String()
-	sessionTimeout := config.Get("frontend", "plugin", "gui.ajax", "SESSION_TIMEOUT").Default(60).Int()
-	clientSession := config.Get("frontend", "plugin", "gui.ajax", "CLIENT_TIMEOUT").Default(24).Int()
-	timeoutWarn := config.Get("frontend", "plugin", "gui.ajax", "CLIENT_TIMEOUT_WARN").Default(3).Int()
+	lang := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginCorePydio, config.KeyFrontDefaultLanguage)...).Default("en-us").String()
+	sessionTimeout := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginGuiAjax, "SESSION_TIMEOUT")...).Default(60).Int()
+	clientSession := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginGuiAjax, "CLIENT_TIMEOUT")...).Default(24).Int()
+	timeoutWarn := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginGuiAjax, "CLIENT_TIMEOUT_WARN")...).Default(3).Int()
 
-	vHash := VersionHash()
+	vHash := VersionHash(ctx)
 	vDate := ""
 	vRev := ""
 	_, tz := time.Now().Zone()
@@ -124,10 +129,10 @@ func ComputeBootConf(pool *PluginsPool, showVersion ...bool) (*BootConf, error) 
 		vDate = common.BuildStamp
 		vRev = common.BuildRevision
 		packagingOnce.Do(func() {
-			if data, e := ioutil.ReadFile(path.Join(runtime2.ApplicationWorkingDir(), "package.info")); e == nil {
+			if data, e := os.ReadFile(path.Join(runtime2.ApplicationWorkingDir(), "package.info")); e == nil {
 				packagingData = data
 			} else if runtime.GOOS != "windows" {
-				if data2, e2 := ioutil.ReadFile(path.Join("/opt/pydio", "package.info")); e2 == nil {
+				if data2, e2 := os.ReadFile(path.Join("/opt/pydio", "package.info")); e2 == nil {
 					packagingData = data2
 				}
 			}
@@ -138,11 +143,12 @@ func ComputeBootConf(pool *PluginsPool, showVersion ...bool) (*BootConf, error) 
 	}
 
 	b := &BootConf{
-		AjxpResourcesFolder:          "plug/gui.ajax/res",
-		ENDPOINT_REST_API:            common.DefaultRouteREST,
-		ENDPOINT_S3_GATEWAY:          "/io",
-		ENDPOINT_WEBSOCKET:           "/ws/event",
-		PUBLIC_BASEURI:               config.GetPublicBaseUri(),
+		AjxpResourcesFolder:          "/plug/gui.ajax/res",
+		ENDPOINT_REST_API:            routing.RouteIngressURIContext(ctx, common.RouteApiREST, common.DefaultRouteREST),
+		ENDPOINT_REST_API_V2:         routing.RouteIngressURIContext(ctx, common.RouteApiRESTv2, common.DefaultRouteRESTv2),
+		ENDPOINT_S3_GATEWAY:          routing.RouteIngressURIContext(ctx, common.RouteBucketIO, common.DefaultRouteBucketIO),
+		ENDPOINT_WEBSOCKET:           strings.TrimRight(routing.RouteIngressURIContext(ctx, common.RouteWebsocket, common.DefaultRouteWebsocket), "/") + "/event",
+		PUBLIC_BASEURI:               routing.RouteIngressURIContext(ctx, common.RoutePublic, common.DefaultRoutePublic),
 		ZipEnabled:                   true,
 		MultipleFilesDownloadEnabled: true,
 		UsersEditable:                true,
@@ -154,15 +160,15 @@ func ComputeBootConf(pool *PluginsPool, showVersion ...bool) (*BootConf, error) 
 		Client_timeout_warning:       timeoutWarn,
 		AjxpVersion:                  vHash,
 		AjxpVersionDate:              vDate,
-		ValidMailer:                  config.Get("services", "pydio.grpc.mailer", "valid").Default(false).Bool(),
+		ValidMailer:                  config.Get(ctx, "services", "pydio.grpc.mailer", "valid").Default(false).Bool(),
 		Theme:                        "material",
 		AjxpImagesCommon:             true,
 		CustomWording: CustomWording{
-			Title: config.Get("frontend", "plugin", "core.pydio", "APPLICATION_TITLE").Default("Pydio Cells").String(),
+			Title: config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginCorePydio, config.KeyFrontApplicationTitle)...).Default("Pydio Cells").String(),
 			Icon:  "plug/gui.ajax/res/themes/common/images/LoginBoxLogo.png",
 		},
-		AvailableLanguages: i18n.AvailableLanguages,
-		I18nMessages:       pool.I18nMessages(lang).Messages,
+		AvailableLanguages: languages.AvailableLanguages,
+		I18nMessages:       pool.I18nMessages(ctx, lang).Messages,
 		Backend: BackendConf{
 			PackageType:   common.PackageType,
 			PackageLabel:  common.PackageLabel,
@@ -175,11 +181,11 @@ func ComputeBootConf(pool *PluginsPool, showVersion ...bool) (*BootConf, error) 
 		},
 	}
 
-	if icBinary := config.Get("frontend", "plugin", "gui.ajax", "CUSTOM_ICON_BINARY").Default("").String(); icBinary != "" {
+	if icBinary := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginGuiAjax, "CUSTOM_ICON_BINARY")...).Default("").String(); icBinary != "" {
 		b.CustomWording.IconBinary = icBinary
 	}
 
-	if e := ApplyBootConfModifiers(b); e != nil {
+	if e := ApplyBootConfModifiers(ctx, b); e != nil {
 		return nil, e
 	}
 

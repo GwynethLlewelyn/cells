@@ -26,48 +26,35 @@ import (
 	"sync"
 	"testing"
 
-	minio "github.com/minio/minio-go/v7"
 	. "github.com/smartystreets/goconvey/convey"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 func TestStat(t *testing.T) {
 	Convey("Test Stat file", t, func() {
 		c := NewS3Mock()
-		fileInfo, err := c.Stat("file")
-		fakeFileInfo := &S3FileInfo{
-			Object: minio.ObjectInfo{
-				Key:  "file",
-				ETag: "filemd5",
-			},
-			isDir: false,
-		}
+		fileInfo, err := c.Stat(context.Background(), "file")
 		So(err, ShouldBeNil)
 		So(fileInfo, ShouldNotBeNil)
-		So(fileInfo, ShouldResemble, fakeFileInfo)
-
+		So(fileInfo.IsDir(), ShouldBeFalse)
+		sy := fileInfo.Sys().(models.ObjectInfo)
+		So(sy.ETag, ShouldEqual, "filemd5")
 	})
 
 	Convey("Test Stat folder", t, func() {
 		c := NewS3Mock()
-		fileInfo, err := c.Stat("folder")
-		fakeFolderInfo := &S3FileInfo{
-			Object: minio.ObjectInfo{
-				Key: "folder/" + common.PydioSyncHiddenFile,
-			},
-			isDir: true,
-		}
+		fileInfo, err := c.Stat(context.Background(), "folder")
 		So(err, ShouldBeNil)
 		So(fileInfo, ShouldNotBeNil)
-		So(fileInfo, ShouldResemble, fakeFolderInfo)
+		So(fileInfo.IsDir(), ShouldBeTrue)
 
 	})
 
 	Convey("Test Stat unknown file", t, func() {
 		c := NewS3Mock()
-		fileInfo, err := c.Stat("file2")
+		fileInfo, err := c.Stat(context.Background(), "file2")
 		So(err, ShouldNotBeNil)
 		So(fileInfo, ShouldBeNil)
 	})
@@ -81,7 +68,7 @@ func TestLoadNodeS3(t *testing.T) {
 		node, err := c.LoadNode(context.Background(), "file", true)
 		So(err, ShouldBeNil)
 		So(node, ShouldNotBeNil)
-		So(node.Etag, ShouldEqual, "filemd5")
+		So(node.GetEtag(), ShouldEqual, "filemd5")
 
 	})
 
@@ -92,29 +79,32 @@ func TestWalkS3(t *testing.T) {
 	Convey("Test walking the tree", t, func() {
 
 		c := NewS3Mock()
-		objects := make(map[string]*tree.Node)
-		walk := func(path string, node *tree.Node, err error) {
+		objects := make(map[string]tree.N)
+		walk := func(path string, node tree.N, err error) error {
 			log.Println("Walk " + path)
 			objects[path] = node
+			return nil
 		}
 		wg := sync.WaitGroup{}
 		wg.Add(1)
+		var we error
 		go func() {
 			defer wg.Done()
-			c.Walk(walk, "/", true)
+			we = c.Walk(context.Background(), walk, "/", true)
 		}()
 		wg.Wait()
 
 		log.Println(objects)
+		So(we, ShouldBeNil)
 		// Will include the root
 		So(objects, ShouldHaveLength, 3)
-		So(objects["folder"].Uuid, ShouldNotBeEmpty)
-		So(objects["folder"].Etag, ShouldBeEmpty)
-		So(objects["folder"].Type, ShouldEqual, tree.NodeType_COLLECTION)
+		So(objects["folder"].GetUuid(), ShouldNotBeEmpty)
+		So(objects["folder"].GetEtag(), ShouldBeEmpty)
+		So(objects["folder"].GetType(), ShouldEqual, tree.NodeType_COLLECTION)
 
-		So(objects["file"].Uuid, ShouldBeEmpty)
-		So(objects["file"].Etag, ShouldNotBeEmpty)
-		So(objects["file"].Type, ShouldEqual, tree.NodeType_LEAF)
+		So(objects["file"].GetUuid(), ShouldBeEmpty)
+		So(objects["file"].GetEtag(), ShouldNotBeEmpty)
+		So(objects["file"].GetType(), ShouldEqual, tree.NodeType_LEAF)
 	})
 }
 
@@ -161,10 +151,9 @@ func TestGetReaderOnS3(t *testing.T) {
 	Convey("Test Get Reader on node", t, func() {
 
 		c := NewS3Mock()
-		o, e := c.GetReaderOn("/file")
+		o, e := c.GetReaderOn(context.Background(), "/file")
 		So(o, ShouldNotBeNil)
-		// We know that there will be an error as Object is not mocked, yet
-		So(e, ShouldNotBeNil)
+		So(e, ShouldBeNil)
 
 	})
 

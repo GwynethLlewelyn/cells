@@ -7,62 +7,78 @@ import (
 	"sync"
 
 	"github.com/gorilla/sessions"
+	"gorm.io/gorm"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/service/frontend/sessions/securecookie"
-	"github.com/pydio/cells/v4/common/service/frontend/sessions/sqlsessions"
-	"github.com/pydio/cells/v4/common/service/frontend/sessions/utils"
-	"github.com/pydio/cells/v4/common/sql"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/service/frontend/sessions/sqlsessions"
+	"github.com/pydio/cells/v5/common/service/frontend/sessions/utils"
+	"github.com/pydio/cells/v5/common/storage/sc"
+	"github.com/pydio/cells/v5/common/storage/sql"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
+// NewCookieDAO creates an encrypted cookies carried along with requests
+func NewCookieDAO(ctx context.Context, some *sc.Conn) DAO {
 
-	timeout := config.Get("frontend", "plugin", "gui.ajax", "SESSION_TIMEOUT").Default(60).Int()
+	restApi := routing.RouteIngressURIContext(ctx, common.RouteApiREST, common.DefaultRouteREST)
+	timeout := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginGuiAjax, "SESSION_TIMEOUT")...).Default(60).Int()
 	defaultOptions := &sessions.Options{
-		Path:     "/a/frontend",
+		Path:     restApi + "/frontend",
 		MaxAge:   60 * timeout,
 		HttpOnly: true,
 	}
 
-	switch v := o.(type) {
-	case securecookie.DAO:
-		ci := &cookiesImpl{}
-		ci.DAO = v
-		ci.storeFactory = func(u *url.URL, keyPairs ...[]byte) (sessions.Store, error) {
-			cs := sessions.NewCookieStore(keyPairs...)
-			cs.Options = &sessions.Options{
-				Path:     defaultOptions.Path,
-				MaxAge:   defaultOptions.MaxAge,
-				HttpOnly: defaultOptions.HttpOnly,
-			}
-			if u.Scheme == "https" {
-				cs.Options.Secure = true
-			}
-			cs.Options.Domain = u.Hostname()
-			return cs, nil
+	ci := &cookiesImpl{}
+	ci.storeFactory = func(u *url.URL, keyPairs ...[]byte) (sessions.Store, error) {
+		cs := sessions.NewCookieStore(keyPairs...)
+		cs.Options = &sessions.Options{
+			Path:     defaultOptions.Path,
+			MaxAge:   defaultOptions.MaxAge,
+			HttpOnly: defaultOptions.HttpOnly,
 		}
-		return ci, nil
-	case sql.DAO:
-		return &sqlsessions.Impl{
-			DAO:     v,
-			Options: defaultOptions,
-		}, nil
-	default:
-		return nil, dao.UnsupportedDriver(o)
+		if u.Scheme == "https" {
+			cs.Options.Secure = true
+		}
+		cs.Options.Domain = u.Hostname()
+		return cs, nil
+	}
+
+	ci.sessionStores = make(map[string]sessions.Store)
+	if k, e := utils.LoadKey(ctx); e == nil {
+		ci.secureKeyPairs = k
+	}
+
+	return ci
+}
+
+// NewSQLDAO stores sessions in DB
+func NewSQLDAO(ctx context.Context, db *gorm.DB) DAO {
+	restApi := routing.RouteIngressURIContext(ctx, common.RouteApiREST, common.DefaultRouteREST)
+	timeout := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginGuiAjax, "SESSION_TIMEOUT")...).Default(60).Int()
+	defaultOptions := &sessions.Options{
+		Path:     restApi + "/frontend",
+		MaxAge:   60 * timeout,
+		HttpOnly: true,
+	}
+
+	return &sqlsessions.Impl{
+		Abstract: sql.NewAbstract(db).WithModels(func() []any {
+			return []any{&sqlsessions.SessionRow{}}
+		}),
+		Options: defaultOptions,
 	}
 }
 
 type DAO interface {
-	dao.DAO
+	Migrate(ctx context.Context) error
 	GetSession(r *http.Request) (*sessions.Session, error)
 	DeleteExpired(ctx context.Context, logger log.ZapLogger)
 }
 
 type cookiesImpl struct {
-	dao.DAO
 	sync.Mutex
 	secureKeyPairs []byte
 	sessionStores  map[string]sessions.Store
@@ -71,12 +87,16 @@ type cookiesImpl struct {
 
 func (s *cookiesImpl) Init(ctx context.Context, values configx.Values) error {
 	s.sessionStores = make(map[string]sessions.Store)
-	if k, e := utils.LoadKey(); e != nil {
+	if k, e := utils.LoadKey(ctx); e != nil {
 		return e
 	} else {
 		s.secureKeyPairs = k
-		return s.DAO.Init(ctx, values)
+		return nil
 	}
+}
+
+func (s *cookiesImpl) Migrate(ctx context.Context) error {
+	return nil
 }
 
 func (s *cookiesImpl) GetSession(r *http.Request) (*sessions.Session, error) {

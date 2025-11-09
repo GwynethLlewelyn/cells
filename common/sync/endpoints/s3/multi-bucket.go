@@ -30,12 +30,14 @@ import (
 
 	"github.com/gobwas/glob"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/sync/model"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 const s3BucketTagPrefix = "pydio:s3-bucket-tag-"
@@ -46,11 +48,10 @@ type MultiBucketClient struct {
 	bucketRegexp  *regexp.Regexp
 	bucketMetas   []glob.Glob
 
+	oc nodes.StorageClient
+
 	// Connection options
 	host    string
-	key     string
-	secret  string
-	secure  bool
 	options model.EndpointOptions
 
 	// Clients implementations
@@ -65,19 +66,15 @@ type MultiBucketClient struct {
 }
 
 // NewMultiBucketClient creates an s3 wrapped client that lists buckets as top level folders
-func NewMultiBucketClient(ctx context.Context, host string, key string, secret string, secure bool, options model.EndpointOptions, bucketsFilter string) (*MultiBucketClient, error) {
-	c, e := NewClient(ctx, host, key, secret, "", "", secure, options)
-	if e != nil {
-		return nil, e
-	}
+func NewMultiBucketClient(ctx context.Context, oc nodes.StorageClient, host string, bucketsFilter string, options model.EndpointOptions) (*MultiBucketClient, error) {
+
 	m := &MultiBucketClient{
+		oc:            oc,
 		host:          host,
-		key:           key,
-		secret:        secret,
-		secure:        secure,
 		options:       options,
-		mainClient:    c,
+		mainClient:    NewObjectClient(ctx, oc, host, "", "", options),
 		bucketClients: make(map[string]*Client),
+		globalContext: ctx,
 	}
 	if len(bucketsFilter) > 0 {
 		if r, e := regexp.Compile(bucketsFilter); e == nil {
@@ -103,7 +100,7 @@ func (m *MultiBucketClient) ProvidesMetadataNamespaces() (out []glob.Glob, o boo
 	return m.bucketMetas, len(m.bucketMetas) > 0
 }
 
-func (m *MultiBucketClient) LoadNode(ctx context.Context, p string, extendedStats ...bool) (node *tree.Node, err error) {
+func (m *MultiBucketClient) LoadNode(ctx context.Context, p string, extendedStats ...bool) (node tree.N, err error) {
 	c, b, i, e := m.getClient(p)
 	if e != nil {
 		return nil, e
@@ -126,7 +123,7 @@ func (m *MultiBucketClient) GetEndpointInfo() model.EndpointInfo {
 	return m.mainClient.GetEndpointInfo()
 }
 
-func (m *MultiBucketClient) Walk(walknFc model.WalkNodesFunc, root string, recursive bool) (err error) {
+func (m *MultiBucketClient) Walk(ctx context.Context, walknFc model.WalkNodesFunc, root string, recursive bool) (err error) {
 	c, b, i, e := m.getClient(root)
 	if e != nil {
 		return e
@@ -135,7 +132,7 @@ func (m *MultiBucketClient) Walk(walknFc model.WalkNodesFunc, root string, recur
 		collect := recursive && c.checksumMapper != nil
 		var eTags []string
 		// List buckets first
-		bb, er := c.Mc.ListBuckets(context.Background())
+		bb, er := c.Oc.ListBuckets(ctx)
 		if er != nil {
 			return er
 		}
@@ -145,45 +142,45 @@ func (m *MultiBucketClient) Walk(walknFc model.WalkNodesFunc, root string, recur
 				continue
 			}
 			bC, _, _, _ := m.getClient(bucket.Name)
-			uid, _, _ := bC.readOrCreateFolderId("")
+			uid, _, _ := bC.readOrCreateFolderId(ctx, "")
 			// Walk bucket as a folder
 			fNode := &tree.Node{Uuid: uid, Path: bucket.Name, Type: tree.NodeType_COLLECTION, MTime: bucket.CreationDate.Unix()}
 			// Additional read of bucket tagging if configured
 			if len(m.bucketMetas) > 0 && taggingError == nil {
-				if tags, err := c.Mc.GetBucketTagging(context.Background(), bucket.Name); err == nil && tags != nil {
-					for key, value := range tags.ToMap() {
+				if tags, err := c.Oc.BucketTags(ctx, bucket.Name); err == nil && tags != nil {
+					for key, value := range tags {
 						tKey := s3BucketTagPrefix + key
 						for _, g := range m.bucketMetas {
 							if g.Match(tKey) {
-								log.Logger(context.Background()).Info("Attaching tag information to bucket "+bucket.Name, zap.Any(tKey, value))
+								log.Logger(ctx).Info("Attaching tag information to bucket "+bucket.Name, zap.String(tKey, value))
 								fNode.MustSetMeta(tKey, value)
 								break
 							}
 						}
 					}
 				} else {
-					log.Logger(context.Background()).Warn("Cannot read bucket tagging for "+bucket.Name+", will not retry for other buckets", zap.Error(err))
+					log.Logger(m.globalContext).Warn("Cannot read bucket tagging for "+bucket.Name+", will not retry for other buckets", zap.Error(err))
 					taggingError = err
 				}
 			}
 			walknFc(bucket.Name, fNode, nil)
 			if !m.options.BrowseOnly {
 				// Walk associated .pydio file
-				metaId, metaHash, metaSize, er := bC.getFileHash(common.PydioSyncHiddenFile)
+				metaId, metaHash, metaSize, er := bC.getFileHash(ctx, common.PydioSyncHiddenFile)
 				if er != nil {
-					log.Logger(context.Background()).Error("cannot get filehash for bucket hidden file", zap.Error(er))
+					log.Logger(m.globalContext).Error("cannot get filehash for bucket hidden file", zap.Error(er))
 				}
 				metaFilePath := path.Join(bucket.Name, common.PydioSyncHiddenFile)
 				walknFc(metaFilePath, &tree.Node{Uuid: metaId, Etag: metaHash, Size: metaSize, Path: metaFilePath, Type: tree.NodeType_LEAF, MTime: bucket.CreationDate.Unix()}, nil)
 			}
 			// Walk children
 			if recursive {
-				e := bC.Walk(func(iPath string, node *tree.Node, err error) {
+				e := bC.Walk(ctx, func(iPath string, node tree.N, err error) error {
 					wrapped := m.patchPath(bucket.Name, node, iPath)
 					if collect && node.IsLeaf() {
-						eTags = append(eTags, node.Etag)
+						eTags = append(eTags, node.GetEtag())
 					}
-					walknFc(wrapped, node, err)
+					return walknFc(wrapped, node, err)
 				}, "", recursive)
 				if e != nil {
 					return e
@@ -193,7 +190,7 @@ func (m *MultiBucketClient) Walk(walknFc model.WalkNodesFunc, root string, recur
 		if collect {
 			go func() {
 				// We know all eTags from this datasource, now purge unused from mapper
-				if deleted := c.checksumMapper.Purge(eTags); deleted > 0 {
+				if deleted := c.checksumMapper.Purge(ctx, eTags); deleted > 0 {
 					log.Logger(c.globalContext).Info(fmt.Sprintf("Purged %d eTag(s) from ChecksumMapper", deleted))
 				} else {
 					log.Logger(c.globalContext).Info("ChecksumMapper nothing to purge")
@@ -202,7 +199,7 @@ func (m *MultiBucketClient) Walk(walknFc model.WalkNodesFunc, root string, recur
 		}
 		return nil
 	} else {
-		return c.Walk(walknFc, i, recursive)
+		return c.Walk(nil, walknFc, i, recursive)
 	}
 }
 
@@ -210,7 +207,7 @@ func (m *MultiBucketClient) Watch(recursivePath string) (*model.WatchObject, err
 
 	// We handle only recursivePath = "" case here
 
-	bb, e := m.mainClient.Mc.ListBuckets(context.Background())
+	bb, e := m.mainClient.Oc.ListBuckets(context.Background())
 	if e != nil {
 		return nil, e
 	}
@@ -287,37 +284,37 @@ func (m *MultiBucketClient) GetWriterOn(cancel context.Context, path string, tar
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot write file at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot write objects at the buckets level")
 		return
 	}
 	return c.GetWriterOn(cancel, i, targetSize)
 }
 
-func (m *MultiBucketClient) GetReaderOn(path string) (out io.ReadCloser, err error) {
+func (m *MultiBucketClient) GetReaderOn(ctx context.Context, path string) (out io.ReadCloser, err error) {
 	c, b, i, e := m.getClient(path)
 	if e != nil {
 		err = e
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot read objects at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot read objects at the buckets level")
 		return
 	}
-	return c.GetReaderOn(i)
+	return c.GetReaderOn(ctx, i)
 }
 
-func (m *MultiBucketClient) CreateNode(ctx context.Context, node *tree.Node, updateIfExists bool) (err error) {
-	c, b, i, e := m.getClient(node.Path)
+func (m *MultiBucketClient) CreateNode(ctx context.Context, node tree.N, updateIfExists bool) (err error) {
+	c, b, i, e := m.getClient(node.GetPath())
 	if e != nil {
 		err = e
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot create objects at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot create object at the buckets level")
 		return
 	}
-	patched := node.Clone()
-	patched.Path = i
+	patched := proto.Clone(node).(tree.N)
+	patched.SetPath(i)
 	return c.CreateNode(ctx, patched, updateIfExists)
 }
 
@@ -328,7 +325,7 @@ func (m *MultiBucketClient) DeleteNode(ctx context.Context, path string) (err er
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot create objects at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot delete objects at the buckets level")
 		return
 	}
 	return c.DeleteNode(ctx, i)
@@ -341,49 +338,49 @@ func (m *MultiBucketClient) MoveNode(ctx context.Context, oldPath string, newPat
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot move objects at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot move objects at the buckets level")
 		return
 	}
 	_, b2, i2, _ := m.getClient(newPath)
 	if b2 != b {
-		err = errors.BadRequest("not.implemented", "cannot move objects across buckets for the moment")
+		err = errors.WithMessage(errors.StatusNotImplemented, "cannot move objects accross buckets")
 		return
 	}
 	return c.MoveNode(ctx, i, i2)
 }
 
-func (m *MultiBucketClient) ComputeChecksum(node *tree.Node) (err error) {
-	c, b, i, e := m.getClient(node.Path)
+func (m *MultiBucketClient) ComputeChecksum(ctx context.Context, node tree.N) (err error) {
+	c, b, i, e := m.getClient(node.GetPath())
 	if e != nil {
 		err = e
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot compute checksum at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot compute checksum at the buckets level")
 		return
 	}
-	patched := node.Clone()
-	patched.Path = i
-	if e := c.ComputeChecksum(patched); e != nil {
+	patched := proto.Clone(node).(tree.N)
+	patched.SetPath(i)
+	if e := c.ComputeChecksum(ctx, patched); e != nil {
 		return e
 	} else {
-		node.Etag = patched.Etag
+		node.SetEtag(patched.GetEtag())
 		return nil
 	}
 }
 
-func (m *MultiBucketClient) UpdateNodeUuid(ctx context.Context, node *tree.Node) (n *tree.Node, err error) {
-	c, b, i, e := m.getClient(node.Path)
+func (m *MultiBucketClient) UpdateNodeUuid(ctx context.Context, node tree.N) (n tree.N, err error) {
+	c, b, i, e := m.getClient(node.GetPath())
 	if e != nil {
 		err = e
 		return
 	}
 	if b == "" {
-		err = errors.Unauthorized("level.unauthorized", "cannot update node Uuid at the buckets level")
+		err = errors.WithMessage(errors.StatusUnauthorized, "cannot update node UUID at the buckets level")
 		return
 	}
-	patched := node.Clone()
-	patched.Path = i
+	patched := proto.Clone(node).(tree.N)
+	patched.SetPath(i)
 	out, e := c.UpdateNodeUuid(ctx, patched)
 	m.patchPath(b, out)
 	return out, e
@@ -399,9 +396,9 @@ func (m *MultiBucketClient) SetServerRequiresNormalization() {
 	m.mainClient.SetServerRequiresNormalization()
 }
 
-func (m *MultiBucketClient) SetChecksumMapper(cs ChecksumMapper) {
+func (m *MultiBucketClient) SetChecksumMapper(cs ChecksumMapper, purgeAfterWalk bool) {
 	m.checksumMapper = cs
-	m.mainClient.SetChecksumMapper(cs, false)
+	m.mainClient.SetChecksumMapper(cs, purgeAfterWalk)
 }
 
 // SkipRecomputeEtagByCopy sets a special behavior to avoir recomputing etags by in-place copying
@@ -427,10 +424,8 @@ func (m *MultiBucketClient) getClient(p string) (c *Client, bucket string, inter
 				}
 				o.Properties["stableUuidPrefix"] = bucket
 			}
-			c, e = NewClient(m.globalContext, m.host, m.key, m.secret, bucket, "", m.secure, o)
-			if e != nil {
-				return
-			}
+
+			c = NewObjectClient(m.globalContext, m.oc, m.host, bucket, "", o)
 			if m.plainSizeComputer != nil {
 				c.SetPlainSizeComputer(m.plainSizeComputer)
 			}
@@ -451,12 +446,12 @@ func (m *MultiBucketClient) getClient(p string) (c *Client, bucket string, inter
 	return
 }
 
-func (m *MultiBucketClient) patchPath(bucketName string, node *tree.Node, p ...string) (patched string) {
+func (m *MultiBucketClient) patchPath(bucketName string, node tree.N, p ...string) (patched string) {
 	if len(p) > 0 {
 		patched = path.Join(bucketName, p[0])
 	}
 	if node != nil {
-		node.Path = path.Join(bucketName, node.Path)
+		node.SetPath(path.Join(bucketName, node.GetPath()))
 	}
 	return
 }

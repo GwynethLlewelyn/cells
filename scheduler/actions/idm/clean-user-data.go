@@ -5,18 +5,17 @@ import (
 	"path"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/std"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -24,7 +23,6 @@ var (
 )
 
 type CleanUserDataAction struct {
-	common.RuntimeHolder
 	targetParent string
 }
 
@@ -44,7 +42,7 @@ func (c *CleanUserDataAction) GetDescription(lang ...string) actions.ActionDescr
 }
 
 // GetParametersForm returns a UX form
-func (c *CleanUserDataAction) GetParametersForm() *forms.Form {
+func (c *CleanUserDataAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -67,20 +65,20 @@ func (c *CleanUserDataAction) GetName() string {
 }
 
 // Init passes parameters
-func (c *CleanUserDataAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CleanUserDataAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if tp, o := action.Parameters["targetParent"]; o {
 		c.targetParent = tp
 	}
 	return nil
 }
 
-//ProvidesProgress implements interface
+// ProvidesProgress implements interface
 func (c *CleanUserDataAction) ProvidesProgress() bool {
 	return true
 }
 
 // Run perform actual action code
-func (c *CleanUserDataAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *CleanUserDataAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	users := input.GetUsers()
 	if len(users) == 0 {
@@ -114,12 +112,13 @@ func (c *CleanUserDataAction) Run(ctx context.Context, channels *actions.Runnabl
 		tp = jobs.EvaluateFieldStr(ctx, input, tp)
 	}
 
-	router := compose.PathClient(c.GetRuntimeContext(), nodes.AsAdmin(), nodes.WithSynchronousTasks())
-	clientsPool := router.GetClientsPool()
+	router := compose.PathClient(nodes.AsAdmin(), nodes.WithSynchronousTasks())
+	clientsPool := router.GetClientsPool(ctx)
+
 	var cleaned bool
 	// For the moment, just rename personal folder to user UUID to collision with new user with same Login
-	vNodesManager := abstract.GetVirtualNodesManager(c.GetRuntimeContext())
-	for _, vNode := range vNodesManager.ListNodes() {
+	vNodesManager := abstract.GetVirtualProvider()
+	for _, vNode := range vNodesManager.ListNodes(ctx) {
 		onDelete, ok := vNode.MetaStore["onDelete"]
 		if !ok || onDelete != "rename-uuid" {
 			continue
@@ -127,7 +126,7 @@ func (c *CleanUserDataAction) Run(ctx context.Context, channels *actions.Runnabl
 		// Check if node exists
 		resolved, e := vNodesManager.ResolveInContext(auth.WithImpersonate(ctx, u), vNode, false)
 		if e != nil {
-			if errors.FromError(e).Code == 404 {
+			if errors.Is(e, errors.StatusNotFound) {
 				continue
 			}
 			done <- true

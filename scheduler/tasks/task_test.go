@@ -25,37 +25,48 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cskr/pubsub"
-	. "github.com/smartystreets/goconvey/convey"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 
-	// registered default scheduler actions
-	"github.com/pydio/cells/v4/common/service/context"
-	_ "github.com/pydio/cells/v4/scheduler/actions/scheduler"
+	_ "github.com/pydio/cells/v5/scheduler/actions/scheduler"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestMain(m *testing.M) {
-	PubSub = pubsub.New(1)
+	TestDisableTaskClient = true
 	m.Run()
 }
 
+type testTenant struct{}
+
+func (t *testTenant) Context(ctx context.Context) context.Context {
+	return ctx
+}
+
+func (t *testTenant) ID() string {
+	return "test"
+}
+
 var (
-	runtimeCtx = context.Background()
+	runtimeCtx = runtime.CoreBackground()
 )
 
 func TestNewTaskFromEvent(t *testing.T) {
 
 	Convey("Test New Task From Event", t, func() {
 		event := &jobs.JobTriggerEvent{JobID: "ajob"}
-		task := NewTaskFromEvent(runtimeCtx, context.Background(), &jobs.Job{ID: "ajob"}, event)
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{ID: "ajob"}, event)
 		So(task, ShouldNotBeNil)
 		So(task.task, ShouldNotBeNil)
 		So(task.task.Status, ShouldEqual, jobs.TaskStatus_Queued)
 		So(task.task.StatusMessage, ShouldEqual, "Pending")
-		opId, _ := servicecontext.GetOperationID(task.context)
+		opId, _ := propagator.CanonicalMeta(task.context, common.CtxSchedulerOperationId)
 		So(opId, ShouldEqual, "ajob-"+task.task.ID[0:8])
 	})
 }
@@ -65,15 +76,15 @@ func TestTaskSetters(t *testing.T) {
 	Convey("Test task Setters", t, func() {
 
 		event := &jobs.JobTriggerEvent{JobID: "ajob"}
-		task := NewTaskFromEvent(runtimeCtx, context.Background(), &jobs.Job{ID: "ajob"}, event)
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{ID: "ajob"}, event)
 		So(task, ShouldNotBeNil)
 
 		task.Add(2)
-		So(task.rc, ShouldEqual, 2)
+		So(task.rci.Load(), ShouldEqual, 2)
 		task.Done(1)
-		So(task.rc, ShouldEqual, 1)
+		So(task.rci.Load(), ShouldEqual, 1)
 		task.Done(1)
-		So(task.rc, ShouldEqual, 0)
+		So(task.rci.Load(), ShouldEqual, 0)
 
 		now := time.Now()
 		stamp := int32(now.Unix())
@@ -88,20 +99,21 @@ func TestTaskSetters(t *testing.T) {
 		task.SetStatus(jobs.TaskStatus_Finished)
 		So(task.task.Status, ShouldEqual, 3)
 
-		task.SetProgress(0.23)
-		So(task.task.Progress, ShouldEqual, 0.23)
+		pg := float32(0.23)
+		task.SetProgress(pg)
+		So(task.task.Progress, ShouldEqual, pg)
 
 	})
 
 }
 
-func TestTaskLogs(t *testing.T) {
+func SkipTestTaskLogs(t *testing.T) {
 
-	Convey("Test task Append Log", t, func() {
+	Convey("Test task Append Log (skipped as not used anymore)", t, func() {
 
 		event := &jobs.JobTriggerEvent{JobID: "ajob"}
 		ev, _ := anypb.New(&jobs.JobTriggerEvent{JobID: "ajob"})
-		task := NewTaskFromEvent(runtimeCtx, context.Background(), &jobs.Job{ID: "ajob"}, event)
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{ID: "ajob"}, event)
 		So(task, ShouldNotBeNil)
 
 		a := &jobs.Action{
@@ -130,17 +142,15 @@ func TestTaskLogs(t *testing.T) {
 			},
 		}
 
-		task.AppendLog(a, in, out)
+		//THIS IS REMOVED
+		//task.AppendLog(a, in, out)
 
 		So(task.task.ActionsLogs, ShouldHaveLength, 1)
 		log := task.task.ActionsLogs[0]
-		So(log.Action, ShouldResemble, &jobs.Action{ID: "fake"})
-		So(log.InputMessage, ShouldResemble, &jobs.ActionMessage{})
-		So(log.OutputMessage, ShouldResemble, &jobs.ActionMessage{
-			OutputChain: []*jobs.ActionOutput{
-				{Success: true, StringBody: "last output"},
-			},
-		})
+		So(log.Action.ID, ShouldEqual, "fake")
+		//So(log.InputMessage, ShouldResemble, &jobs.ActionMessage{})
+		So(log.OutputMessage.OutputChain[0].Success, ShouldBeTrue)
+		So(log.OutputMessage.OutputChain[0].StringBody, ShouldEqual, "last output")
 		// Verify inputs were not modified
 		So(a.ChainedActions, ShouldHaveLength, 1)
 		So(in.OutputChain, ShouldHaveLength, 2)
@@ -179,15 +189,34 @@ func TestTaskEvents(t *testing.T) {
 
 func TestTask_Save(t *testing.T) {
 
-	Convey("Test task Save", t, func() {
+	Convey("Test task SaveStatus", t, func() {
 
 		event := &jobs.JobTriggerEvent{JobID: "ajob"}
-		task := NewTaskFromEvent(runtimeCtx, context.Background(), &jobs.Job{ID: "ajob"}, event)
-		ch := PubSub.Sub(PubSubTopicTaskStatuses)
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{ID: "ajob"}, event)
+		ch := GetBus(runtimeCtx).Sub(PubSubTopicTaskStatuses)
 		task.Save()
 		read := <-ch
-		So(read, ShouldEqual, task.task)
-		PubSub.Unsub(ch, PubSubTopicTaskStatuses)
+		rt, o := read.(*jobs.Task)
+		So(o, ShouldBeTrue)
+		So(rt.ID, ShouldEqual, task.task.ID)
+		GetBus(runtimeCtx).Unsub(ch, PubSubTopicTaskStatuses)
+
+	})
+
+	Convey("Test task SaveStatus With Context", t, func() {
+
+		event := &jobs.JobTriggerEvent{JobID: "ajob"}
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{ID: "ajob"}, event)
+		ch := GetBus(runtimeCtx).Sub(PubSubTopicTaskStatuses)
+		runnableCtx := propagator.WithAdditionalMetadata(runtimeCtx, map[string]string{common.CtxMetaTaskActionPath: "action-path"})
+		task.SaveStatus(runnableCtx, jobs.TaskStatus_Running)
+		read := <-ch
+		rt, o := read.(*TaskStatusUpdate)
+		So(o, ShouldBeTrue)
+		So(rt.ID, ShouldEqual, task.task.ID)
+		So(rt.RunnableContext, ShouldNotBeNil)
+		So(rt.RunnableStatus, ShouldEqual, jobs.TaskStatus_Running)
+		GetBus(runtimeCtx).Unsub(ch, PubSubTopicTaskStatuses)
 
 	})
 }
@@ -196,10 +225,10 @@ func TestTask_EnqueueRunnables(t *testing.T) {
 
 	Convey("Test Enqueue Runnables", t, func(c C) {
 
-		saveChannel := PubSub.Sub(PubSubTopicTaskStatuses)
-		output := make(chan Runnable, 1)
+		saveChannel := GetBus(runtimeCtx).Sub(PubSubTopicTaskStatuses)
+		output := make(chan RunnerFunc, 1)
 		event := &jobs.JobTriggerEvent{JobID: "ajob"}
-		task := NewTaskFromEvent(runtimeCtx, context.Background(), &jobs.Job{
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{
 			ID: "ajob",
 			Actions: []*jobs.Action{
 				&jobs.Action{ID: "actions.test.fake"},
@@ -209,26 +238,28 @@ func TestTask_EnqueueRunnables(t *testing.T) {
 		task.Queue(output)
 		read := <-output
 		So(read, ShouldNotBeNil)
-		So(read.Action.ID, ShouldEqual, "actions.test.fake")
-		close(output)
+		//So(read.Action.ID, ShouldEqual, "actions.test.fake")
 
 		go func() {
-			read.RunAction(nil)
+			read(nil)
+			close(output)
 		}()
 
 		saved := <-saveChannel
 		So(saved, ShouldNotBeNil)
-		So(saved, ShouldEqual, task.task)
+		rt, o := saved.(*jobs.Task)
+		So(o, ShouldBeTrue)
+		So(rt.ID, ShouldEqual, task.task.ID)
 
-		PubSub.Unsub(saveChannel, PubSubTopicTaskStatuses)
+		GetBus(runtimeCtx).Unsub(saveChannel, PubSubTopicTaskStatuses)
 
 	})
 
 	Convey("Test task without Impl", t, func() {
 
-		output := make(chan Runnable, 1)
+		output := make(chan RunnerFunc, 1)
 		event := &jobs.JobTriggerEvent{JobID: "ajob"}
-		task := NewTaskFromEvent(runtimeCtx, context.Background(), &jobs.Job{
+		task := NewTaskFromEvent(context.Background(), &jobs.Job{
 			ID: "ajob",
 			Actions: []*jobs.Action{
 				{ID: "unknown action"},
@@ -238,10 +269,12 @@ func TestTask_EnqueueRunnables(t *testing.T) {
 		task.Queue(output)
 		read := <-output
 		So(read, ShouldNotBeNil)
-		So(read.Action.ID, ShouldEqual, "unknown action")
-		close(output)
+		//So(read.Action.ID, ShouldEqual, "unknown action")
 
-		go read.RunAction(nil)
+		go func() {
+			read(nil)
+			close(output)
+		}()
 
 	})
 

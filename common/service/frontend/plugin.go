@@ -28,9 +28,9 @@ import (
 
 	"github.com/jinzhu/copier"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type Plugin interface {
@@ -61,33 +61,43 @@ type Plugin interface {
 func (plugin *Cplugin) GetDescription() string {
 	return plugin.Attrdescription
 }
+
 func (plugin *Cplugin) GetEnabled() string {
 	return plugin.Attrenabled
 }
+
 func (plugin *Cplugin) GetId() string {
 	return plugin.Attrid
 }
+
 func (plugin *Cplugin) GetLabel() string {
 	return plugin.Attrlabel
 }
+
 func (plugin *Cplugin) GetName() string {
 	return plugin.Attrname
 }
+
 func (plugin *Cplugin) GetClientSettings() *Cclient_settings {
 	return plugin.Cclient_settings
 }
+
 func (plugin *Cplugin) GetPluginConfigs() *Cplugin_configs {
 	return plugin.Cplugin_configs
 }
+
 func (plugin *Cplugin) GetPluginInfo() *Cplugin_info {
 	return plugin.Cplugin_info
 }
+
 func (plugin *Cplugin) GetServerSettings() *Cserver_settings {
 	return plugin.Cserver_settings
 }
+
 func (plugin *Cplugin) GetRegistryContributions() *Cregistry_contributions {
 	return plugin.Cregistry_contributions
 }
+
 func (plugin *Cplugin) GetDependencies() *Cdependencies {
 	return plugin.Cdependencies
 }
@@ -212,7 +222,7 @@ func (plugin *Cplugin) Translate(messages I18nMessages) {
 		newSettings := &Cserver_settings{}
 		for _, orig := range plugin.Cserver_settings.Cglobal_param {
 			param := &Cglobal_param{}
-			copier.Copy(&param, orig)
+			_ = copier.Copy(&param, orig)
 			param.Attrlabel = i18nConfMessages(orig.Attrlabel, messages.ConfMessages)
 			param.Attrdescription = i18nConfMessages(orig.Attrdescription, messages.ConfMessages)
 			param.Attrchoices = i18nConfMessages(orig.Attrchoices, messages.ConfMessages)
@@ -222,7 +232,7 @@ func (plugin *Cplugin) Translate(messages I18nMessages) {
 		}
 		for _, orig := range plugin.Cserver_settings.Cparam {
 			param := &Cparam{}
-			copier.Copy(&param, orig)
+			_ = copier.Copy(&param, orig)
 			param.Attrlabel = i18nConfMessages(orig.Attrlabel, messages.ConfMessages)
 			param.Attrdescription = i18nConfMessages(orig.Attrdescription, messages.ConfMessages)
 			param.Attrchoices = i18nConfMessages(orig.Attrchoices, messages.ConfMessages)
@@ -238,7 +248,7 @@ func (plugin *Cplugin) Translate(messages I18nMessages) {
 
 func (plugin *Cplugin) PluginEnabled(status RequestStatus) bool {
 
-	enabled := status.Config.Val("frontend", "plugin", plugin.GetId(), config.KeyFrontPluginEnabled).Default(plugin.DefaultEnabled()).Bool()
+	enabled := status.Config.Val(config.FrontendPluginPath(plugin.GetId(), config.KeyFrontPluginEnabled)...).Default(plugin.DefaultEnabled()).Bool()
 
 	values := status.AclParameters.Val(plugin.GetId(), config.KeyFrontPluginEnabled)
 	for _, scope := range status.WsScopes {
@@ -290,6 +300,9 @@ func (plugin *Cplugin) PluginConfigs(status RequestStatus) map[string]interface{
 
 	if settings := plugin.GetServerSettings(); settings != nil {
 		for _, param := range settings.Cglobal_param {
+			if param.Attrexpose != "true" {
+				continue
+			}
 			confs[param.Attrname] = plugin.PluginConfig(status, param)
 		}
 	}
@@ -304,13 +317,13 @@ func (plugin *Cplugin) PluginConfig(status RequestStatus, param *Cglobal_param) 
 	switch param.Attrtype {
 	case "boolean":
 		var e error
-		val, _ = strconv.ParseBool(param.Attrdefault)
+		val, e = strconv.ParseBool(param.Attrdefault)
 		if e != nil {
 			val = false
 		}
 
 		// First we look in the main config
-		val = status.Config.Val("frontend", "plugin", plugin.GetId(), param.Attrname).Default(val).Bool()
+		val = status.Config.Val(config.FrontendPluginPath(plugin.GetId(), param.Attrname)...).Default(val).Bool()
 
 		// Then we lookin foreach scope and get the last one set
 		for _, scope := range status.WsScopes {
@@ -324,7 +337,7 @@ func (plugin *Cplugin) PluginConfig(status RequestStatus, param *Cglobal_param) 
 		}
 
 		// First we look in the main config
-		val = status.Config.Val("frontend", "plugin", plugin.GetId(), param.Attrname).Default(val).Int()
+		val = status.Config.Val(config.FrontendPluginPath(plugin.GetId(), param.Attrname)...).Default(val).Int()
 
 		// Then we lookin foreach scope and get the last one set
 		for _, scope := range status.WsScopes {
@@ -334,7 +347,7 @@ func (plugin *Cplugin) PluginConfig(status RequestStatus, param *Cglobal_param) 
 		val = param.Attrdefault
 
 		// First we look in the main config
-		val = status.Config.Val("frontend", "plugin", plugin.GetId(), param.Attrname).Default(val).String()
+		val = status.Config.Val(config.FrontendPluginPath(plugin.GetId(), param.Attrname)...).Default(val).String()
 
 		// Then we lookin foreach scope and get the last one set
 		for _, scope := range status.WsScopes {

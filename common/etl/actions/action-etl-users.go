@@ -22,20 +22,18 @@ package actions
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/etl"
-	"github.com/pydio/cells/v4/common/etl/models"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/etl"
+	"github.com/pydio/cells/v5/common/etl/models"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -60,7 +58,7 @@ func (c *SyncUsersAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (c *SyncUsersAction) GetParametersForm() *forms.Form {
+func (c *SyncUsersAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -99,14 +97,15 @@ func (c *SyncUsersAction) GetName() string {
 }
 
 // Init parses and validates parameters
-func (c *SyncUsersAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *SyncUsersAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	// Making sure oauth configs are up-to-date on this node
-	auth.InitConfiguration(config.Get("services", common.ServiceWebNamespace_+common.ServiceOAuth))
+	// TODO ?
+	// auth.InitConfiguration()
 	return c.ParseStores(action.Parameters)
 }
 
 // Run the actual action code
-func (c *SyncUsersAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *SyncUsersAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	msg := "Starting synchronisation with external directory"
 	log.TasksLogger(ctx).Info(msg)
@@ -172,7 +171,7 @@ func (c *SyncUsersAction) Run(ctx context.Context, channels *actions.RunnableCha
 
 		cellAdmin, ok := c.params["cellAdmin"]
 		if !ok {
-			er := fmt.Errorf("missing 'cellAdmin' parameter")
+			er := errors.New("missing 'cellAdmin' parameter")
 			return input.WithError(er), er
 		}
 
@@ -251,8 +250,7 @@ func (c *SyncUsersAction) Run(ctx context.Context, channels *actions.RunnableCha
 
 	}
 
-	output := input
-	output.AppendOutput(&jobs.ActionOutput{
+	output := input.WithOutput(&jobs.ActionOutput{
 		Success:    true,
 		StringBody: "Successfully synchronized users",
 	})

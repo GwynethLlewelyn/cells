@@ -24,13 +24,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/pydio/cells/v4/common/proto/encryption"
+	"github.com/pydio/cells/v5/common/proto/encryption"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -220,7 +219,7 @@ func Test_AESGCMEncryptionMaterials(t *testing.T) {
 	encryptedFilename := filepath.Join(testDir, "encrypted.txt")
 	decryptedFilename := filepath.Join(testDir, "decrypted.txt")
 
-	err = ioutil.WriteFile(plainFilename, []byte(plainFileContent), os.ModePerm)
+	err = os.WriteFile(plainFilename, []byte(plainFileContent), os.ModePerm)
 	if err != nil {
 		t.Fatal("failed to initialize test", err)
 	}
@@ -251,10 +250,10 @@ func Test_AESGCMEncryptionMaterials(t *testing.T) {
 		err = materials.SetupEncryptMode(ni.NodeKey.KeyData, input)
 		So(err, ShouldBeNil)
 
-		encryptedData, err := ioutil.ReadAll(materials)
+		encryptedData, err := io.ReadAll(materials)
 		So(err == nil || err == io.EOF, ShouldEqual, true)
 
-		err = ioutil.WriteFile(encryptedFilename, encryptedData, os.ModePerm)
+		err = os.WriteFile(encryptedFilename, encryptedData, os.ModePerm)
 		So(err, ShouldBeNil)
 	})
 
@@ -267,10 +266,10 @@ func Test_AESGCMEncryptionMaterials(t *testing.T) {
 		err = materials.SetupDecryptMode(ni.NodeKey.KeyData, input)
 		So(err, ShouldBeNil)
 
-		decryptedData, err := ioutil.ReadAll(materials)
+		decryptedData, err := io.ReadAll(materials)
 		So(err, ShouldBeNil)
 
-		err = ioutil.WriteFile(decryptedFilename, decryptedData, os.ModePerm)
+		err = os.WriteFile(decryptedFilename, decryptedData, os.ModePerm)
 		So(err, ShouldBeNil)
 
 	})

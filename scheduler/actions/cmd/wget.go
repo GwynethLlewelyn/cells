@@ -34,17 +34,17 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -53,7 +53,6 @@ var (
 
 // WGetAction performs a wget command with the provided URL
 type WGetAction struct {
-	common.RuntimeHolder
 	Router     nodes.Client
 	SourceUrl  string
 	targetPath string
@@ -65,7 +64,7 @@ func (w *WGetAction) GetDescription(lang ...string) actions.ActionDescription {
 		ID:              wgetActionName,
 		Category:        actions.ActionCategoryPutGet,
 		Label:           "Http Get",
-		Icon:            "download",
+		Icon:            "cloud-download",
 		Description:     "Download a remote file or binary, equivalent to wget command",
 		SummaryTemplate: "",
 		HasForm:         true,
@@ -73,23 +72,23 @@ func (w *WGetAction) GetDescription(lang ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (w *WGetAction) GetParametersForm() *forms.Form {
+func (w *WGetAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
 				&forms.FormField{
 					Name:        "url",
 					Type:        forms.ParamString,
-					Label:       "url",
-					Description: "Source URL to download from",
+					Label:       "URL",
+					Description: "Source HTTP URL to download from",
 					Mandatory:   true,
 					Editable:    true,
 				},
 				&forms.FormField{
 					Name:        "targetPath",
 					Type:        forms.ParamString,
-					Label:       "targetPath",
-					Description: "TargetPath to download in",
+					Label:       "Target Path",
+					Description: "TargetPath of the file to write",
 					Mandatory:   true,
 					Editable:    true,
 				},
@@ -104,21 +103,21 @@ func (w *WGetAction) GetName() string {
 }
 
 // Init passes parameters
-func (w *WGetAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (w *WGetAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if action.Parameters["targetPath"] != "" {
 		w.targetPath = action.Parameters["targetPath"]
 	}
 	if urlParam, ok := action.Parameters["url"]; ok {
 		w.SourceUrl = urlParam
 	} else {
-		return errors.BadRequest(common.ServiceTasks, "missing parameter url in Action")
+		return errors.WithMessage(errors.InvalidParameters, "missing parameter url in Action")
 	}
-	w.Router = compose.PathClientAdmin(w.GetRuntimeContext())
+	w.Router = compose.PathClientAdmin()
 	return nil
 }
 
 // Run the actual action code
-func (w *WGetAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (w *WGetAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	var e error
 	sourceUrl, e := url.Parse(jobs.EvaluateFieldStr(ctx, input, w.SourceUrl))
@@ -159,7 +158,12 @@ func (w *WGetAction) Run(ctx context.Context, channels *actions.RunnableChannels
 			written, er = io.Copy(localFile, httpResponse.Body)
 		}
 	} else {
-		written, er = w.Router.PutObject(ctx, targetNode, httpResponse.Body, &models.PutRequestData{Size: httpResponse.ContentLength})
+		oi, err := w.Router.PutObject(ctx, targetNode, httpResponse.Body, &models.PutRequestData{Size: httpResponse.ContentLength})
+		if err == nil {
+			written = oi.Size
+		} else {
+			er = err
+		}
 	}
 	log.Logger(ctx).Debug("After PUT Object", zap.Int64("Written Bytes", written), zap.Error(er), zap.Any("ctx", ctx))
 	if er != nil {
@@ -179,9 +183,10 @@ func (w *WGetAction) Run(ctx context.Context, channels *actions.RunnableChannels
 		input.Nodes = append(input.Nodes, resp.Node)
 	}
 
-	input.AppendOutput(&jobs.ActionOutput{
+	output := input.Clone()
+	output.AppendOutput(&jobs.ActionOutput{
 		Success:  true,
 		JsonBody: jsonBody,
 	})
-	return input, nil
+	return output, nil
 }

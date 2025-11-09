@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
+ * Copyright (c) 2024. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
  *
  * Pydio Cells is free software: you can redistribute it and/or modify
@@ -28,69 +28,47 @@ import (
 	"context"
 	"time"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/bleve"
-	"github.com/pydio/cells/v4/common/dao/mongodb"
-	log2 "github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/log"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/proto/log"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/storage/indexer"
+	log2 "github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
+
+var Drivers = service.StorageDrivers{}
 
 // MessageRepository exposes interface methods to manage the log messages provided by Pydio.
 type MessageRepository interface {
-	PutLog(log2 *log.Log) error
-	ListLogs(string, int32, int32) (chan log.ListLogResponse, error)
-	DeleteLogs(string) (int64, error)
-	AggregatedLogs(string, string, int32) (chan log.TimeRangeResponse, error)
-	Close(ctx context.Context) error
-	Resync(ctx context.Context, logger log2.ZapLogger) error
-	Truncate(ctx context.Context, max int64, logger log2.ZapLogger) error
+	PutLog(context.Context, *log.Log) error
+	ListLogs(context.Context, string, int32, int32) (chan log.ListLogResponse, error)
+	DeleteLogs(context.Context, string) (int64, error)
+	AggregatedLogs(context.Context, string, string, int32) (chan log.TimeRangeResponse, error)
+	Close(context.Context) error
+	Resync(context.Context, log2.ZapLogger) error
+	Truncate(context.Context, int64, log2.ZapLogger) error
+	NewBatch(ctx context.Context, options ...indexer.BatchOption) (indexer.Batch, error)
 }
 
-func NewDAO(ctx context.Context, d dao.DAO) (dao.DAO, error) {
-	switch v := d.(type) {
-	case bleve.IndexDAO:
-		v.SetCodex(&BleveCodec{})
-		return v, nil
-	case mongodb.IndexDAO:
-		v.SetCollection(mongoCollection)
-		v.SetCodex(&MongoCodec{})
-		return v, nil
-	}
-	return nil, dao.UnsupportedDriver(d)
-}
-
-func Migrate(f, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) (map[string]int, error) {
-	ctx := context.Background()
+func Migrate(mainCtx, fromCtx, toCtx context.Context, dryRun bool, status chan service.MigratorStatus) (map[string]int, error) {
 	out := map[string]int{
 		"Message": 0,
 	}
+	from, er := manager.Resolve[MessageRepository](fromCtx)
+	if er != nil {
+		return nil, er
+	}
+	to, er := manager.Resolve[MessageRepository](toCtx)
+	if er != nil {
+		return nil, er
+	}
 
-	var from, to MessageRepository
-	df, er := NewDAO(ctx, f)
-	if er != nil {
-		return out, er
-	}
-	df.Init(ctx, configx.New())
-	from, er = NewIndexService(df.(dao.IndexDAO))
-	if er != nil {
-		return out, er
-	}
-	dt, er := NewDAO(ctx, t)
-	if er != nil {
-		return out, er
-	}
-	dt.Init(ctx, configx.New())
-	to, er = NewIndexService(dt.(dao.IndexDAO))
-	if er != nil {
-		return out, er
-	}
+	bg := mainCtx
 
 	pageSize := int32(1000)
 	offset := int32(0)
 	for {
-		ll, er := from.ListLogs("", offset, pageSize)
+		ll, er := from.ListLogs(bg, "", offset, pageSize)
 		if er != nil {
 			return out, er
 		}
@@ -102,7 +80,7 @@ func Migrate(f, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) (map[str
 				mess := lResp.LogMessage
 				var marshed map[string]interface{}
 				data, _ := json.Marshal(mess)
-				json.Unmarshal(data, &marshed) // Reformat some keys
+				_ = json.Unmarshal(data, &marshed) // Reformat some keys
 				marshed["level"] = mess.Level
 				delete(marshed, "Level")
 				marshed["logger"] = mess.Logger
@@ -113,14 +91,14 @@ func Migrate(f, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) (map[str
 				delete(marshed, "Msg")
 				if mess.JsonZaps != "" {
 					var zaps map[string]interface{}
-					json.Unmarshal([]byte(mess.JsonZaps), &zaps)
+					_ = json.Unmarshal([]byte(mess.JsonZaps), &zaps)
 					for k, v := range zaps {
 						marshed[k] = v
 					}
 					delete(marshed, "JsonZaps")
 				}
 				data, _ = json.Marshal(marshed)
-				if er := to.PutLog(&log.Log{
+				if er := to.PutLog(bg, &log.Log{
 					Nano:    mess.GetTs() * 1000,
 					Message: data,
 				}); er != nil {

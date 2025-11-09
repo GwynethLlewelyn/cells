@@ -28,27 +28,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/olahol/melody"
 	"github.com/ory/ladon"
 	"github.com/ory/ladon/manager/memory"
-	"github.com/pydio/melody"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/auth/claim"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/activity"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/utils/cache"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/telemetry/tracing"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type WebsocketHandler struct {
@@ -56,6 +58,7 @@ type WebsocketHandler struct {
 	Websocket      *melody.Melody
 	EventRouter    *compose.Reverse
 	completedTasks cache.Cache
+	statusTasks    cache.Cache
 
 	batcherLock   *sync.Mutex
 	batchers      map[string]*NodeEventsBatcher
@@ -65,22 +68,24 @@ type WebsocketHandler struct {
 }
 
 func NewWebSocketHandler(serviceCtx context.Context) *WebsocketHandler {
-	c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=60s&cleanWindow=5m")
 	w := &WebsocketHandler{
-		runtimeCtx:     serviceCtx,
-		batchers:       make(map[string]*NodeEventsBatcher),
-		dispatcher:     make(chan *NodeChangeEventWithInfo),
-		done:           make(chan string),
-		batcherLock:    &sync.Mutex{},
-		silentDropper:  rate.NewLimiter(20, 10),
-		completedTasks: c,
+		runtimeCtx:    serviceCtx,
+		batchers:      make(map[string]*NodeEventsBatcher),
+		dispatcher:    make(chan *NodeChangeEventWithInfo, 5000),
+		done:          make(chan string),
+		batcherLock:   &sync.Mutex{},
+		silentDropper: rate.NewLimiter(20, 10),
 	}
 	w.InitHandlers(serviceCtx)
 	go func() {
 		for {
 			select {
 			case e := <-w.dispatcher:
-				w.BroadcastNodeChangeEvent(context.Background(), e)
+				ct := context.Background()
+				if e.ctx != nil {
+					ct = e.ctx
+				}
+				_ = w.BroadcastNodeChangeEvent(ct, e)
 			case finished := <-w.done:
 				w.batcherLock.Lock()
 				delete(w.batchers, finished)
@@ -110,28 +115,34 @@ func (w *WebsocketHandler) InitHandlers(ctx context.Context) {
 
 	w.Websocket.HandleMessage(func(session *melody.Session, bytes []byte) {
 
+		ct := session.Request.Context()
 		msg := &Message{}
 		e := json.Unmarshal(bytes, msg)
 		if e != nil {
-			session.CloseWithMsg(NewErrorMessage(e))
+			_ = session.CloseWithMsg(NewErrorMessage(e))
 			return
 		}
+
+		var span trace.Span
+		ct, span = tracing.StartLocalSpan(ct, "/ws/event/"+string(msg.Type))
+		defer span.End()
+
 		switch msg.Type {
 		case MsgSubscribe:
 
 			if msg.JWT == "" {
-				session.CloseWithMsg(NewErrorMessageString("empty jwt"))
-				log.Logger(ctx).Debug("empty jwt")
+				_ = session.CloseWithMsg(NewErrorMessageString("empty jwt"))
+				log.Logger(ct).Debug("empty jwt")
 				return
 			}
 			verifier := auth.DefaultJWTVerifier()
-			_, claims, er := verifier.Verify(ctx, msg.JWT)
+			_, claims, er := verifier.Verify(ct, msg.JWT)
 			if er != nil {
-				log.Logger(ctx).Error("invalid jwt received from websocket connection", zap.Any("original", msg))
-				session.CloseWithMsg(NewErrorMessage(e))
+				log.Logger(ct).Error("invalid jwt received from websocket connection", zap.Any("original", msg))
+				_ = session.CloseWithMsg(NewErrorMessage(e))
 				return
 			}
-			updateSessionFromClaims(ctx, session, claims, w.EventRouter.GetClientsPool())
+			updateSessionFromClaims(ct, session, claims)
 
 		case MsgUnsubscribe:
 
@@ -162,34 +173,30 @@ func (w *WebsocketHandler) getBatcherForUuid(uuid string) *NodeEventsBatcher {
 // to buffer them and flatten them into one.
 func (w *WebsocketHandler) HandleNodeChangeEvent(ctx context.Context, event *tree.NodeChangeEvent) error {
 
-	defer func() {
-		if e := recover(); e != nil {
-			log.Logger(ctx).Info("recovered a panic in WebSocket handler", zap.Any("e", e))
-		}
-	}()
+	if event.Type == tree.NodeChangeEvent_READ {
+		return nil
+	}
+
+	evi := &NodeChangeEventWithInfo{
+		NodeChangeEvent: *event,
+		ctx:             ctx,
+	}
 
 	switch event.Type {
 	case tree.NodeChangeEvent_UPDATE_META, tree.NodeChangeEvent_CREATE, tree.NodeChangeEvent_UPDATE_CONTENT:
 		if event.Target != nil {
-			batcher := w.getBatcherForUuid(event.Target.Uuid)
-			batcher.in <- event
-			return nil
+			if er := w.getBatcherForUuid(event.Target.Uuid).EnqueueWithRecover(evi); er != nil {
+				w.dispatcher <- evi
+			}
 		} else {
-			e := &NodeChangeEventWithInfo{NodeChangeEvent: *event}
-			return w.BroadcastNodeChangeEvent(ctx, e)
+			w.dispatcher <- evi
 		}
-	case tree.NodeChangeEvent_UPDATE_USER_META:
-		e := &NodeChangeEventWithInfo{NodeChangeEvent: *event, refreshTarget: true}
-		return w.BroadcastNodeChangeEvent(ctx, e)
-	case tree.NodeChangeEvent_DELETE, tree.NodeChangeEvent_UPDATE_PATH:
-		e := &NodeChangeEventWithInfo{NodeChangeEvent: *event, refreshTarget: true}
-		return w.BroadcastNodeChangeEvent(ctx, e)
-	case tree.NodeChangeEvent_READ:
-		// Ignore READ events
-		return nil
-	default:
-		return nil
+	case tree.NodeChangeEvent_UPDATE_USER_META, tree.NodeChangeEvent_DELETE, tree.NodeChangeEvent_UPDATE_PATH:
+		evi.refreshTarget = true
+		w.dispatcher <- evi
 	}
+
+	return nil
 
 }
 
@@ -197,12 +204,22 @@ func (w *WebsocketHandler) HandleNodeChangeEvent(ctx context.Context, event *tre
 // the event or not.
 func (w *WebsocketHandler) BroadcastNodeChangeEvent(ctx context.Context, event *NodeChangeEventWithInfo) error {
 
+	defer func() {
+		if e := recover(); e != nil {
+			log.Logger(ctx).Info("recovered a panic in WebSocket handler", zap.Any("e", e))
+		}
+	}()
+
 	if event.Silent && !w.silentDropper.Allow() {
 		//log.Logger(ctx).Warn("Dropping Silent Event")
 		return nil
 	}
 
 	return w.Websocket.BroadcastFilter([]byte(`"dump"`), func(session *melody.Session) bool {
+
+		if !runtime.MultiMatches(session.Request.Context(), ctx) {
+			return false
+		}
 
 		var workspaces map[string]*idm.Workspace
 		var accessList *permissions.AccessList
@@ -220,7 +237,7 @@ func (w *WebsocketHandler) BroadcastNodeChangeEvent(ctx context.Context, event *
 		}
 
 		// Rate-limit events (let Optimistic events always go through)
-		if lim, ok := session.Get(SessionLimiterKey); ok && !event.Optimistic {
+		if lim, ok := session.Get(SessionLimiterKey); ok && lim != nil && !event.Optimistic {
 			limiter := lim.(*rate.Limiter)
 			if err := limiter.Wait(ctx); err != nil {
 				log.Logger(ctx).Warn("WebSocket: some events were dropped (session rate limiter)")
@@ -239,13 +256,7 @@ func (w *WebsocketHandler) BroadcastNodeChangeEvent(ctx context.Context, event *
 				log.Logger(ctx).Debug("UserMetaEvent: cannot unmarshall resource policies")
 				return false
 			}
-			subs, o := session.Get(SessionSubjectsKey)
-			if !o {
-				log.Logger(ctx).Debug("UserMetaEvent: No subjects in session")
-				return false
-			}
-			subjects := subs.([]string)
-			if !w.MatchPolicies(pols, subjects, service.ResourcePolicyAction_READ) {
+			if !w.MatchPolicies(ctx, session, pols, service.ResourcePolicyAction_READ) {
 				return false
 			}
 		}
@@ -254,17 +265,20 @@ func (w *WebsocketHandler) BroadcastNodeChangeEvent(ctx context.Context, event *
 			hasData bool
 		)
 
-		metaCtx, err := prepareRemoteContext(w.runtimeCtx, session)
+		metaCtx, err := prepareRemoteContext(ctx, session)
 		if err != nil {
 			log.Logger(ctx).Warn("WebSocket error", zap.Error(err))
 			return false
 		}
+		cc, can := context.WithTimeout(metaCtx, 5*time.Second)
+		metaCtx = cc
+		defer can()
 
 		eTarget := event.Target
 		eSource := event.Source
 
 		if event.refreshTarget && eTarget != nil {
-			if respNode, err := w.EventRouter.GetClientsPool().GetTreeClient().ReadNode(metaCtx, &tree.ReadNodeRequest{Node: event.Target}); err == nil {
+			if respNode, err := w.EventRouter.GetClientsPool(ctx).GetTreeClient().ReadNode(metaCtx, &tree.ReadNodeRequest{Node: event.Target}); err == nil {
 				eTarget = respNode.Node
 			}
 		}
@@ -304,7 +318,7 @@ func (w *WebsocketHandler) BroadcastNodeChangeEvent(ctx context.Context, event *
 					Source: nSource,
 				})
 
-				session.Write(data)
+				_ = session.Write(data)
 				hasData = true
 			}
 		}
@@ -322,8 +336,15 @@ func (w *WebsocketHandler) BroadcastTaskChangeEvent(ctx context.Context, event *
 	}
 
 	taskOwner := event.TaskUpdated.TriggerOwner
+	// Filter error message for websocket events
+	event.TaskUpdated.UserSpaceErrorStatus()
+
 	message, _ := protojson.Marshal(event)
 	return w.Websocket.BroadcastFilter(message, func(session *melody.Session) bool {
+		if !runtime.MultiMatches(session.Request.Context(), ctx) {
+			return false
+		}
+
 		var isAdmin, o bool
 		var v interface{}
 		if v, o = session.Get(SessionProfileKey); o && v == common.PydioProfileAdmin {
@@ -332,16 +353,6 @@ func (w *WebsocketHandler) BroadcastTaskChangeEvent(ctx context.Context, event *
 		value, ok := session.Get(SessionUsernameKey)
 		if !ok || value == nil {
 			return false
-		}
-		status := event.TaskUpdated.GetStatus()
-		if status == jobs.TaskStatus_Error || status == jobs.TaskStatus_Finished {
-			w.completedTasks.Set(event.TaskUpdated.ID, true)
-		} else {
-			var b bool
-			if w.completedTasks.Get(event.TaskUpdated.ID, &b); b {
-				// Skipping event arriving AFTER task has finished status
-				return false
-			}
 		}
 		isOwner := value.(string) == taskOwner || (taskOwner == common.PydioSystemUsername && isAdmin)
 		if isOwner {
@@ -359,8 +370,16 @@ func (w *WebsocketHandler) BroadcastTaskChangeEvent(ctx context.Context, event *
 func (w *WebsocketHandler) BroadcastIDMChangeEvent(ctx context.Context, event *idm.ChangeEvent) error {
 
 	event.JsonType = "idm"
+	if event.User != nil {
+		event.User = event.User.WithPublicData(ctx, true)
+	}
 	message, _ := protojson.Marshal(event)
+
 	return w.Websocket.BroadcastFilter(message, func(session *melody.Session) bool {
+
+		if !runtime.MultiMatches(session.Request.Context(), ctx) {
+			return false
+		}
 
 		var checkRoleId string
 		var checkUserId string
@@ -376,6 +395,21 @@ func (w *WebsocketHandler) BroadcastIDMChangeEvent(ctx context.Context, event *i
 			checkUserId = event.User.Uuid
 		} else if event.Workspace != nil {
 			checkWorkspaceId = event.Workspace.UUID
+		}
+
+		// For IdmChangeEvent w/ User type, if current session has access to Settings, send user changes as a dedicated message (if policies allow it)
+		uChange := event.User != nil && (event.Type == idm.ChangeEventType_CREATE || event.Type == idm.ChangeEventType_UPDATE || event.Type == idm.ChangeEventType_DELETE)
+		if val, hasSettings := session.Get(SessionSettingsWorkspacesKey); hasSettings && val != nil && val.(bool) && uChange {
+			if len(event.User.Policies) > 0 && w.MatchPolicies(w.runtimeCtx, session, event.User.Policies, service.ResourcePolicyAction_READ) {
+				if event.Type != idm.ChangeEventType_DELETE && !event.User.IsGroup && len(event.User.Roles) == 0 {
+					// We have to reload user roles here
+					if u, e := permissions.SearchUniqueUser(w.runtimeCtx, "", event.User.Uuid); e == nil {
+						event.User = u
+						message, _ = protojson.Marshal(event)
+					}
+				}
+				_ = session.Write(message)
+			}
 		}
 
 		if checkUserLogin != "" {
@@ -434,6 +468,9 @@ func (w *WebsocketHandler) BroadcastActivityEvent(ctx context.Context, event *ac
 	}
 	message, _ := protojson.Marshal(event)
 	return w.Websocket.BroadcastFilter(message, func(session *melody.Session) bool {
+		if !runtime.MultiMatches(session.Request.Context(), ctx) {
+			return false
+		}
 		if val, ok := session.Get(SessionUsernameKey); ok && val != nil {
 			return event.OwnerId == val.(string) && event.Activity.Actor.Id != val.(string)
 		}
@@ -442,10 +479,16 @@ func (w *WebsocketHandler) BroadcastActivityEvent(ctx context.Context, event *ac
 
 }
 
-// MatchPolicies creates an memory-based policy stack checker to check if action is allowed or denied.
+// MatchPolicies creates a memory-based policy stack checker to check if action is allowed or denied.
 // It uses a DenyByDefault strategy
-func (w *WebsocketHandler) MatchPolicies(policies []*service.ResourcePolicy, subjects []string, action service.ResourcePolicyAction) bool {
+func (w *WebsocketHandler) MatchPolicies(ctx context.Context, session *melody.Session, policies []*service.ResourcePolicy, action service.ResourcePolicyAction) bool {
 
+	subs, o := session.Get(SessionSubjectsKey)
+	if !o || subs == nil {
+		log.Logger(ctx).Debug("UserMetaEvent: No subjects in session")
+		return false
+	}
+	subjects := subs.([]string)
 	warden := &ladon.Ladon{Manager: memory.NewMemoryManager()}
 	for i, pol := range policies {
 		id := fmt.Sprintf("%v", pol.Id)
@@ -460,7 +503,7 @@ func (w *WebsocketHandler) MatchPolicies(policies []*service.ResourcePolicy, sub
 			Effect:    pol.Effect.String(),
 			Subjects:  []string{pol.Subject},
 		}
-		warden.Manager.Create(ladonPol)
+		_ = warden.Manager.Create(ctx, ladonPol)
 	}
 	// check that at least one of the subject is allowed
 	var allow bool
@@ -470,7 +513,7 @@ func (w *WebsocketHandler) MatchPolicies(policies []*service.ResourcePolicy, sub
 			Subject:  subject,
 			Action:   action.String(),
 		}
-		if err := warden.IsAllowed(request); err != nil && err == ladon.ErrRequestForcefullyDenied {
+		if err := warden.IsAllowed(ctx, request); err != nil && err == ladon.ErrRequestForcefullyDenied {
 			return false
 		} else if err == nil {
 			allow = true

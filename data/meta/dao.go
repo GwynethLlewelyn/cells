@@ -24,22 +24,13 @@ package meta
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/sql"
+	"github.com/pydio/cells/v5/common/service"
 )
 
+var Drivers = service.StorageDrivers{}
+
 type DAO interface {
-	dao.DAO
-
-	SetMetadata(nodeId string, author string, metadata map[string]string) (err error)
-	GetMetadata(nodeId string) (metadata map[string]string, err error)
-	ListMetadata(query string) (metadataByUuid map[string]map[string]string, err error)
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlImpl{DAO: v}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+	Migrate(ctx context.Context) error
+	SetMetadata(ctx context.Context, nodeId string, author string, metadata map[string]string) (err error)
+	GetMetadata(ctx context.Context, nodeId string) (metadata map[string]string, err error)
 }

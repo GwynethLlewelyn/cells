@@ -22,15 +22,16 @@ package merger
 
 import (
 	"context"
+	"strconv"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/sync/model"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 // FilterToTarget tries to detect unnecessary operations based on the target status.
-// If the target implements the CachedBranchProvider interface, instead of stat'ing the nodes
+// If the target implements the CachedBranchProvider interface, instead of stating the nodes
 // one by one, the target will be fully loaded in memory at once to be used as a comparison.
 func (t *TreePatch) FilterToTarget(ctx context.Context) {
 
@@ -59,15 +60,32 @@ func (t *TreePatch) FilterToTarget(ctx context.Context) {
 		}
 		// Check nodes have same ETag
 		check := n[0]
-		return node.Etag == check.Etag
+		return node.GetEtag() == check.GetEtag()
+	}
+
+	stats := t.Stats()
+	var total, idx, crtPercent int
+	if p, ok := stats["Pending"]; ok {
+		total = p.(map[string]int)["Total"]
 	}
 
 	// Walk the tree to prune operations - only check non-processed operations!
 	t.Walk(func(n *TreeNode) bool {
-		if n.DataOperation != nil && !n.DataOperation.IsProcessed() && exists(n.DataOperation.Target(), n.ProcessedPath(false), n) {
+		hasDataOp := n.DataOperation != nil && !n.DataOperation.IsProcessed()
+		hasPathOp := n.PathOperation != nil && !n.PathOperation.IsProcessed()
+		if !(hasDataOp || hasPathOp) {
+			return false
+		}
+		percent := int(float32(idx) * 100 / float32(total))
+		if total > 1000 && idx > 0 && percent-crtPercent >= 5 {
+			log.Logger(ctx).Info("[FilterToTarget] Progress: " + strconv.Itoa(percent) + "%")
+			crtPercent = percent
+		}
+		idx++
+		if hasDataOp && exists(n.DataOperation.Target(), n.ProcessedPath(false), n) {
 			log.Logger(ctx).Info("[FilterToTarget] Ignoring DataOperation (target node exists with same ETag)", zap.String("path", n.ProcessedPath(false)))
 			n.DataOperation = nil
-		} else if n.PathOperation != nil && !n.PathOperation.IsProcessed() {
+		} else if hasPathOp {
 			if n.PathOperation.Type() == OpCreateFolder {
 				if exists(n.PathOperation.Target(), n.ProcessedPath(false)) {
 					log.Logger(ctx).Info("[FilterToTarget] Ignoring CreateFolder Operation (target folder exists)", zap.String("path", n.ProcessedPath(false)))

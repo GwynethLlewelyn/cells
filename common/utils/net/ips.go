@@ -22,51 +22,12 @@
 package net
 
 import (
-	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
 	"time"
 )
-
-// GetExternalIP retrieves the preferred outbound ip of this machine
-// by scanning the network interfaces of this (virtual) machine
-func GetExternalIP() (net.IP, error) {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 {
-			continue // interface down
-		}
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue // loopback interface
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			return nil, err
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip == nil || ip.IsLoopback() {
-				continue
-			}
-			ip = ip.To4()
-			if ip == nil {
-				continue // not an ipv4 address
-			}
-			return ip, nil
-		}
-	}
-	return nil, errors.New("are you connected to the network?")
-}
 
 // GetAvailableIPs retrieves all outbound ips of this machine
 // by scanning the network interfaces of this (virtual) machine
@@ -106,6 +67,26 @@ func GetAvailableIPs() (ips []net.IP, e error) {
 	}
 	ips = append(ips, net.ParseIP("127.0.0.1"))
 	return
+}
+
+func ExtractIPv4(addr net.Addr) string {
+	// Assert to *net.TCPAddr to access IP
+	tcpAddr, ok := addr.(*net.TCPAddr)
+	if !ok {
+		return "Unknown address type"
+	}
+
+	ip := tcpAddr.IP
+
+	if ip.IsUnspecified() {
+		return "0.0.0.0"
+	}
+
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4.String()
+	}
+
+	return "No IPv4 equivalent"
 }
 
 // GetOutboundIP retrieves the preferred outbound ip of this machine
@@ -153,7 +134,8 @@ func PeerAddressIsLocal(address string) bool {
 // PeerAddressesAreSameNode compares two addresses composed of multiple segments (separated by |) and check if any segments are similar
 func PeerAddressesAreSameNode(a1, a2 string) bool {
 
-	if a1 == "" && a2 == "" {
+	// If any of them is empty, it will start on every node => return true!
+	if a1 == "" || a2 == "" {
 		return true
 	}
 	parts1 := strings.Split(a1, "|")
@@ -171,4 +153,39 @@ loop:
 	}
 
 	return eq
+}
+
+// ShouldWarnPublicBind browses all interfaces addresses and detect if some are considered
+// public. This is used when the bind_address is not specified and servers will try to bind to all interfaces.
+func ShouldWarnPublicBind() (string, []string, error) {
+
+	var privates, publics []string
+
+	aa, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", privates, fmt.Errorf("failed to list interface addresses! Err: %v", err)
+	}
+
+	for _, rawAddr := range aa {
+		var ip net.IP
+		switch addr := rawAddr.(type) {
+		case *net.IPAddr:
+			ip = addr.IP
+		case *net.IPNet:
+			ip = addr.IP
+		default:
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+			if ip.To4() != nil {
+				privates = append(privates, ip.String())
+			}
+		} else {
+			publics = append(publics, ip.String())
+		}
+	}
+	if len(publics) > 0 {
+		return publics[0], privates, nil
+	}
+	return "", privates, nil
 }

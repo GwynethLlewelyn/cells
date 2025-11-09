@@ -23,24 +23,26 @@ package meta
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/nodes"
+	"fmt"
 	"io"
-	"strings"
 	"time"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/telemetry/tracing"
 )
 
 const (
-	ServiceMetaProvider   = "MetaProvider"
-	ServiceMetaNsProvider = "MetaNsProvider"
+	ServiceMetaProvider         = "MetaProvider"
+	ServiceMetaProviderRequired = "MetaProviderRequired"
+	ServiceMetaNsProvider       = "MetaNsProvider"
 )
 
 type Loader interface {
@@ -54,9 +56,9 @@ type streamLoader struct {
 	closer    context.CancelFunc
 }
 
-func NewStreamLoader(ctx context.Context) Loader {
+func NewStreamLoader(ctx context.Context, flags tree.Flags) Loader {
 	l := &streamLoader{}
-	l.streamers, l.closer, l.names = initMetaProviderClients(ctx)
+	l.streamers, l.closer, l.names = initMetaProviderClients(ctx, flags)
 	return l
 }
 
@@ -71,9 +73,9 @@ func (l *streamLoader) Close() error {
 	return nil
 }
 
-func initMetaProviderClients(ctx context.Context) ([]tree.NodeProviderStreamer_ReadNodeStreamClient, context.CancelFunc, []string) {
+func initMetaProviderClients(ctx context.Context, flags tree.Flags) ([]tree.NodeProviderStreamer_ReadNodeStreamClient, context.CancelFunc, []string) {
 
-	metaProviders, names := getMetaProviderStreamers(ctx)
+	metaProviders, names := getMetaProviderStreamers(ctx, flags)
 	var streamers []tree.NodeProviderStreamer_ReadNodeStreamClient
 	subCtx, cancel := context.WithCancel(ctx)
 	for _, cli := range metaProviders {
@@ -90,6 +92,8 @@ func initMetaProviderClients(ctx context.Context) ([]tree.NodeProviderStreamer_R
 
 func enrichNodesMetaFromProviders(ctx context.Context, streamers []tree.NodeProviderStreamer_ReadNodeStreamClient, names []string, nodes ...*tree.Node) {
 
+	ctx, span := tracing.StartLocalSpan(ctx, "MetaStreamerRead")
+	defer span.End()
 	profiles := make(map[string][]time.Duration)
 
 	for _, node := range nodes {
@@ -104,7 +108,7 @@ func enrichNodesMetaFromProviders(ctx context.Context, streamers []tree.NodeProv
 			start := time.Now()
 			sendError := metaStreamer.Send(&tree.ReadNodeRequest{Node: node})
 			if sendError != nil {
-				if sendError != io.EOF && sendError != io.ErrUnexpectedEOF {
+				if !errors.IsStreamFinished(sendError) {
 					log.Logger(ctx).Error("Error while sending to metaStreamer", zap.String("n", name), node.ZapPath(), node.ZapUuid(), zap.Error(sendError))
 				}
 				continue
@@ -132,12 +136,12 @@ func enrichNodesMetaFromProviders(ctx context.Context, streamers []tree.NodeProv
 		}
 		avgNano := float64(total.Nanoseconds()) / float64(l)
 		avg := time.Duration(avgNano)
-		log.Logger(ctx).Debug("EnrichMetaProvider - Average time spent", zap.Duration(n, avg))
+		log.Logger(ctx).Debug(fmt.Sprintf("EnrichMetaProvider - Average time spent for %s: %s", n, avg), zap.Duration(n, avg))
 	}
 
 }
 
-func getMetaProviderStreamers(ctx context.Context) ([]tree.NodeProviderStreamerClient, []string) {
+func getMetaProviderStreamers(ctx context.Context, flags tree.Flags) ([]tree.NodeProviderStreamerClient, []string) {
 
 	var result []tree.NodeProviderStreamerClient
 	var names []string
@@ -147,11 +151,11 @@ func getMetaProviderStreamers(ctx context.Context) ([]tree.NodeProviderStreamerC
 	}
 
 	// Load core Meta
-	result = append(result, tree.NewNodeProviderStreamerClient(grpc.GetClientConnFromCtx(ctx, common.ServiceMeta)))
-	names = append(names, common.ServiceGrpcNamespace_+common.ServiceMeta)
+	result = append(result, tree.NewNodeProviderStreamerClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC)))
+	names = append(names, common.ServiceMetaGRPC)
 
 	// Load User meta (if claims are not empty!)
-	if u, _ := permissions.FindUserNameInContext(ctx); u == "" {
+	if u := claim.UserNameFromContext(ctx); u == "" {
 		log.Logger(ctx).Debug("No user/claims found - skipping user metas on metaStreamers init!")
 		return result, names
 	}
@@ -162,7 +166,11 @@ func getMetaProviderStreamers(ctx context.Context) ([]tree.NodeProviderStreamerC
 	}
 
 	for _, srv := range ss {
-		result = append(result, tree.NewNodeProviderStreamerClient(grpc.GetClientConnFromCtx(ctx, strings.TrimPrefix(srv.Name(), common.ServiceGrpcNamespace_))))
+		if _, ok := srv.Metadata()[ServiceMetaProviderRequired]; !ok && flags.MinimalMetas() {
+			log.Logger(ctx).Debug("Skipping service " + srv.Name() + " because of minimal metas flag")
+			continue
+		}
+		result = append(result, tree.NewNodeProviderStreamerClient(grpc.ResolveConn(ctx, srv.Name())))
 		names = append(names, srv.Name())
 	}
 

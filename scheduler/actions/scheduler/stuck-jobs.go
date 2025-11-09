@@ -24,13 +24,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -38,8 +37,8 @@ var (
 )
 
 type PruneJobsAction struct {
-	common.RuntimeHolder
-	maxTasksParam string
+	maxTasksParam  string
+	maxRunningTime string
 }
 
 // GetDescription returns action description
@@ -57,7 +56,7 @@ func (c *PruneJobsAction) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (c *PruneJobsAction) GetParametersForm() *forms.Form {
+func (c *PruneJobsAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -70,6 +69,13 @@ func (c *PruneJobsAction) GetParametersForm() *forms.Form {
 					Mandatory:   true,
 					Editable:    true,
 				},
+				&forms.FormField{
+					Name:        "maxRunningTime",
+					Type:        forms.ParamInteger,
+					Label:       "Maximum running time per task (in seconds)",
+					Description: "Clean tasks that have been running for more than ... (seconds)",
+					Default:     60 * 60,
+				},
 			},
 		},
 	}}
@@ -81,26 +87,36 @@ func (c *PruneJobsAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *PruneJobsAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *PruneJobsAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if n, o := action.Parameters["number"]; o {
 		c.maxTasksParam = n
 	} else {
 		c.maxTasksParam = "50"
 	}
+	if n, o := action.Parameters["maxRunningTime"]; o {
+		c.maxRunningTime = n
+	} else {
+		c.maxRunningTime = "3600"
+	}
 	return nil
 }
 
 // Run the actual action code
-func (c *PruneJobsAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *PruneJobsAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	pruneLimit, e := jobs.EvaluateFieldInt(ctx, input, c.maxTasksParam)
 	if e != nil {
 		return input.WithError(e), e
 	}
-	cli := jobs.NewJobServiceClient(grpc.GetClientConnFromCtx(c.GetRuntimeContext(), common.ServiceJobs))
+	maxRunningTime, e := jobs.EvaluateFieldInt(ctx, input, c.maxRunningTime)
+	if e != nil || maxRunningTime == 0 {
+		maxRunningTime = 3600
+	}
+
+	cli := jobs.NewJobServiceClient(grpc.ResolveConn(ctx, common.ServiceJobsGRPC))
 	// Fix Stuck Tasks
 	resp, e := cli.DetectStuckTasks(ctx, &jobs.DetectStuckTasksRequest{
-		Since: 60 * 60 * 6,
+		Since: int32(maxRunningTime),
 	})
 	if e != nil {
 		return input.WithError(e), e
@@ -129,5 +145,5 @@ func (c *PruneJobsAction) Run(ctx context.Context, channels *actions.RunnableCha
 	msg := fmt.Sprintf("Deleted %d AutoClean jobs", resp3.DeleteCount)
 	log.TasksLogger(ctx).Info(msg)
 
-	return input, nil
+	return input.Clone(), nil
 }

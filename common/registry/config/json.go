@@ -25,13 +25,13 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/pydio/cells/v4/common/registry/util"
-
 	"google.golang.org/protobuf/encoding/protojson"
 
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/errors"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 func WithJSONItemMap() configx.Option {
@@ -72,6 +72,18 @@ func (j *jsonItemMapReader) Unmarshal(data []byte, out interface{}) error {
 		}
 
 		return nil
+	case map[string]interface{}:
+		i := new(pb.ItemMap)
+
+		if err := protojson.Unmarshal(data, i); err != nil {
+			return err
+		}
+
+		for k, v := range i.Items {
+			vout[k] = util.ToItem(v)
+		}
+
+		return nil
 	case map[string]registry.Item:
 		i := new(pb.ItemMap)
 
@@ -86,7 +98,7 @@ func (j *jsonItemMapReader) Unmarshal(data []byte, out interface{}) error {
 		return nil
 	}
 
-	return fmt.Errorf("should not be here in unmarshal")
+	return errors.New("should not be here in unmarshal")
 }
 
 type jsonItemMapWriter struct{}
@@ -161,6 +173,18 @@ func (j *jsonItemReader) Unmarshal(data []byte, out interface{}) error {
 		}
 
 		return nil
+	case map[string]interface{}:
+		i := new(pb.ItemMap)
+
+		if err := protojson.Unmarshal(data, i); err != nil {
+			return err
+		}
+
+		for k, v := range i.Items {
+			vout[k] = util.ToItem(v)
+		}
+
+		return nil
 	case map[string]registry.Item:
 		i := new(pb.ItemMap)
 
@@ -175,7 +199,7 @@ func (j *jsonItemReader) Unmarshal(data []byte, out interface{}) error {
 		return nil
 	}
 
-	return fmt.Errorf("should not be here in unmarshal")
+	return errors.New("should not be here in unmarshal")
 }
 
 type jsonItemWriter struct{}

@@ -21,7 +21,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -29,9 +28,9 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/idm"
 )
 
 var (
@@ -56,14 +55,14 @@ EXAMPLE
 	),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if userPwdLogin == "" {
-			return fmt.Errorf("Missing arguments")
+			return errors.New("Missing arguments")
 		}
 		if userPwd == "" {
 			p := promptui.Prompt{
 				Label: "Provide a new password",
 				Validate: func(s string) error {
 					if s == "" {
-						return fmt.Errorf("cannot use empty password")
+						return errors.New("cannot use empty password")
 					}
 					return nil
 				},
@@ -77,7 +76,7 @@ EXAMPLE
 				Label: "Please confirm password",
 				Validate: func(s string) error {
 					if s != "" && s != firstPwd {
-						return fmt.Errorf("password does not match")
+						return errors.New("password does not match")
 					}
 					return nil
 				},
@@ -91,16 +90,17 @@ EXAMPLE
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		client := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUser))
+		ctx := cmd.Context()
+		client := idmc.UserServiceClient(ctx)
 
-		users, err := searchUser(context.Background(), client, userPwdLogin)
+		users, err := searchUser(cmd.Context(), client, userPwdLogin)
 		if err != nil {
 			fmt.Printf("Cannot list users for login %s: %s", userPwdLogin, err.Error())
 		}
 
 		for _, user := range users {
 			user.Password = userPwd
-			if _, err := client.CreateUser(context.Background(), &idm.CreateUserRequest{
+			if _, err := client.CreateUser(cmd.Context(), &idm.CreateUserRequest{
 				User: user,
 			}); err != nil {
 				fmt.Printf("could not update password for [%s], skipping and continuing.\n Error message: %s", user.Login, err.Error())

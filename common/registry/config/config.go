@@ -22,39 +22,59 @@ package configregistry
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/config/etcd"
-	"github.com/pydio/cells/v4/common/config/file"
-	"github.com/pydio/cells/v4/common/config/memory"
-	"github.com/pydio/cells/v4/common/log"
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/registry/util"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/crypto"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/kv"
+	"github.com/pydio/cells/v5/common/utils/kv/etcd"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/utils/watch"
 )
 
 var (
 	schemes    = []string{"etcd", "file", "mem"}
+	tlsSchemes = []string{"etcd+tls"}
 	shared     registry.Registry
 	sharedOnce = &sync.Once{}
 )
 
-type URLOpener struct{}
+type URLOpener struct {
+	tlsConfig *tls.Config
+}
+
+type TLSURLOpener struct{}
 
 func init() {
 	o := &URLOpener{}
 	for _, scheme := range schemes {
 		registry.DefaultURLMux().Register(scheme, o)
+	}
+	tlso := &TLSURLOpener{}
+	for _, scheme := range tlsSchemes {
+		registry.DefaultURLMux().Register(scheme, tlso)
+	}
+}
+
+func (o *TLSURLOpener) OpenURL(ctx context.Context, u *url.URL) (registry.Registry, error) {
+	if tlsConfig, er := crypto.TLSConfigFromURL(u); er == nil {
+		return (&URLOpener{tlsConfig}).OpenURL(ctx, u)
+	} else {
+		return nil, fmt.Errorf("error while loading tls config for etcd %v", er)
 	}
 }
 
@@ -63,58 +83,59 @@ func (o *URLOpener) openURL(ctx context.Context, u *url.URL) (registry.Registry,
 
 	byName := u.Query().Get("byname") == "true"
 
-	var opts []configx.Option
-	encode := u.Query().Get("encoding")
-	switch encode {
-	case "string":
-		opts = append(opts, configx.WithString())
-	case "yaml":
-		opts = append(opts, configx.WithYAML())
-	case "json":
-		opts = append(opts, configx.WithJSON())
-	case "jsonitem":
-		opts = append(opts, WithJSONItem())
-	default:
-		if u.Scheme == "etcd" {
-			opts = append(opts, WithJSONItem())
-		}
-	}
-
-	switch u.Scheme {
+	switch strings.TrimSuffix(u.Scheme, "+tls") {
 	case "etcd":
-		tls := u.Query().Get("tls") == "true"
-		addr := u.Host
-		if tls {
-			addr = "https://" + addr
+
+		addr := "://" + u.Host
+		if o.tlsConfig == nil {
+			addr = "http" + addr
 		} else {
-			addr = "http://" + addr
+			addr = "https" + addr
 		}
+
+		// Registry via etcd
+		pwd, _ := u.User.Password()
 
 		// Registry via etcd
 		etcdConn, err := clientv3.New(clientv3.Config{
 			Endpoints:   []string{addr},
 			DialTimeout: 2 * time.Second,
+			Username:    os.ExpandEnv(u.User.Username()),
+			Password:    os.ExpandEnv(pwd),
+			TLS:         o.tlsConfig,
 		})
 
 		if err != nil {
 			return nil, err
 		}
 
-		store, err := etcd.NewSource(ctx, etcdConn, "registry", true, true, opts...)
+		opts := configx.Options{}
+		WithJSONItem()(&opts)
+
+		var store config.Store
+
+		store = kv.NewStore()
+		store = storeWithEncoder{Store: store, Unmarshaler: opts.Unmarshaler, Marshaller: opts.Marshaller}
+
+		store, err = etcd.NewStore(ctx, store.Val(), etcdConn, u.Path, 10)
 		if err != nil {
 			return nil, err
 		}
-		reg = NewConfigRegistry(store, byName)
-	case "file":
-		store, err := file.New(u.Path, opts...)
-		if err != nil {
-			return nil, err
-		}
-		reg = NewConfigRegistry(store, byName)
-	case "mem":
-		store := memory.New(opts...)
+
+		// TODO - move the store with encoder in kv ?
+		// store = storeWithEncoder{Store: store, Unmarshaler: opts.Unmarshaler, Marshaller: opts.Marshaller}
 
 		reg = NewConfigRegistry(store, byName)
+	//case "file":
+	//	store, err := file.New(u.Path, opts...)
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//	reg = NewConfigRegistry(store, byName)
+	case "mem":
+		store := kv.NewStore()
+		st := newStoreWithWatcher(store, watch.NewWatcher(store))
+		reg = NewConfigRegistry(st, byName)
 	}
 
 	return registry.GraphRegistry(reg), nil
@@ -139,11 +160,14 @@ func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (registry.Registry,
 type configRegistry struct {
 	store config.Store
 
-	sync.RWMutex
+	cache            []registry.Item
+	broadcastersLock *sync.RWMutex
+	broadcasters     map[string]broadcaster
 
-	cache        []registry.Item
-	broadcasters map[string]broadcaster
-	namedCache   map[string]string
+	namedCacheLock *sync.RWMutex
+	namedCache     map[string]string
+
+	watchOnce *sync.Once
 }
 
 type broadcaster struct {
@@ -156,21 +180,23 @@ type options struct {
 }
 
 func NewConfigRegistry(store config.Store, byName bool) registry.RawRegistry {
+
 	c := &configRegistry{
-		store:        store,
-		cache:        []registry.Item{},
-		broadcasters: make(map[string]broadcaster),
+		store:            store,
+		cache:            []registry.Item{},
+		broadcastersLock: &sync.RWMutex{},
+		broadcasters:     make(map[string]broadcaster),
+		watchOnce:        &sync.Once{},
 	}
 	if byName {
+		c.namedCacheLock = &sync.RWMutex{}
 		c.namedCache = make(map[string]string)
 	}
-
-	go c.watch()
 	return c
 }
 
 func (c *configRegistry) watch() error {
-	w, err := c.store.Watch(configx.WithChangesOnly())
+	w, err := c.store.Watch(watch.WithPath("*", "*"), watch.WithChangesOnly())
 	if err != nil {
 		return err
 	}
@@ -180,13 +206,16 @@ func (c *configRegistry) watch() error {
 		if err != nil {
 			return err
 		}
+
 		cv := res.(configx.Values)
 
-		for _, bc := range c.broadcasters {
+		c.broadcastersLock.RLock()
+		bcs := c.broadcasters
+		c.broadcastersLock.RUnlock()
 
+		for _, bc := range bcs {
 			for _, itemType := range bc.Types {
-
-				// Always start with DELETE if they are batched to avoid false-negatives on Delete => Create
+				// Always start with DELETE if they are batched -+
 				if err := c.scanAndBroadcast(cv, bc, itemType, "delete", pb.ActionType_DELETE); err != nil {
 					return err
 				}
@@ -196,7 +225,6 @@ func (c *configRegistry) watch() error {
 				if err := c.scanAndBroadcast(cv, bc, itemType, "update", pb.ActionType_UPDATE); err != nil {
 					return err
 				}
-
 			}
 		}
 	}
@@ -208,21 +236,43 @@ func (c *configRegistry) scanAndBroadcast(res configx.Values, bc broadcaster, bc
 	values := res.Val(keyName)
 	val := values.Val(getFromItemType(bcType))
 	if val.Get() != nil {
-		itemsMap := map[string]registry.Item{}
-		if err := val.Default(map[string]registry.Item{}).Scan(itemsMap); err != nil {
-			fmt.Println("Error while scanning registry watch event to map[string]registry.Item", err)
+
+		itemsMap := map[string]interface{}{}
+		if err := val.Scan(&itemsMap); err != nil {
+			log.Error("Error while scanning registry watch event to sync map", zap.Error(err))
 			return err
 		}
+
 		var items []registry.Item
-		for _, i := range itemsMap {
-			items = append(items, i)
+		for k, v := range itemsMap {
+			switch item := v.(type) {
+			case *pb.Item:
+				items = append(items, util.ToItem(item))
+			case *registry.Item:
+				items = append(items, *item)
+			case registry.Item:
+				items = append(items, item)
+			default:
+				// For updates mainly, we may receive only parts of the item, so retrieving the full item in the registry
+				if item, err := c.Get(k, registry.WithType(bcType)); err == nil {
+					items = append(items, item)
+				}
+			}
 		}
-		select {
-		case bc.Ch <- registry.NewResult(actionType, items):
-		default:
-		}
+
+		go func() {
+			bc.Ch <- registry.NewResult(actionType, items)
+		}()
 	}
 	return nil
+}
+
+func (c *configRegistry) Close() error {
+	return c.store.Close(context.TODO())
+}
+
+func (c *configRegistry) Done() <-chan struct{} {
+	return c.store.Done()
 }
 
 func (c *configRegistry) Start(item registry.Item) error {
@@ -234,6 +284,13 @@ func (c *configRegistry) Stop(item registry.Item) error {
 }
 
 func getType(item registry.Item) string {
+	var d registry.Dao
+	if item == nil {
+		return "generic"
+	}
+	if item.As(&d) {
+		return "dao"
+	}
 	switch v := item.(type) {
 	case registry.Service:
 		return "service"
@@ -259,7 +316,7 @@ func getType(item registry.Item) string {
 			return "generic"
 		}
 	default:
-		return "other"
+		return "generic"
 	}
 }
 
@@ -286,7 +343,7 @@ func getFromItemType(itemType pb.ItemType) string {
 	case pb.ItemType_ENDPOINT:
 		return "endpoint"
 	default:
-		return "other"
+		return "generic"
 	}
 }
 
@@ -298,12 +355,17 @@ func (c *configRegistry) Register(item registry.Item, option ...registry.Registe
 	// with the same name, deregister the previous one.
 	// The namedCache uses the store lock.
 	if c.namedCache != nil {
+		c.namedCacheLock.RLock()
 		if foundID, ok := c.namedCache[item.Name()]; ok {
 			if er := c.store.Val(getType(item)).Val(foundID).Del(); er != nil {
 				return er
 			}
 		}
+		c.namedCacheLock.RUnlock()
+
+		c.namedCacheLock.Lock()
 		c.namedCache[item.Name()] = item.ID()
+		c.namedCacheLock.Unlock()
 	}
 
 	if err := c.store.Val(getType(item)).Val(item.ID()).Set(item); err != nil {
@@ -344,6 +406,9 @@ func (c *configRegistry) Get(id string, opts ...registry.Option) (registry.Item,
 	}
 
 	for _, v := range items {
+		if v == nil {
+			continue
+		}
 		if id == v.ID() {
 			return v, nil
 		}
@@ -358,7 +423,17 @@ func (c *configRegistry) List(opts ...registry.Option) ([]registry.Item, error) 
 	}
 
 	if len(o.Types) == 0 {
-		return nil, fmt.Errorf("shoudn't call without a type")
+		o.Types = []pb.ItemType{
+			pb.ItemType_NODE,
+			pb.ItemType_SERVICE,
+			pb.ItemType_SERVER,
+			pb.ItemType_DAO,
+			pb.ItemType_EDGE,
+			pb.ItemType_GENERIC,
+			pb.ItemType_ADDRESS,
+			pb.ItemType_ENDPOINT,
+			pb.ItemType_TAG,
+		}
 	}
 
 	var res []registry.Item
@@ -391,37 +466,47 @@ func (c *configRegistry) List(opts ...registry.Option) ([]registry.Item, error) 
 		case pb.ItemType_TAG:
 			store = c.store.Val("tag")
 		default:
-			store = c.store.Val("other")
+			store = c.store.Val("generic")
 		}
 
 		if store.Get() == nil {
 			continue
 		}
 
-		rawItems, ok := store.Get().Default(map[string]interface{}{}).Interface().(map[string]interface{})
+		rawItems, ok := store.Default(map[string]any{}).Interface().(map[string]any)
 		if !ok {
 			continue
 		}
 
-		items := make(map[string]registry.Item)
-		for k, rawItem := range rawItems {
+		for _, rawItem := range rawItems {
+			var item registry.Item
 			switch ri := rawItem.(type) {
 			case registry.Item:
-				items[k] = ri
+				item = ri
 			case *pb.Item:
-				items[k] = util.ToItem(ri)
+				item = util.ToItem(ri)
 			}
-		}
-		for _, item := range items {
-			found := false
+
+			foundID := false
+			for _, id := range o.IDs {
+				if id == item.ID() {
+					foundID = true
+					break
+				}
+			}
+			if len(o.IDs) > 0 && !foundID {
+				continue
+			}
+
+			foundName := false
 			for _, name := range o.Names {
 				if o.Matches(name, item.Name()) {
-					found = true
+					foundName = true
 					break
 				}
 			}
 
-			if len(o.Names) > 0 && !found {
+			if len(o.Names) > 0 && !foundName {
 				continue
 			}
 
@@ -445,14 +530,22 @@ func (c *configRegistry) List(opts ...registry.Option) ([]registry.Item, error) 
 }
 
 func (c *configRegistry) Watch(opts ...registry.Option) (registry.Watcher, error) {
+	c.watchOnce.Do(func() {
+		go c.watch()
+	})
+
 	// parse the options, fallback to the default domain
 	var wo registry.Options
 	for _, o := range opts {
 		o(&wo)
 	}
 
+	if wo.Context == nil {
+		wo.Context = context.Background()
+	}
+
 	id := uuid.New()
-	res := make(chan registry.Result, 100)
+	res := make(chan registry.Result)
 
 	// construct the watcher
 	w := registry.NewWatcher(
@@ -466,26 +559,40 @@ func (c *configRegistry) Watch(opts ...registry.Option) (registry.Watcher, error
 	if err != nil {
 		return nil, err
 	}
-	res <- registry.NewResult(pb.ActionType_CREATE, items)
 
-	c.Lock()
+	// We shouldn't block the response
+	go func() {
+		if len(items) > 0 {
+			res <- registry.NewResult(pb.ActionType_CREATE, items)
+		}
+	}()
+
+	c.broadcastersLock.Lock()
 	c.broadcasters[id] = broadcaster{
 		Types: wo.Types,
 		Ch:    res,
 	}
-	c.Unlock()
+	c.broadcastersLock.Unlock()
 
 	// Wrap in a configWatcher to properly deregister on stop
 	cw := &configWatcher{
 		Watcher: w,
 		onStop: func() {
-			c.Lock()
+			c.broadcastersLock.Lock()
 			delete(c.broadcasters, id)
-			c.Unlock()
+			c.broadcastersLock.Unlock()
 		},
 	}
 
 	return cw, nil
+}
+
+func (c *configRegistry) NewLocker(name string) sync.Locker {
+	if ds, ok := c.store.(config.DistributedStore); ok {
+		return ds.NewLocker(name)
+	}
+
+	return nil
 }
 
 func (c *configRegistry) As(interface{}) bool {

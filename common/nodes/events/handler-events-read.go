@@ -22,26 +22,24 @@ package events
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/runtime"
 	"io"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	grpc2 "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/docstore"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/service/errors"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/client/commons/docstorec"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	runtimecontext "github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 func WithRead() nodes.Option {
@@ -74,7 +72,7 @@ func (h *HandlerRead) feedNodeUuid(ctx context.Context, node *tree.Node) error {
 
 func (h *HandlerRead) ListNodes(ctx context.Context, in *tree.ListNodesRequest, opts ...grpc.CallOption) (tree.NodeProvider_ListNodesClient, error) {
 	c, e := h.Next.ListNodes(ctx, in, opts...)
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, "in"); ok && branchInfo.IsInternal() {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, "in"); er == nil && branchInfo.IsInternal() {
 		return c, e
 	}
 	if e == nil && in.Node != nil {
@@ -85,7 +83,7 @@ func (h *HandlerRead) ListNodes(ctx context.Context, in *tree.ListNodesRequest, 
 			}
 		}
 		if node.Uuid != "" {
-			c := metadata.NewBackgroundWithMetaCopy(ctx)
+			c := runtimecontext.ForkedBackgroundWithMeta(ctx)
 			go func() {
 				broker.MustPublish(c, common.TopicTreeChanges, &tree.NodeChangeEvent{
 					Type:   tree.NodeChangeEvent_READ,
@@ -106,15 +104,15 @@ func (h *HandlerRead) GetObject(ctx context.Context, node *tree.Node, requestDat
 		linkData *docstore.ShareDocument
 	)
 
-	if doc, linkData = h.sharedLinkWithDownloadLimit(ctx); doc != nil && linkData != nil {
+	if doc, linkData = h.sharedLinkWithDownloadLimit(context.WithoutCancel(ctx)); doc != nil && linkData != nil {
 		// Check download limit!
 		if linkData.DownloadCount >= linkData.DownloadLimit {
-			return nil, errors.Forbidden("MaxDownloadsReached", "You are not allowed to download this document")
+			return nil, errors.WithMessage(errors.StatusForbidden, "You are not allowed to download this document")
 		}
 	}
 
 	reader, e := h.Next.GetObject(ctx, node, requestData)
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, "in"); ok && branchInfo.IsInternal() {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, "in"); er == nil && branchInfo.IsInternal() {
 		return reader, e
 	}
 	if e == nil && requestData.StartOffset == 0 {
@@ -124,12 +122,12 @@ func (h *HandlerRead) GetObject(ctx context.Context, node *tree.Node, requestDat
 				logger.Debug("HandlerRead did not find Uuid!", zap.Error(e))
 			}
 		}
+		c := runtimecontext.ForkedBackgroundWithMeta(ctx)
 		if eventNode.Uuid != "" {
 			if eventNode.Type == tree.NodeType_UNKNOWN {
 				// Assume it's a file
 				eventNode.Type = tree.NodeType_LEAF
 			}
-			c := metadata.NewBackgroundWithMetaCopy(ctx)
 			go func() {
 				broker.MustPublish(c, common.TopicTreeChanges, &tree.NodeChangeEvent{
 					Type:   tree.NodeChangeEvent_READ,
@@ -139,12 +137,10 @@ func (h *HandlerRead) GetObject(ctx context.Context, node *tree.Node, requestDat
 		}
 		if doc != nil && linkData != nil {
 			go func() {
-				bgContext := context.Background()
 				linkData.DownloadCount++
 				newData, _ := json.Marshal(linkData)
 				doc.Data = string(newData)
-				store := docstore.NewDocStoreClient(grpc2.GetClientConnFromCtx(ctx, common.ServiceDocStore))
-				_, e3 := store.PutDocument(bgContext, &docstore.PutDocumentRequest{StoreID: common.DocStoreIdShares, DocumentID: doc.ID, Document: doc})
+				_, e3 := docstorec.DocStoreClient(ctx).PutDocument(c, &docstore.PutDocumentRequest{StoreID: common.DocStoreIdShares, DocumentID: doc.ID, Document: doc})
 				if e3 == nil {
 					logger.Debug("Updated share download count " + doc.ID)
 				} else {
@@ -158,26 +154,20 @@ func (h *HandlerRead) GetObject(ctx context.Context, node *tree.Node, requestDat
 
 }
 
+// sharedLinkWithDownloadLimit searches corresponding link and update download number, only in the case of a "Public" user (hidden)
 func (h *HandlerRead) sharedLinkWithDownloadLimit(ctx context.Context) (doc *docstore.Document, linkData *docstore.ShareDocument) {
 
-	userLogin, claims := permissions.FindUserNameInContext(ctx)
-	// TODO - Have the 'hidden' info directly in claims => could it be a profile instead ?
-	if claims.Profile != common.PydioProfileShared {
+	claims, ok := claim.FromContext(ctx)
+	if !ok || !claims.Public {
 		return
 	}
-	bgContext := runtime.ForkContext(context.Background(), ctx)
-	user, e := permissions.SearchUniqueUser(bgContext, userLogin, "", &idm.UserSingleQuery{AttributeName: idm.UserAttrHidden, AttributeValue: "true"})
-	if e != nil || user == nil {
-		return
-	}
-	// This is a unique hidden user - search corresponding link and update download number
-	store := docstore.NewDocStoreClient(grpc2.GetClientConnFromCtx(ctx, common.ServiceDocStore))
+	store := docstorec.DocStoreClient(ctx)
 
-	// SEARCH WITH PRESET_LOGIN
-	lC, ca := context.WithCancel(bgContext)
+	// First search with preset_login
+	lC, ca := context.WithCancel(ctx)
 	defer ca()
 	stream, e := store.ListDocuments(lC, &docstore.ListDocumentsRequest{StoreID: common.DocStoreIdShares, Query: &docstore.DocumentQuery{
-		MetaQuery: "+SHARE_TYPE:minisite +PRESET_LOGIN:" + userLogin + "",
+		MetaQuery: "+SHARE_TYPE:minisite +PRESET_LOGIN:" + claims.Name + "",
 	}})
 	if e != nil {
 		return
@@ -187,9 +177,9 @@ func (h *HandlerRead) sharedLinkWithDownloadLimit(ctx context.Context) (doc *doc
 	}
 
 	if doc == nil {
-		// SEARCH WITH PRELOG_USER
+		// Otherwise search with prelog_user
 		stream2, e := store.ListDocuments(lC, &docstore.ListDocumentsRequest{StoreID: common.DocStoreIdShares, Query: &docstore.DocumentQuery{
-			MetaQuery: "+SHARE_TYPE:minisite +PRELOG_USER:" + userLogin + "",
+			MetaQuery: "+SHARE_TYPE:minisite +PRELOG_USER:" + claims.Name + "",
 		}})
 		if e != nil {
 			return

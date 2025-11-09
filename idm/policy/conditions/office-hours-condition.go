@@ -27,7 +27,7 @@ import (
 	"github.com/ory/ladon"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 // OfficeHoursCondition is a condition which is fulfilled if the current time is
@@ -38,7 +38,7 @@ type OfficeHoursCondition struct {
 
 // Fulfills returns true if the given value is a valid Time and is within one of the defined period.
 // It expects a iso 8601 formatted string, e.g: "2006-01-02T15:04-0700"
-func (c *OfficeHoursCondition) Fulfills(value interface{}, _ *ladon.Request) bool {
+func (c *OfficeHoursCondition) Fulfills(ctx context.Context, value interface{}, _ *ladon.Request) bool {
 
 	if value == nil {
 		return false
@@ -46,19 +46,19 @@ func (c *OfficeHoursCondition) Fulfills(value interface{}, _ *ladon.Request) boo
 
 	s, ok := value.(string)
 	if !ok {
-		log.Logger(context.Background()).Error("passed value must be a string", zap.Any("input param", value))
+		log.Logger(ctx).Error("passed value must be a string", zap.Any("input param", value))
 		return false
 	}
 
 	t, parseErr := time.Parse(timeLayout, s)
 	if parseErr != nil {
-		log.Logger(context.Background()).Error("cannot parse passed value. reference layout is "+timeLayout, zap.String("input param", s), zap.Error(parseErr))
+		log.Logger(ctx).Error("cannot parse passed value. reference layout is "+timeLayout, zap.String("input param", s), zap.Error(parseErr))
 		return false
 	}
 
 	days, minuteBegin, minuteEnd, parseErr := parseOfficeHours(c.Matches)
 	if parseErr != nil {
-		log.Logger(context.Background()).Error("cannot parse match conditions. reference layout is "+officeHoursLayout, zap.String("Matches predicate", c.Matches), zap.Error(parseErr))
+		log.Logger(ctx).Error("cannot parse match conditions. reference layout is "+officeHoursLayout, zap.String("Matches predicate", c.Matches), zap.Error(parseErr))
 		return false
 	}
 

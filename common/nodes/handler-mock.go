@@ -22,8 +22,6 @@ package nodes
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path"
@@ -32,10 +30,11 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	errors2 "github.com/pydio/cells/v4/common/service/errors"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/openurl"
 )
 
 func NewHandlerMock() *HandlerMock {
@@ -58,7 +57,7 @@ func (r MockReadCloser) Close() error {
 	return nil
 }
 
-func (h *HandlerMock) SetClientsPool(p SourcesPool) {}
+func (h *HandlerMock) SetClientsPool(p *openurl.Pool[SourcesPool]) {}
 
 func (h *HandlerMock) ExecuteWrapped(inputFilter FilterFunc, outputFilter FilterFunc, provider CallbackFunc) error {
 	return provider(inputFilter, outputFilter)
@@ -70,7 +69,7 @@ func (h *HandlerMock) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, op
 	if n, ok := h.Nodes[in.Node.Path]; ok {
 		return &tree.ReadNodeResponse{Node: n}, nil
 	}
-	return nil, errors.New("Not Found")
+	return nil, errors.WithStack(errors.NodeNotFound)
 }
 
 func (h *HandlerMock) ListNodes(ctx context.Context, in *tree.ListNodesRequest, opts ...grpc.CallOption) (tree.NodeProvider_ListNodesClient, error) {
@@ -97,7 +96,7 @@ func (h *HandlerMock) ListNodes(ctx context.Context, in *tree.ListNodesRequest, 
 			}()
 		} else {
 			streamer.CloseSend()
-			return nil, errors2.NotFound("not.found", "Node not found")
+			return nil, errors.WithStack(errors.NodeNotFound)
 		}
 	} else {
 		go func() {
@@ -160,17 +159,17 @@ func (h *HandlerMock) GetObject(ctx context.Context, node *tree.Node, requestDat
 		closer.Reader = strings.NewReader(n.Path + "hello world")
 		return closer, nil
 	}
-	return nil, errors.New("Not Found")
+	return nil, errors.WithStack(errors.NodeNotFound)
 
 }
 
-func (h *HandlerMock) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (h *HandlerMock) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	log.Logger(ctx).Info("[MOCK] PutObject" + node.Path)
 
 	if len(h.RootDir) > 0 {
 		output, err := os.OpenFile(filepath.Join(h.RootDir, node.Path), os.O_WRONLY|os.O_CREATE, os.ModePerm)
 		if err != nil {
-			return -1, err
+			return models.ObjectInfo{}, err
 		}
 
 		buffer := make([]byte, 1024)
@@ -184,30 +183,30 @@ func (h *HandlerMock) PutObject(ctx context.Context, node *tree.Node, reader io.
 			if err != nil {
 				eof = err == io.EOF
 				if !eof {
-					return -1, err
+					return models.ObjectInfo{}, err
 				}
 			}
 
 			written, err := output.Write(buffer[:n])
 			if err != nil {
-				return totalWritten, err
+				return models.ObjectInfo{}, err
 			}
 			totalWritten += int64(written)
 		}
-		return totalWritten, nil
+		return models.ObjectInfo{Size: totalWritten}, nil
 	}
 
 	h.Nodes["in"] = node
 	h.Context = ctx
-	return 0, nil
+	return models.ObjectInfo{}, nil
 }
 
-func (h *HandlerMock) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (h *HandlerMock) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 	log.Logger(ctx).Info("[MOCK] CopyObject " + from.Path + " to " + to.Path)
 	h.Nodes["from"] = from
 	h.Nodes["to"] = to
 	h.Context = ctx
-	return 0, nil
+	return models.ObjectInfo{Size: to.Size}, nil
 }
 
 func (h *HandlerMock) MultipartCreate(ctx context.Context, target *tree.Node, requestData *models.MultipartRequestData) (string, error) {
@@ -244,7 +243,7 @@ func (h *HandlerMock) MultipartListObjectParts(ctx context.Context, target *tree
 }
 
 func (h *HandlerMock) StreamChanges(ctx context.Context, in *tree.StreamChangesRequest, opts ...grpc.CallOption) (tree.NodeChangesStreamer_StreamChangesClient, error) {
-	return nil, fmt.Errorf("not.implemented")
+	return nil, errors.New("not.implemented")
 }
 
 func (h *HandlerMock) ListNodesWithCallback(ctx context.Context, request *tree.ListNodesRequest, callback WalkFunc, ignoreCbError bool, filters ...WalkFilterFunc) error {

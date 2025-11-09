@@ -29,22 +29,23 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
-func WithStore(name string, transparentGet, allowPut, allowAnonRead bool) nodes.Option {
+func WithStore(name string, indexedStore, allowPut, allowAnonRead bool) nodes.Option {
 	return func(options *nodes.RouterOptions) {
 		options.Wrappers = append(options.Wrappers, &Handler{
-			StoreName:      name,
-			TransparentGet: transparentGet,
-			AllowPut:       allowPut,
-			AllowAnonRead:  allowAnonRead,
+			StoreName:     name,
+			Indexed:       indexedStore,
+			AllowPut:      allowPut,
+			AllowAnonRead: allowAnonRead,
 		})
 	}
 }
@@ -52,10 +53,10 @@ func WithStore(name string, transparentGet, allowPut, allowAnonRead bool) nodes.
 // Handler captures put/get calls to an internal storage
 type Handler struct {
 	abstract.Handler
-	StoreName      string
-	TransparentGet bool
-	AllowPut       bool
-	AllowAnonRead  bool
+	StoreName     string
+	Indexed       bool
+	AllowPut      bool
+	AllowAnonRead bool
 }
 
 func (a *Handler) Adapt(h nodes.Handler, options nodes.RouterOptions) nodes.Handler {
@@ -70,7 +71,7 @@ func (a *Handler) isStorePath(nodePath string) bool {
 
 func (a *Handler) checkContextForAnonRead(ctx context.Context) error {
 	if u := ctx.Value(common.PydioContextUserKey); (u == nil || u == common.PydioS3AnonUsername) && !a.AllowAnonRead {
-		return nodes.ErrCannotReadStore(a.StoreName)
+		return errors.WithMessage(errors.BinaryCannotReadStore, a.StoreName)
 	}
 	return nil
 }
@@ -85,50 +86,54 @@ func (a *Handler) ListNodes(ctx context.Context, in *tree.ListNodesRequest, opts
 	return a.Next.ListNodes(ctx, in, opts...)
 }
 
-// ReadNode Node Info & Node Content : send by UUID,
+// ReadNode N Info & N Content : send by UUID,
 func (a *Handler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, opts ...grpc.CallOption) (*tree.ReadNodeResponse, error) {
 	if a.isStorePath(in.Node.Path) {
-		source, er := a.ClientsPool.GetDataSourceInfo(a.StoreName)
+		source, er := nodes.GetSourcesPool(ctx).GetDataSourceInfo(a.StoreName)
 		if er != nil {
 			return nil, er
 		}
 		if e := a.checkContextForAnonRead(ctx); e != nil {
 			return nil, e
 		}
-		s3client := source.Client
-		/*
-			statOpts := minio.StatObjectOptions{}
-			if meta, mOk := context2.MinioMetaFromContext(ctx); mOk {
-				for k, v := range meta {
-					statOpts.Set(k, v)
-				}
-			}
-		*/
-		objectInfo, err := s3client.StatObject(ctx, source.ObjectsBucket, path.Base(in.Node.Path), nil)
-		if err != nil {
-			return nil, err
-		}
-		node := &tree.Node{
-			Path:  a.StoreName + "/" + objectInfo.Key,
-			Size:  objectInfo.Size,
-			MTime: objectInfo.LastModified.Unix(),
-			Etag:  objectInfo.ETag,
-			Type:  tree.NodeType_LEAF,
-			Uuid:  objectInfo.Key,
-			Mode:  0777,
-		}
-		// Special case if DS is encrypted - update node with clear size
-		if a.TransparentGet && source.EncryptionMode != object.EncryptionMode_CLEAR {
-			if rn, e := a.ClientsPool.GetTreeClient().ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: path.Join(source.Name, path.Base(in.Node.Path))}}, opts...); e == nil {
-				node.Size = rn.GetNode().GetSize()
-			} else {
-				log.Logger(ctx).Debug("Could not update clear size for binary store in read node", zap.Error(e))
-			}
-		}
 
-		return &tree.ReadNodeResponse{
-			Node: node,
-		}, nil
+		// Nodes are indexed, use index to stat
+		if a.Indexed {
+
+			ctx = nodes.WithBranchInfo(ctx, "in", nodes.BranchInfo{
+				LoadedSource:  source,
+				IndexedBinary: true,
+				Workspace:     &idm.Workspace{UUID: "ROOT"},
+			})
+			clone := in.Node.Clone()
+			dsKey := path.Base(in.Node.Path)
+			clone.Path = path.Join(source.Name, dsKey)
+			clone.MustSetMeta(common.MetaNamespaceDatasourcePath, dsKey)
+			clone.MustSetMeta(common.MetaNamespaceDatasourceName, source.Name)
+			in.Node = clone
+			resp, err := a.Next.ReadNode(ctx, in, opts...)
+			return resp, err
+
+		} else {
+			s3client := source.Client
+			objectInfo, err := s3client.StatObject(ctx, source.ObjectsBucket, path.Base(in.Node.Path), nil)
+			if err != nil {
+				return nil, err
+			}
+			node := &tree.Node{
+				Path:  a.StoreName + "/" + objectInfo.Key,
+				Size:  objectInfo.Size,
+				MTime: objectInfo.LastModified.Unix(),
+				Etag:  objectInfo.ETag,
+				Type:  tree.NodeType_LEAF,
+				Uuid:  objectInfo.Key,
+				Mode:  0777,
+			}
+
+			return &tree.ReadNodeResponse{
+				Node: node,
+			}, nil
+		}
 
 	}
 	return a.Next.ReadNode(ctx, in, opts...)
@@ -136,7 +141,7 @@ func (a *Handler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, opts .
 
 func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *models.GetRequestData) (io.ReadCloser, error) {
 	if a.isStorePath(node.Path) {
-		source, er := a.ClientsPool.GetDataSourceInfo(a.StoreName)
+		source, er := nodes.GetSourcesPool(ctx).GetDataSourceInfo(a.StoreName)
 		if e := a.checkContextForAnonRead(ctx); e != nil {
 			return nil, e
 		}
@@ -144,9 +149,9 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 			filter := node.Clone()
 			filter.MustSetMeta(common.MetaNamespaceDatasourcePath, path.Base(node.Path))
 			filterBi := nodes.BranchInfo{LoadedSource: source}
-			if a.TransparentGet {
+			if a.Indexed {
 				// Do not set the Binary flag and just replace node info
-				filterBi.TransparentBinary = true
+				filterBi.IndexedBinary = true
 				filter.Path = path.Join(source.Name, path.Base(node.Path))
 			} else {
 				filterBi.Binary = true
@@ -164,14 +169,14 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 
 func (a *Handler) CreateNode(ctx context.Context, in *tree.CreateNodeRequest, opts ...grpc.CallOption) (*tree.CreateNodeResponse, error) {
 	if a.isStorePath(in.Node.Path) {
-		return nil, nodes.ErrCannotWriteStore(a.StoreName)
+		return nil, errors.WithMessage(errors.BinaryCannotWriteStore, a.StoreName)
 	}
 	return a.Next.CreateNode(ctx, in, opts...)
 }
 
 func (a *Handler) UpdateNode(ctx context.Context, in *tree.UpdateNodeRequest, opts ...grpc.CallOption) (*tree.UpdateNodeResponse, error) {
 	if a.isStorePath(in.From.Path) || a.isStorePath(in.To.Path) {
-		return nil, nodes.ErrCannotWriteStore(a.StoreName)
+		return nil, errors.WithMessage(errors.BinaryCannotWriteStore, a.StoreName)
 	}
 	return a.Next.UpdateNode(ctx, in, opts...)
 }
@@ -181,10 +186,10 @@ func (a *Handler) DeleteNode(ctx context.Context, in *tree.DeleteNodeRequest, op
 	var source nodes.LoadedSource
 	if a.isStorePath(in.Node.Path) {
 		if !a.AllowPut {
-			return nil, nodes.ErrCannotWriteStore(a.StoreName)
+			return nil, errors.WithMessage(errors.BinaryCannotWriteStore, a.StoreName)
 		}
 		var er error
-		if source, er = a.ClientsPool.GetDataSourceInfo(a.StoreName); er == nil {
+		if source, er = nodes.GetSourcesPool(ctx).GetDataSourceInfo(a.StoreName); er == nil {
 			ctx = nodes.WithBranchInfo(ctx, "in", nodes.BranchInfo{LoadedSource: source, Binary: true})
 			clone := in.Node.Clone()
 			dsKey = path.Base(in.Node.Path)
@@ -196,7 +201,7 @@ func (a *Handler) DeleteNode(ctx context.Context, in *tree.DeleteNodeRequest, op
 	if dsKey != "" && e == nil {
 		// delete alternate versions if they exists
 		s3client := source.Client
-		log.Logger(ctx).Info("Deleting binary alternate version ", zap.String("v", dsKey))
+		log.Logger(ctx).Debug("Deleting binary alternate version ", zap.String("v", dsKey))
 		if res, e := s3client.ListObjects(ctx, source.ObjectsBucket, dsKey, "", "/"); e == nil {
 			for _, info := range res.Contents {
 				s3client.RemoveObject(ctx, dsKey, info.Key)
@@ -206,12 +211,12 @@ func (a *Handler) DeleteNode(ctx context.Context, in *tree.DeleteNodeRequest, op
 	return r, e
 }
 
-func (a *Handler) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (a *Handler) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	if a.isStorePath(node.Path) {
 		if !a.AllowPut {
-			return 0, nodes.ErrCannotWriteStore(a.StoreName)
+			return models.ObjectInfo{}, errors.WithMessage(errors.BinaryCannotWriteStore, a.StoreName)
 		}
-		source, er := a.ClientsPool.GetDataSourceInfo(a.StoreName)
+		source, er := nodes.GetSourcesPool(ctx).GetDataSourceInfo(a.StoreName)
 		if er == nil {
 			ctx = nodes.WithBranchInfo(ctx, "in", nodes.BranchInfo{LoadedSource: source, Binary: true})
 			clone := node.Clone()
@@ -220,15 +225,15 @@ func (a *Handler) PutObject(ctx context.Context, node *tree.Node, reader io.Read
 			return a.Next.PutObject(ctx, clone, reader, requestData)
 		} else {
 			log.Logger(ctx).Debug("Putting Node Inside Binary Store Cannot find DS Info?", zap.Error(er))
-			return 0, er
+			return models.ObjectInfo{}, er
 		}
 	}
 	return a.Next.PutObject(ctx, node, reader, requestData)
 }
 
-func (a *Handler) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (a *Handler) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 	if a.isStorePath(from.Path) || a.isStorePath(to.Path) {
-		return 0, nodes.ErrCannotWriteStore(a.StoreName)
+		return models.ObjectInfo{}, errors.WithMessage(errors.BinaryCannotWriteStore, a.StoreName)
 	}
 	return a.Next.CopyObject(ctx, from, to, requestData)
 }

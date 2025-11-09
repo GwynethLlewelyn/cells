@@ -1,6 +1,6 @@
 {
   "Jobs.Default.Thumbs": {
-    "other": "Extract image thumbnails and Exif data"
+    "other": "استخراج الصور المصغرة وبيانات Exif"
   },
   "Jobs.Default.ThumbsCache": {
     "other": "Clear thumbnails cache for deleted files"
@@ -22,6 +22,15 @@
   },
   "Jobs.Default.ArchiveJobs": {
     "other": "Automatic archiving of changes service"
+  },
+  "Jobs.Default.CleanUserData": {
+    "other": "Clean or transfer user data on deletion"
+  },
+  "Jobs.Default.CleanOrphanFiles": {
+    "other": "Clean orphan files after 24h"
+  },
+  "Jobs.Default.CleanExpiredACLs": {
+    "other": "Clean expired ACLs after 10 days"
   },
   "Jobs.User.Compress": {
     "other": "Compressing Selection..."
@@ -54,7 +63,7 @@
     "other": "Moving to recycle bin in background..."
   },
   "Jobs.User.ResyncDS": {
-    "other": "Re-indexing datasource {{.DsName}}..."
+    "other": "Sync datasource {{.DsName}} then rehash new files"
   },
   "Jobs.User.Wget": {
     "other": "Downloading file in background..."

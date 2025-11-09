@@ -21,51 +21,72 @@
 package util
 
 import (
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
-	server2 "github.com/pydio/cells/v4/common/server"
-	"github.com/pydio/cells/v4/common/utils/merger"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"encoding/gob"
+	"strings"
+
+	"golang.org/x/exp/maps"
+
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/utils/merger"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
+func init() {
+	gob.Register(&node{})
+}
+
 func CreateNode() registry.Node {
-	meta := server2.InitPeerMeta()
+	pid := runtime.GetPID()
+	hn := runtime.GetHostname()
+	builder := strings.Builder{}
+	builder.WriteString("process ")
+	builder.WriteString(runtime.GetString(runtime.KeyName))
+	builder.WriteString(" ")
+	builder.WriteString(hn)
+	builder.WriteString("/")
+	builder.WriteString(pid)
+
 	i := &pb.Item{
-		Id:       uuid.New(),
-		Name:     "process " + meta[runtime.NodeMetaHostName] + "/" + meta[runtime.NodeMetaPID],
-		Metadata: meta,
+		Id:   uuid.New(),
+		Name: builder.String(),
+		Metadata: map[string]string{
+			runtime.NodeMetaPID:      pid,
+			runtime.NodeMetaHostName: hn,
+		},
 	}
 	n := &pb.Node{}
-	return &node{i: i, d: n}
+	return &node{I: i, D: n}
 }
 
 func ToProtoNode(d registry.Node) *pb.Node {
 	if dd, ok := d.(*node); ok {
-		return dd.d
+		return dd.D
 	}
 	return &pb.Node{}
 }
 
 func ToNode(i *pb.Item, d *pb.Node) registry.Node {
-	return &node{i: i, d: d}
+	return &node{I: i, D: d}
 }
 
 type node struct {
-	i *pb.Item
-	d *pb.Node
+	I *pb.Item
+	D *pb.Node
 }
 
 func (n *node) Hostname() string {
-	return n.d.Hostname
+	return n.D.Hostname
 }
 
 func (n *node) IPs() []string {
-	return n.d.GetIps()
+	return n.D.GetIps()
 }
 
 func (n *node) AdvertiseIP() string {
-	return n.d.GetAdvertiseIp()
+	return n.D.GetAdvertiseIp()
 }
 
 func (n *node) Equals(differ merger.Differ) bool {
@@ -92,15 +113,22 @@ func (n *node) Merge(differ merger.Differ, m map[string]string) (merger.Differ, 
 }
 
 func (n *node) Name() string {
-	return n.i.Name
+	return n.I.Name
 }
 
 func (n *node) ID() string {
-	return n.i.Id
+	return n.I.Id
 }
 
 func (n *node) Metadata() map[string]string {
-	return n.i.Metadata
+	if n.I.Metadata == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(n.I.Metadata)
+}
+
+func (n *node) SetMetadata(meta map[string]string) {
+	n.I.Metadata = meta
 }
 
 func (n *node) As(i interface{}) bool {
@@ -109,4 +137,13 @@ func (n *node) As(i interface{}) bool {
 		return true
 	}
 	return false
+}
+
+func (n *node) Clone() interface{} {
+	clone := &node{}
+
+	clone.I = std.DeepClone(n.I)
+	clone.D = std.DeepClone(n.D)
+
+	return clone
 }

@@ -21,21 +21,23 @@
 package cmd
 
 import (
-	"context"
-	"fmt"
 	"os"
+	"path"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
 )
 
 var (
+	userCreateUUID     string
 	userCreateLogin    string
 	userCreatePassword string
 )
@@ -68,22 +70,12 @@ EXAMPLES
 `,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if userCreateLogin == "" {
-			return fmt.Errorf("Provide at least a user login")
+			return errors.New("Provide at least a user login")
 		}
 
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		/*
-			// Todo : initializing Registry but NOT ClientConn in context has a strange side-effect :
-			// First calls to user service work, but last call to roles service locks.
-			ctx := context.Background()
-			reg, err := registry.OpenRegistry(ctx, runtime.RegistryURL())
-			if err != nil {
-				return err
-			}
-			ctx = servercontext.WithRegistry(ctx, reg)
-		*/
 
 		if userCreatePassword == "" {
 			prompt := promptui.Prompt{Label: "Please provide a password", Mask: '*', Validate: notEmpty}
@@ -94,25 +86,25 @@ EXAMPLES
 			userCreatePassword = pwd
 		}
 
-		// Create user
-		r := service.ResourcePolicyAction_READ
-		w := service.ResourcePolicyAction_WRITE
-		allow := service.ResourcePolicy_allow
-		policies := []*service.ResourcePolicy{
-			{Action: r, Effect: allow, Subject: "profile:standard"},
-			{Action: w, Effect: allow, Subject: "user:" + userCreateLogin},
-			{Action: w, Effect: allow, Subject: "profile:admin"},
+		groupPath, login := path.Split(userCreateLogin)
+		if groupPath == "/" || groupPath == "." {
+			groupPath = ""
 		}
+
+		// Create user
+		policies := permissions.NewResourcePoliciesBuilder().WithStandardUserPolicies().Policies()
 
 		newUser := &idm.User{
-			Login:      userCreateLogin,
+			Uuid:       userCreateUUID,
+			Login:      login,
+			GroupPath:  groupPath,
 			Password:   userCreatePassword,
 			Policies:   policies,
-			Attributes: map[string]string{"profile": common.PydioProfileStandard},
+			Attributes: map[string]string{idm.UserAttrProfile: common.PydioProfileStandard},
 		}
-
-		userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUser))
-		sQ, _ := anypb.New(&idm.UserSingleQuery{Login: userCreateLogin})
+		ctx := cmd.Context()
+		userClient := idmc.UserServiceClient(ctx)
+		sQ, _ := anypb.New(&idm.UserSingleQuery{Login: login})
 		st, e := userClient.SearchUser(ctx, &idm.SearchUserRequest{Query: &service.Query{SubQueries: []*anypb.Any{sQ}}})
 		if e != nil {
 			return e
@@ -126,7 +118,7 @@ EXAMPLES
 			exists = true
 		}
 		if exists {
-			cmd.Println(promptui.IconBad + " User with login " + userCreateLogin + " already exists!")
+			cmd.Println(promptui.IconBad + " User with login " + login + " already exists!")
 			return nil
 		}
 
@@ -137,7 +129,7 @@ EXAMPLES
 		}
 		u := response.GetUser()
 
-		cmd.Println("Successfully inserted user " + userCreateLogin)
+		cmd.Println("Successfully inserted user " + login)
 
 		// Create corresponding role with correct policies
 		newRole := idm.Role{
@@ -147,8 +139,7 @@ EXAMPLES
 			Label:    "User " + u.Login + " role",
 		}
 
-		roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceRole))
-		if _, err := roleClient.CreateRole(context.Background(), &idm.CreateRoleRequest{
+		if _, err := idmc.RoleServiceClient(ctx).CreateRole(ctx, &idm.CreateRoleRequest{
 			Role: &newRole,
 		}); err != nil {
 			cmd.Println(err.Error())
@@ -161,6 +152,7 @@ EXAMPLES
 }
 
 func init() {
+	userCreateCmd.Flags().StringVarP(&userCreateUUID, "uuid", "i", "", "UUID of the new user")
 	userCreateCmd.Flags().StringVarP(&userCreateLogin, "username", "u", "", "Login of the new user")
 	userCreateCmd.Flags().StringVarP(&userCreatePassword, "password", "p", "", "Password of the new user")
 

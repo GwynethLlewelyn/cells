@@ -28,10 +28,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 
-	"github.com/pydio/cells/v4/common/proto/encryption"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/encryption"
 )
 
 // defaultBlockSize minimal size of block files are chunk into
@@ -344,29 +344,29 @@ func (h *EncryptedBlockHeader) GetDataLength() uint32 {
 
 func (h *EncryptedBlockHeader) String() string {
 	sb := strings.Builder{}
-	sb.Write([]byte("\n[Header:\n"))
+	sb.WriteString("\n[Header:\n")
 	if h.Options != nil {
-		sb.Write([]byte("\t[Options:\n"))
+		sb.WriteString("\t[Options:\n")
 		if h.Options.Key != nil {
-			sb.Write([]byte(fmt.Sprintf("\t\t Key  : %s\n", base64.StdEncoding.EncodeToString(h.Options.Key))))
+			sb.WriteString(fmt.Sprintf("\t\t Key  : %s\n", base64.StdEncoding.EncodeToString(h.Options.Key)))
 		}
 
 		if h.Options.UserId != "" {
-			sb.Write([]byte(fmt.Sprintf("\t\t Owner: %s\n", h.Options.UserId)))
+			sb.WriteString(fmt.Sprintf("\t\t Owner: %s\n", h.Options.UserId))
 		}
 
 		if h.Options.PartId > -1 {
-			sb.Write([]byte(fmt.Sprintf("\t\t Part : %d\n", h.Options.PartId)))
+			sb.WriteString(fmt.Sprintf("\t\t Part : %d\n", h.Options.PartId))
 		}
 
 		if h.Options.Position > -1 {
-			sb.Write([]byte(fmt.Sprintf("\t\t Pos  : %d\n", h.Options.Position)))
+			sb.WriteString(fmt.Sprintf("\t\t Pos  : %d\n", h.Options.Position))
 		}
-		sb.Write([]byte("\t]\n"))
+		sb.WriteString("\t]\n")
 	}
-	sb.Write([]byte(fmt.Sprintf("\tNonce : %s\n", base64.StdEncoding.EncodeToString(h.Nonce))))
-	sb.Write([]byte(fmt.Sprintf("\tLength: %d bytes\n", h.dataLength&dataLengthMask)))
-	sb.Write([]byte("]"))
+	sb.WriteString(fmt.Sprintf("\tNonce : %s\n", base64.StdEncoding.EncodeToString(h.Nonce)))
+	sb.WriteString(fmt.Sprintf("\tLength: %d bytes\n", h.dataLength&dataLengthMask))
+	sb.WriteString("]")
 	return sb.String()
 }
 
@@ -414,9 +414,9 @@ func (b *EncryptedBlock) Write(writer io.Writer) (int, error) {
 	}
 	totalWritten += n
 
-	dataLine := fmt.Sprintf("Data hash 	   : %s\n", base64.StdEncoding.EncodeToString(Md5(b.Payload)))
-	countLine := fmt.Sprintf("Total written : %d bytes\n", totalWritten)
-	log.Printf("\n\n%s\n%s%s\n\n", b.Header.String(), dataLine, countLine)
+	//dataLine := fmt.Sprintf("Data hash 	   : %s\n", base64.StdEncoding.EncodeToString(Md5(b.Payload)))
+	//countLine := fmt.Sprintf("Total written : %d bytes\n", totalWritten)
+	//log.Printf("\n\n%s\n%s%s\n\n", b.Header.String(), dataLine, countLine)
 
 	return totalWritten, err
 }
@@ -439,9 +439,9 @@ func (b *EncryptedBlock) Read(reader io.Reader) (int, error) {
 
 	totalRead += n
 
-	dataLine := fmt.Sprintf("Data hash 	   : %s\n", base64.StdEncoding.EncodeToString(Md5(b.Payload)))
-	countLine := fmt.Sprintf("Total read    : %d bytes\n", totalRead)
-	log.Printf("%s%s%s", b.Header.String(), dataLine, countLine)
+	//dataLine := fmt.Sprintf("Data hash 	   : %s\n", base64.StdEncoding.EncodeToString(Md5(b.Payload)))
+	///countLine := fmt.Sprintf("Total read    : %d bytes\n", totalRead)
+	//log.Printf("%s%s%s", b.Header.String(), dataLine, countLine)
 
 	return totalRead, nil
 }
@@ -674,6 +674,17 @@ func (m *AESGCMEncryptionMaterials) decryptRead(b []byte) (int, error) {
 			m.bufferedProcessed.Write(data)
 		}
 	}
+}
+
+// ExtractedMeta implements common.ReaderMetaExtractor interface for underlying readers
+func (m *AESGCMEncryptionMaterials) ExtractedMeta() (map[string]string, bool) {
+	if m.stream == nil {
+		return nil, false
+	}
+	if ex, ok := m.stream.(common.ReaderMetaExtractor); ok {
+		return ex.ExtractedMeta()
+	}
+	return nil, false
 }
 
 func readMax(reader io.Reader, buff []byte) (int, error) {

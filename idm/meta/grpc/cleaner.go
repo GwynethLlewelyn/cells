@@ -24,40 +24,53 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/idm/meta"
-	"github.com/pydio/cells/v4/idm/meta/namespace"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	"github.com/pydio/cells/v5/common/proto/idm"
+	pbservice "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/idm/meta"
 )
 
 // Cleaner cleans bookmarks on user deletion
-type Cleaner struct {
-	Dao meta.DAO
-}
+type Cleaner struct{}
 
-func NewCleaner(dao dao.DAO) *Cleaner {
-	c := &Cleaner{}
-	c.Dao = dao.(meta.DAO)
-	return c
-}
-
-func (c *Cleaner) Handle(ctx context.Context, msg *idm.ChangeEvent) error {
+func HandleClean(ctx context.Context, msg *idm.ChangeEvent, srvName string) error {
 
 	if msg.Type != idm.ChangeEventType_DELETE || msg.User == nil || msg.User.IsGroup {
 		return nil
 	}
+
+	dao, err := manager.Resolve[meta.DAO](ctx)
+	if err != nil {
+		return err
+	}
+
 	go func() {
+		searchUserMetaAny, err := anypb.New(&idm.SearchUserMetaRequest{
+			Namespace: meta.ReservedNamespaceBookmark,
+		})
+		if err != nil {
+			return
+		}
+
+		query := &pbservice.Query{
+			SubQueries: []*anypb.Any{
+				searchUserMetaAny,
+			},
+		}
+
 		// Remove user bookmarks
-		metas, e := c.Dao.Search(nil, nil, namespace.ReservedNamespaceBookmark, msg.User.Uuid, nil)
+		metas, e := dao.Search(ctx, query)
 		if e != nil || len(metas) == 0 {
 			return
 		}
-		ctx = servicecontext.WithServiceName(ctx, Name)
+		ctx = runtime.WithServiceName(ctx, srvName)
 		log.Logger(ctx).Info(fmt.Sprintf("Cleaning %d bookmarks for user %s", len(metas), msg.User.Login))
 		for _, m := range metas {
-			c.Dao.Del(m)
+			dao.Del(ctx, m)
 		}
 	}()
 

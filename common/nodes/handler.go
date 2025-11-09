@@ -4,14 +4,21 @@ import (
 	"context"
 	"io"
 
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 type FilterFunc func(ctx context.Context, inputNode *tree.Node, identifier string) (context.Context, *tree.Node, error)
+
+// IdentityFilterFunc is an identity implementation of FilterFunc
+func IdentityFilterFunc(ctx context.Context, inputNode *tree.Node, identifier string) (context.Context, *tree.Node, error) {
+	return ctx, inputNode, nil
+}
+
 type CallbackFunc func(inputFilter FilterFunc, outputFilter FilterFunc) error
 
 type WalkFunc func(ctx context.Context, node *tree.Node, err error) error
+
 type WalkFilterFunc func(ctx context.Context, node *tree.Node) bool
 
 // Handler is a composed interface providing abilities to CRUD nodes to datasources
@@ -20,8 +27,8 @@ type Handler interface {
 	tree.NodeReceiverClient
 	tree.NodeChangesStreamerClient
 	GetObject(ctx context.Context, node *tree.Node, requestData *models.GetRequestData) (io.ReadCloser, error)
-	PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error)
-	CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error)
+	PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error)
+	CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error)
 
 	MultipartCreate(ctx context.Context, target *tree.Node, requestData *models.MultipartRequestData) (string, error)
 	MultipartPutObjectPart(ctx context.Context, target *tree.Node, uploadID string, partNumberMarker int, reader io.Reader, requestData *models.PutRequestData) (models.MultipartObjectPart, error)
@@ -34,6 +41,4 @@ type Handler interface {
 	ExecuteWrapped(inputFilter FilterFunc, outputFilter FilterFunc, provider CallbackFunc) error
 	WrappedCanApply(srcCtx context.Context, targetCtx context.Context, operation *tree.NodeChangeEvent) error
 	ListNodesWithCallback(ctx context.Context, request *tree.ListNodesRequest, callback WalkFunc, ignoreCbError bool, filters ...WalkFilterFunc) error
-
-	SetClientsPool(p SourcesPool)
 }

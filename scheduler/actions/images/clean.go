@@ -26,13 +26,12 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -40,7 +39,6 @@ var (
 )
 
 type CleanThumbsTask struct {
-	common.RuntimeHolder
 }
 
 // GetDescription returns action description
@@ -57,7 +55,7 @@ func (c *CleanThumbsTask) GetDescription(lang ...string) actions.ActionDescripti
 }
 
 // GetParametersForm returns a UX form
-func (c *CleanThumbsTask) GetParametersForm() *forms.Form {
+func (c *CleanThumbsTask) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 
@@ -67,41 +65,42 @@ func (c *CleanThumbsTask) GetName() string {
 }
 
 // Init passes parameters to the action.
-func (c *CleanThumbsTask) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CleanThumbsTask) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	return nil
 }
 
 // Run the actual action code
-func (c *CleanThumbsTask) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *CleanThumbsTask) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil
 	}
 
-	thumbsClient, thumbsBucket, e := nodes.GetGenericStoreClient(ctx, common.PydioThumbstoreNamespace)
-	if e != nil {
-		log.Logger(ctx).Debug("Cannot get ThumbStoreClient", zap.Error(e), zap.Any("context", ctx))
+	r := getRouter(ctx)
+	dsi, e := r.GetClientsPool(ctx).GetDataSourceInfo(common.PydioThumbstoreNamespace)
+	if e != nil || dsi.Client == nil {
+		log.TasksLogger(ctx).Error("Cannot get ThumbStoreClient", zap.Error(e))
 		return input.WithError(e), e
 	}
 	nodeUuid := input.Nodes[0].Uuid
 	// List all thumbs starting with node Uuid
-	listRes, err := thumbsClient.ListObjects(ctx, thumbsBucket, nodeUuid+"-", "", "")
+	listRes, err := dsi.Client.ListObjects(ctx, dsi.ObjectsBucket, nodeUuid+"-", "", "")
 	if err != nil {
 		log.Logger(ctx).Debug("Cannot get ThumbStoreClient", zap.Error(err), zap.Any("context", ctx))
 		return input.WithError(err), err
 	}
 	for _, oi := range listRes.Contents {
-		tCtx, tNode, e := getThumbLocation(c.GetRuntimeContext(), ctx, oi.Key)
+		tCtx, tNode, e := getThumbLocation(r, ctx, oi.Key)
 		if e != nil {
 			log.Logger(ctx).Debug("Cannot get thumbnail location", zap.Error(e))
 			return input.WithError(e), e
 		}
-		if _, err := getRouter(c.GetRuntimeContext()).DeleteNode(tCtx, &tree.DeleteNodeRequest{Node: tNode}); err != nil {
+		if _, err := r.DeleteNode(tCtx, &tree.DeleteNodeRequest{Node: tNode}); err != nil {
 			log.Logger(ctx).Debug("Cannot delete thumbnail", zap.Error(err))
 			return input.WithError(err), err
 		}
 		log.TasksLogger(ctx).Info(fmt.Sprintf("Successfully removed object %s", oi.Key))
 	}
-	output := jobs.ActionMessage{}
+	output := &jobs.ActionMessage{}
 	return output, nil
 }

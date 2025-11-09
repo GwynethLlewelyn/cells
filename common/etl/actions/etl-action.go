@@ -22,16 +22,14 @@ package actions
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/etl"
-	"github.com/pydio/cells/v4/common/etl/stores"
-	"github.com/pydio/cells/v4/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/etl"
+	"github.com/pydio/cells/v5/common/etl/stores"
+	"github.com/pydio/cells/v5/common/proto/jobs"
 )
 
 type etlAction struct {
-	common.RuntimeHolder
 	params    map[string]string
 	leftType  string
 	rightType string
@@ -50,7 +48,7 @@ func (c *etlAction) ParseStores(params map[string]string) error {
 	} else if t, o2 := params["type"]; o2 {
 		c.leftType = t
 	} else {
-		return fmt.Errorf("task sync user must take a left or type parameter")
+		return errors.New("task sync user must take a left or type parameter")
 	}
 	if r, o := params["right"]; o {
 		c.rightType = r
@@ -62,8 +60,8 @@ func (c *etlAction) ParseStores(params map[string]string) error {
 	return nil
 }
 
-func (c *etlAction) initMerger(ctx context.Context, input jobs.ActionMessage) (*etl.Merger, error) {
-	options := stores.CreateOptions(c.GetRuntimeContext(), ctx, c.params, input)
+func (c *etlAction) initMerger(ctx context.Context, input *jobs.ActionMessage) (*etl.Merger, error) {
+	options := stores.CreateOptions(ctx, ctx, c.params, input)
 	left, err := stores.LoadReadableStore(c.leftType, options)
 	if err != nil {
 		return nil, err

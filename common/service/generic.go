@@ -24,22 +24,22 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pydio/cells/v4/common/server"
-	"github.com/pydio/cells/v4/common/server/generic"
+	"github.com/pydio/cells/v5/common/server"
+	"github.com/pydio/cells/v5/common/server/generic"
 )
 
 // WithGeneric adds a http micro service handler to the current service
 func WithGeneric(f func(context.Context, *generic.Server) error) ServiceOption {
 	return func(o *ServiceOptions) {
 		o.serverType = server.TypeGeneric
-		o.serverStart = func() error {
+		o.serverStart = func(c context.Context) error {
 			var srvg *generic.Server
 
 			if !o.Server.As(&srvg) {
 				return fmt.Errorf("server %s is not a generic server", o.Name)
 			}
 
-			return f(o.Context, srvg)
+			return f(c, srvg)
 		}
 	}
 }
@@ -47,12 +47,12 @@ func WithGeneric(f func(context.Context, *generic.Server) error) ServiceOption {
 // WithGenericStop adds a http micro service handler to the current service
 func WithGenericStop(f func(context.Context, *generic.Server) error) ServiceOption {
 	return func(o *ServiceOptions) {
-		o.serverStop = func() error {
+		o.serverStop = func(c context.Context) error {
 			var srvg *generic.Server
 
 			o.Server.As(&srvg)
 
-			return f(o.Context, srvg)
+			return f(c, srvg)
 		}
 	}
 }

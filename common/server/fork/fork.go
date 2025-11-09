@@ -24,13 +24,17 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/registry/util"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/server"
-	"github.com/pydio/cells/v4/common/utils/fork"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"golang.org/x/exp/maps"
+
+	"github.com/pydio/cells/v5/common/config/routing"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/server"
+	"github.com/pydio/cells/v5/common/utils/fork"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 func init() {
@@ -56,7 +60,7 @@ type Server struct {
 }
 
 func NewServer(ctx context.Context, forkStart string) server.Server {
-	meta := server.InitPeerMeta()
+	meta := make(map[string]string)
 	meta[runtime.NodeMetaForkStartTag] = "s:^" + forkStart + "$"
 	return server.NewServer(ctx, &Server{
 		id:   "fork-" + uuid.New(),
@@ -70,17 +74,42 @@ func NewServer(ctx context.Context, forkStart string) server.Server {
 func (s *Server) RawServe(*server.ServeOptions) (ii []registry.Item, e error) {
 
 	var opts []fork.Option
-	if config.Get("services", s.s.name, "debugFork").Bool() {
-		opts = append(opts, fork.WithDebug())
-	}
-	if len(config.DefaultBindOverrideToFlags()) > 0 {
-		opts = append(opts, fork.WithCustomFlags(config.DefaultBindOverrideToFlags()...))
+	/*
+		if config.Get(ctx, "services", s.s.name, "debugFork").Bool() {
+			opts = append(opts, fork.WithDebug())
+		}
+	*/
+	if len(routing.DefaultBindOverrideToFlags()) > 0 {
+		opts = append(opts, fork.WithCustomFlags(routing.DefaultBindOverrideToFlags()...))
 	}
 	opts = append(opts, fork.WithRetries(3))
 	s.process = fork.NewProcess(s.ctx, []string{s.s.name}, opts...)
 
 	go func() {
 		e = s.process.StartAndWait()
+
+		if pid, ok := s.process.GetPID(); ok {
+			defer func() {
+				var reg registry.Registry
+				propagator.Get(s.ctx, registry.ContextKey, &reg)
+
+				processes, _ := reg.List(
+					registry.WithType(pb.ItemType_SERVER),
+					registry.WithFilter(func(item registry.Item) bool {
+						if item.Metadata()[runtime.NodeMetaPID] == pid {
+							return true
+						}
+						return false
+					}),
+				)
+
+				if len(processes) == 0 {
+					return
+				}
+
+				reg.Deregister(processes[0])
+			}()
+		}
 	}()
 	ii = append(ii, util.CreateAddress(s.id+"-instance", nil))
 	return
@@ -109,6 +138,10 @@ func (s *Server) Metadata() map[string]string {
 	return s.meta // map[string]string{}
 }
 
+func (s *Server) SetMetadata(meta map[string]string) {
+	s.meta = meta
+}
+
 func (s *Server) Endpoints() []string {
 	return []string{}
 }
@@ -122,6 +155,15 @@ func (s *Server) As(i interface{}) bool {
 	*v = s.s
 
 	return true
+}
+
+func (s *Server) Clone() interface{} {
+	clone := &Server{}
+	clone.id = s.id
+	clone.name = s.name
+	clone.meta = maps.Clone(s.meta)
+
+	return clone
 }
 
 type ForkServer struct {

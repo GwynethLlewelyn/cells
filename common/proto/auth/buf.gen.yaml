@@ -1,10 +1,10 @@
 version: v1
+managed: 
+  enabled: true
 plugins:
   - name: go
+    opt: module=github.com/pydio/cells/v5/common/proto/auth
     out: .
   - name: go-grpc
-    out: .
-  - name: go-enhanced-grpc
-    out: .
-  - name: govalidators
+    opt: module=github.com/pydio/cells/v5/common/proto/auth
     out: .

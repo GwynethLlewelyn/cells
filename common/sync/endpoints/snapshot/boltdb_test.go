@@ -29,35 +29,39 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/endpoints/memory"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/sync/endpoints/memory"
-	"github.com/pydio/cells/v4/common/sync/model"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func basicDiff(l, r model.PathSyncSource) error {
-	left, right := make(map[string]*tree.Node), make(map[string]*tree.Node)
+	left, right := make(map[string]tree.N), make(map[string]tree.N)
 	var leftPaths, rightPaths []string
-	l.Walk(func(path string, node *tree.Node, err error) {
+	ctx := context.Background()
+	l.Walk(ctx, func(path string, node tree.N, err error) error {
 		left[path] = node
 		leftPaths = append(leftPaths, path)
+		return nil
 	}, "/", true)
-	r.Walk(func(path string, node *tree.Node, err error) {
+	r.Walk(ctx, func(path string, node tree.N, err error) error {
 		right[path] = node
 		rightPaths = append(rightPaths, path)
+		return nil
 	}, "/", true)
 	if len(right) != len(left) {
-		return fmt.Errorf("lengths differ")
+		return errors.New("lengths differ")
 	}
 	sort.Strings(leftPaths)
 	for i, p := range leftPaths {
 		node := left[p]
 		mirror := right[p]
-		if mirror.Path != node.Path || mirror.Type != node.Type {
-			return fmt.Errorf("nodes differ for %s", node.Path)
+		if mirror.GetPath() != node.GetPath() || mirror.GetType() != node.GetType() {
+			return fmt.Errorf("nodes differ for %s", node.GetPath())
 		}
 		if leftPaths[i] != rightPaths[i] {
 			return fmt.Errorf("paths differ for %s", leftPaths[i])
@@ -70,28 +74,31 @@ func TestSnapshot(t *testing.T) {
 
 	source := memory.NewMemDB()
 	ctx := context.Background()
-	source.Nodes = []*tree.Node{
-		{Path: "a", Type: tree.NodeType_COLLECTION},
-		{Path: "a/a1", Type: tree.NodeType_COLLECTION},
-		{Path: "a/a1/a11", Type: tree.NodeType_LEAF},
-		{Path: "a/a1/a12", Type: tree.NodeType_LEAF},
-		{Path: "b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
-		{Path: "b/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf", Type: tree.NodeType_LEAF},
-		{Path: "c", Type: tree.NodeType_COLLECTION},
-		{Path: "d", Type: tree.NodeType_COLLECTION},
+	nn := []tree.N{
+		&tree.Node{Path: "a", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "a/a1", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "a/a1/a11", Type: tree.NodeType_LEAF},
+		&tree.Node{Path: "a/a1/a12", Type: tree.NodeType_LEAF},
+		&tree.Node{Path: "b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b/b/b/b/b/b", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "b/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf", Type: tree.NodeType_LEAF},
+		&tree.Node{Path: "c", Type: tree.NodeType_COLLECTION},
+		&tree.Node{Path: "d", Type: tree.NodeType_COLLECTION},
+	}
+	for _, n := range nn {
+		_ = source.CreateNode(ctx, n, false)
 	}
 	var sorted []string
 	for i := 0; i < 1000; i++ {
@@ -99,15 +106,16 @@ func TestSnapshot(t *testing.T) {
 	}
 	sort.Strings(sorted)
 	for _, p := range sorted {
-		source.Nodes = append(source.Nodes, &tree.Node{Path: p, Type: tree.NodeType_LEAF})
+		_ = source.CreateNode(ctx, &tree.Node{Path: p, Type: tree.NodeType_LEAF}, false)
+		//source.Nodes = append(source.Nodes, &tree.Node{Path: p, Type: tree.NodeType_LEAF})
 	}
 
 	Convey("CaptureSnapshotFlat", t, func() {
 		taken := time.Now()
 		testId := uuid.New()
 		folderPath := path.Join(os.TempDir(), "test-snap-tree-"+testId)
-		os.MkdirAll(folderPath, 0755)
-		snapshot, e := NewBoltSnapshot(folderPath, "snapshot")
+		_ = os.MkdirAll(folderPath, 0755)
+		snapshot, e := NewBoltSnapshot(context.Background(), folderPath, "snapshot")
 		So(e, ShouldBeNil)
 		defer func() {
 			snapshot.Close(true)
@@ -119,13 +127,13 @@ func TestSnapshot(t *testing.T) {
 
 		n, e := snapshot.LoadNode(ctx, "a/a1/a12")
 		So(e, ShouldBeNil)
-		So(n.Path, ShouldEqual, "a/a1/a12")
+		So(n.GetPath(), ShouldEqual, "a/a1/a12")
 		fmt.Println("Flat Load took", time.Now().Sub(taken))
 		taken = time.Now()
 
 		n, e = snapshot.LoadNode(ctx, "b/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
 		So(e, ShouldBeNil)
-		So(n.Path, ShouldEqual, "b/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
+		So(n.GetPath(), ShouldEqual, "b/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
 		fmt.Println("Tree Load took", time.Now().Sub(taken))
 		taken = time.Now()
 
@@ -134,45 +142,48 @@ func TestSnapshot(t *testing.T) {
 		fmt.Println("Flat Walk took", time.Now().Sub(taken))
 		taken = time.Now()
 
-		source.CreateNode(ctx, &tree.Node{Path: "c/new", Type: tree.NodeType_LEAF}, true)
-		snapshot.CreateNode(ctx, &tree.Node{Path: "c/new", Type: tree.NodeType_LEAF}, true)
-		<-time.After(500 * time.Millisecond)
-		e = basicDiff(source, snapshot)
+		So(source.CreateNode(ctx, &tree.Node{Path: "c/new", Type: tree.NodeType_LEAF}, true), ShouldBeNil)
+		So(snapshot.CreateNode(ctx, &tree.Node{Path: "c/new", Type: tree.NodeType_LEAF}, true), ShouldBeNil)
+		e = std.Retry(context.Background(), func() error {
+			return basicDiff(source, snapshot)
+		}, 200*time.Millisecond, 5*time.Second)
 		So(e, ShouldBeNil)
 
-		source.DeleteNode(ctx, "a/a1")
-		snapshot.DeleteNode(ctx, "a/a1")
+		So(source.DeleteNode(ctx, "a/a1"), ShouldBeNil)
+		So(snapshot.DeleteNode(ctx, "a/a1"), ShouldBeNil)
 		e = basicDiff(source, snapshot)
 		So(e, ShouldBeNil)
 		t, e0 := snapshot.LoadNode(ctx, "a/a1")
 		So(t, ShouldBeNil)
 		So(e0, ShouldNotBeNil)
-		So(errors.FromError(e0).Code, ShouldEqual, 404)
+		So(errors.Is(e0, errors.StatusNotFound), ShouldBeTrue)
 
-		snapshot.MoveNode(ctx, "b", "b-renamed")
+		So(snapshot.MoveNode(ctx, "b", "b-renamed"), ShouldBeNil)
 		test, e := snapshot.LoadNode(ctx, "b/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
 		So(e, ShouldNotBeNil)
 		So(test, ShouldBeNil)
 		test2, e2 := snapshot.LoadNode(ctx, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
 		So(e2, ShouldBeNil)
 		So(test2, ShouldNotBeNil)
-		So(test2.Path, ShouldEqual, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
+		So(test2.GetPath(), ShouldEqual, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
 
-		source.MoveNode(ctx, "b", "b-renamed")
-		source.DeleteNode(ctx, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
-		snapshot.DeleteNode(ctx, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf")
+		So(source.MoveNode(ctx, "b", "b-renamed"), ShouldBeNil)
+		So(source.DeleteNode(ctx, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf"), ShouldBeNil)
+		So(snapshot.DeleteNode(ctx, "b-renamed/b/b/b/b/b/b/b/b/b/b/b/b/b/leaf"), ShouldBeNil)
 		e = basicDiff(source, snapshot)
 		So(e, ShouldBeNil)
 
-		snapshot.MoveNode(ctx, "d/sub-10", "d/sub-toto")
+		So(snapshot.MoveNode(ctx, "d/sub-10", "d/sub-toto"), ShouldBeNil)
 		_, er := snapshot.LoadNode(ctx, "d/sub-10")
 		So(er, ShouldNotBeNil)
 		_, er = snapshot.LoadNode(ctx, "d/sub-toto")
 		So(er, ShouldBeNil)
 
-		snapshot.CreateNode(ctx, &tree.Node{Path: "noparent/file"}, true)
-		<-time.After(500 * time.Millisecond)
-		_, er = snapshot.LoadNode(ctx, "noparent")
+		So(snapshot.CreateNode(ctx, &tree.Node{Path: "noparent/file"}, true), ShouldBeNil)
+		er = std.Retry(context.Background(), func() error {
+			_, er1 := snapshot.LoadNode(ctx, "noparent")
+			return er1
+		}, 200*time.Millisecond, 5*time.Second)
 		So(er, ShouldBeNil)
 	})
 

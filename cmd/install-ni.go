@@ -24,32 +24,32 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v2"
+	"google.golang.org/protobuf/proto"
+	yaml "gopkg.in/yaml.v2"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/discovery/install/lib"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/install"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/discovery/install/lib"
 )
 
 type NiInstallConfig struct {
 	install.InstallConfig `yaml:",inline"`
 	ProxyConfigs          []*install.ProxyConfig `json:"proxyConfigs" yaml:"proxyconfigs"`
-	CustomConfigs         map[string]interface{} `json:"customConfigs" yaml:"customconfigs"`
 }
 
-func nonInteractiveInstall(cmd *cobra.Command, args []string) (*install.InstallConfig, error) {
+func nonInteractiveInstall(ctx context.Context) (*install.InstallConfig, error) {
 
 	if niYamlFile != "" || niJsonFile != "" {
-		return installFromConf()
+		return installFromConf(ctx)
 	}
 
 	pconf, err := proxyConfigFromArgs()
@@ -57,7 +57,7 @@ func nonInteractiveInstall(cmd *cobra.Command, args []string) (*install.InstallC
 		return nil, err
 	}
 
-	err = applyProxySites([]*install.ProxyConfig{pconf})
+	err = applyProxySites(ctx, []*install.ProxyConfig{pconf})
 	if err != nil {
 		return nil, err
 	}
@@ -74,14 +74,15 @@ func proxyConfigFromArgs() (*install.ProxyConfig, error) {
 	}
 
 	if niBindUrl == "default" {
-		def := *config.DefaultBindingSite
-		proxyConfig = &def
+
+		proxyConfig = proto.Clone(routing.DefaultBindingSite).(*install.ProxyConfig)
+
 	} else if p := strings.Split(niBindUrl, ":"); len(p) != 2 {
 		return nil, fmt.Errorf("Bind URL %s is not valid. Please correct to use an [IP|DOMAIN]:[PORT] string", niBindUrl)
 	} else {
 		if p[0] == "" {
 			// Only port is set - use DefaultBindSite host
-			pp := strings.Split(config.DefaultBindingSite.Binds[0], ":")
+			pp := strings.Split(routing.DefaultBindingSite.Binds[0], ":")
 			niBindUrl = pp[0] + ":" + p[1]
 		}
 		proxyConfig.Binds = []string{niBindUrl}
@@ -103,7 +104,7 @@ func proxyConfigFromArgs() (*install.ProxyConfig, error) {
 	} else if niLeEmailContact != "" {
 
 		if !niLeAcceptEula {
-			return nil, fmt.Errorf("you must accept Let's Encrypt EULA by setting the corresponding flag in order to use this mode")
+			return nil, errors.New("you must accept Let's Encrypt EULA by setting the corresponding flag in order to use this mode")
 		}
 
 		tlsConf := &install.ProxyConfig_LetsEncrypt{
@@ -134,7 +135,7 @@ func proxyConfigFromArgs() (*install.ProxyConfig, error) {
 	return proxyConfig, nil
 }
 
-func installFromConf() (*install.InstallConfig, error) {
+func installFromConf(ctx context.Context) (*install.InstallConfig, error) {
 
 	fmt.Printf("\033[1m## Performing Installation\033[0m \n")
 
@@ -154,7 +155,7 @@ func installFromConf() (*install.InstallConfig, error) {
 		}
 	}
 	if installConf.ProxyConfig == nil {
-		installConf.ProxyConfig = config.DefaultBindingSite
+		installConf.ProxyConfig = routing.DefaultBindingSite
 		updateMultiple = true
 	}
 
@@ -162,7 +163,7 @@ func installFromConf() (*install.InstallConfig, error) {
 	if updateMultiple {
 		installConf.ProxyConfigs = append(installConf.ProxyConfigs, installConf.ProxyConfig)
 	}
-	err = applyProxySites(installConf.ProxyConfigs)
+	err = applyProxySites(ctx, installConf.ProxyConfigs)
 	if err != nil {
 		return nil, fmt.Errorf("could not preconfigure proxy: %s", err.Error())
 	}
@@ -170,13 +171,23 @@ func installFromConf() (*install.InstallConfig, error) {
 	// Preconfiguring any custom value passed in Json/Yaml
 	if installConf.CustomConfigs != nil {
 		for k, v := range installConf.CustomConfigs {
-			fmt.Println(".... Setting custom configuration key " + k)
+			var val interface{}
+			if strings.HasSuffix(k, "#json") {
+				k = strings.TrimSuffix(k, "#json")
+				if er := json.Unmarshal([]byte(v), &val); er != nil {
+					return nil, fmt.Errorf("could not unmarshal custom config %s: %s", k, er.Error())
+				}
+				fmt.Println(".... Setting custom configuration key " + k + " (JSON format)")
+			} else {
+				val = v
+				fmt.Println(".... Setting custom configuration key " + k)
+			}
 			cPath := strings.Split(k, "/")
-			if e := config.Set(v, cPath...); e != nil {
-				return nil, fmt.Errorf("could not set value for config key " + k)
+			if e := config.Set(ctx, val, cPath...); e != nil {
+				return nil, errors.New("could not set value for config key " + k)
 			}
 		}
-		if e := config.Save(common.PydioSystemUsername, "Setting custom configs from installation file"); e != nil {
+		if e := config.Save(ctx, common.PydioSystemUsername, "Setting custom configs from installation file"); e != nil {
 			return nil, e
 		}
 	}
@@ -203,19 +214,26 @@ func installFromConf() (*install.InstallConfig, error) {
 
 	// Check if pre-configured DB is up and running
 	nbRetry := 20
-	for i := 0; i < nbRetry; i++ {
-		if res, _ := lib.PerformCheck(context.Background(), "DB", iConf); res.Success {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for attempt := 1; attempt <= nbRetry; attempt++ {
+		if res, _ := lib.PerformCheck(ctx, "DB", iConf); res.Success {
 			break
 		}
-		if i == nbRetry-1 {
+		if attempt == nbRetry {
 			fmt.Println("[Error] Cannot connect to database, you should double check your server and your connection configuration.")
-			return nil, fmt.Errorf("No DB. Aborting...")
+			return nil, errors.New("No DB. Aborting...")
 		}
 		fmt.Println("... Cannot connect to database, wait before retry")
-		<-time.After(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			fmt.Println("[Error] Retries interrupted by user, aborting...")
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
 	}
 
-	err = lib.Install(context.Background(), iConf, lib.InstallAll, func(event *lib.InstallProgressEvent) {
+	err = lib.Install(ctx, iConf, lib.InstallAll, func(event *lib.InstallProgressEvent) {
 		fmt.Println(event.Message)
 	})
 	if err != nil {
@@ -232,7 +250,7 @@ func unmarshallConf() (*NiInstallConfig, error) {
 
 	if niYamlFile != "" {
 		path = niYamlFile
-		file, err := ioutil.ReadFile(niYamlFile)
+		file, err := os.ReadFile(niYamlFile)
 		if err != nil {
 			return nil, fmt.Errorf("could not read YAML file at %s: %s", niYamlFile, err.Error())
 		}
@@ -251,7 +269,7 @@ func unmarshallConf() (*NiInstallConfig, error) {
 
 	if niJsonFile != "" {
 		path = niJsonFile
-		file, err := ioutil.ReadFile(niJsonFile)
+		file, err := os.ReadFile(niJsonFile)
 		if err != nil {
 			return nil, fmt.Errorf("could not read JSON file at %s: %s", niJsonFile, err.Error())
 		}
@@ -262,7 +280,7 @@ func unmarshallConf() (*NiInstallConfig, error) {
 	}
 
 	if confFromFile.ProxyConfig != nil && len(confFromFile.ProxyConfigs) > 0 {
-		return nil, fmt.Errorf("Use one of proxyConfig or proxyConfigs keys, but not both")
+		return nil, errors.New("Use one of proxyConfig or proxyConfigs keys, but not both")
 	}
 
 	if confFromFile.ProxyConfig != nil {
@@ -273,10 +291,10 @@ func unmarshallConf() (*NiInstallConfig, error) {
 
 	if confFromFile.CustomConfigs != nil {
 		if title, o := confFromFile.CustomConfigs["frontend/plugin/core.pydio/APPLICATION_TITLE"]; o {
-			confFromFile.FrontendApplicationTitle = title.(string)
+			confFromFile.FrontendApplicationTitle = title
 		}
 		if lang, o := confFromFile.CustomConfigs["frontend/plugin/core.pydio/DEFAULT_LANGUAGE"]; o {
-			confFromFile.FrontendDefaultLanguage = lang.(string)
+			confFromFile.FrontendDefaultLanguage = lang
 		}
 	}
 
@@ -285,11 +303,11 @@ func unmarshallConf() (*NiInstallConfig, error) {
 	return confFromFile, nil
 }
 
-func applyProxySites(sites []*install.ProxyConfig) error {
+func applyProxySites(ctx context.Context, sites []*install.ProxyConfig) error {
 
 	// Save configs
-	config.Set(sites, "defaults", "sites")
-	err := config.Save("cli", "Saving sites configs")
+	config.Set(ctx, sites, "defaults", "sites")
+	err := config.Save(ctx, "cli", "Saving sites configs")
 	if err != nil {
 		return err
 	}

@@ -24,35 +24,70 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/ory/ladon"
+	"github.com/ory/ladon/manager/memory"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/idm/policy"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/idm/policy"
+	"github.com/pydio/cells/v5/idm/policy/converter"
 )
 
-var (
-	groupsCache      []*idm.PolicyGroup
-	groupsCacheValid bool
-)
+var groupsCacheConfig = cache.Config{
+	Prefix:      "pydio.grpc.policy/groups",
+	Eviction:    "72h",
+	CleanWindow: "72h",
+}
 
 type Handler struct {
 	idm.UnimplementedPolicyEngineServiceServer
-	dao policy.DAO
 }
 
-func NewHandler(ctx context.Context, dao policy.DAO) idm.NamedPolicyEngineServiceServer {
-	return &Handler{dao: dao}
-}
-
-func (h *Handler) Name() string {
-	return ServiceName
+func NewHandler() idm.PolicyEngineServiceServer {
+	return &Handler{}
 }
 
 func (h *Handler) IsAllowed(ctx context.Context, request *idm.PolicyEngineRequest) (*idm.PolicyEngineResponse, error) {
+
+	var checker func(context.Context, *ladon.Request) error
+
+	var bb []byte
+	if ka, err := cache_helper.ResolveCache(ctx, common.CacheTypeShared, groupsCacheConfig); err == nil && ka.Get("policyGroup", &bb) {
+		var all []*idm.PolicyGroup
+		if json.Unmarshal(bb, &all) == nil {
+			log.Logger(ctx).Debug("Policies.IsAllowed - checking with Memory Manager from cache")
+			mem := memory.NewMemoryManager()
+			for _, g := range all {
+				for _, p := range g.Policies {
+					_ = mem.Create(ctx, converter.ProtoToLadonPolicy(p))
+				}
+			}
+			checker = func(_ context.Context, r *ladon.Request) error {
+				return (&ladon.Ladon{Manager: mem}).IsAllowed(ctx, r)
+			}
+		}
+	}
+	if checker == nil {
+		dao, er := manager.Resolve[policy.DAO](ctx)
+		if er != nil {
+			return nil, er
+		}
+		checker = dao.IsAllowed
+		log.Logger(ctx).Debug("Policies.IsAllowed - checking directly in DB and heating cache")
+		defer func() {
+			_, _ = h.ListPolicyGroups(context.WithoutCancel(ctx), &idm.ListPolicyGroupsRequest{})
+		}()
+	}
 
 	response := &idm.PolicyEngineResponse{}
 
@@ -61,37 +96,50 @@ func (h *Handler) IsAllowed(ctx context.Context, request *idm.PolicyEngineReques
 		reqContext[k] = v
 	}
 	var allowed bool
+	var explicitDeny bool
+	var checkError error
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(request.Subjects))
+	var can context.CancelFunc
+	ctx, can = context.WithCancel(ctx)
+	defer can()
 
 	for _, subject := range request.Subjects {
 
-		ladonRequest := &ladon.Request{
-			Subject:  subject,
-			Resource: request.Resource,
-			Action:   request.Action,
-			Context:  reqContext,
-		}
-
-		if err := h.dao.IsAllowed(ladonRequest); err == nil {
-			// Explicit allow
-			allowed = true
-		} else if strings.Contains(err.Error(), "Request was denied by default") {
-			// This is a deny because no match: it does nothing but waits for
-			// the loop to finish and see if there is an explicit allow or deny
-		} else if strings.Contains(err.Error(), "Request was forcefully denied") {
-			// Explicitly Deny : break and return false, ignoring following policies
-			response.ExplicitDeny = true
-			// log.Logger(context.Background()).Error("IsAllowed: explicitly denied", zap.Any("ladonRequest", ladonRequest))
-			return response, nil
-		} else {
-			if strings.Contains(err.Error(), "connection refused") {
-				log.Logger(ctx).Error("Connection to DB error", zap.String("error", err.Error()))
-				err = fmt.Errorf("DAO error received")
+		go func(sub string) {
+			defer wg.Done()
+			ladonRequest := &ladon.Request{
+				Subject:  sub,
+				Resource: request.Resource,
+				Action:   request.Action,
+				Context:  reqContext,
 			}
-			return response, err
-		}
+			if err := checker(ctx, ladonRequest); err == nil {
+				// Explicit allow
+				allowed = true
+			} else if errors.Is(err, ladon.ErrRequestForcefullyDenied) {
+				// Explicitly Deny : break and return false, cancel other policies
+				explicitDeny = true
+				can()
+			} else if !errors.Is(err, ladon.ErrRequestDenied) && !errors.Is(err, context.Canceled) {
+				if strings.Contains(err.Error(), "connection refused") {
+					log.Logger(ctx).Error("Connection to DB error", zap.String("error", err.Error()))
+					err = errors.New("DAO error received")
+				}
+				checkError = err
+				can()
+			}
+		}(subject)
 	}
+	wg.Wait()
 
-	if allowed {
+	if checkError != nil {
+		return response, checkError
+	}
+	if explicitDeny {
+		response.ExplicitDeny = true
+	} else if allowed {
 		response.Allowed = true
 	} else {
 		response.DefaultDeny = true
@@ -100,35 +148,71 @@ func (h *Handler) IsAllowed(ctx context.Context, request *idm.PolicyEngineReques
 	return response, nil
 }
 
+// StreamPolicyGroups performs same listing as ListPolicyGroups but answer with a stream
+func (h *Handler) StreamPolicyGroups(request *idm.ListPolicyGroupsRequest, stream idm.PolicyEngineService_StreamPolicyGroupsServer) error {
+
+	ctx := stream.Context()
+
+	resp, err := h.ListPolicyGroups(ctx, request)
+	if err != nil {
+		return err
+	}
+	for _, group := range resp.GetPolicyGroups() {
+		_ = stream.Send(group)
+	}
+
+	return nil
+}
+
 func (h *Handler) ListPolicyGroups(ctx context.Context, request *idm.ListPolicyGroupsRequest) (*idm.ListPolicyGroupsResponse, error) {
+
+	dao, er := manager.Resolve[policy.DAO](ctx)
+	if er != nil {
+		return nil, er
+	}
 
 	response := &idm.ListPolicyGroupsResponse{}
 
-	if groupsCacheValid {
-		response.PolicyGroups = groupsCache
-		response.Total = int32(len(groupsCache))
-		return response, nil
+	ka, er := cache_helper.ResolveCache(ctx, common.CacheTypeShared, groupsCacheConfig)
+	var bb []byte
+	if er == nil && request.Filter == "" && ka.Get("policyGroup", &bb) {
+		if json.Unmarshal(bb, &response.PolicyGroups) == nil {
+			response.Total = int32(len(response.PolicyGroups))
+			return response, nil
+		}
 	}
 
-	groups, err := h.dao.ListPolicyGroups(ctx)
+	groups, err := dao.ListPolicyGroups(ctx, request.Filter)
 	if err != nil {
 		return nil, err
 	}
 	response.PolicyGroups = groups
 	response.Total = int32(len(groups))
 
-	groupsCache = groups
-	groupsCacheValid = true
+	if request.Filter == "" && ka != nil {
+		msg, _ := json.Marshal(groups)
+		if err = ka.Set("policyGroup", msg); err != nil {
+			log.Logger(ctx).Error("Cannot fill cache for policy groups", zap.Error(err))
+		}
+	}
 
 	return response, nil
 }
 
 func (h *Handler) StorePolicyGroup(ctx context.Context, request *idm.StorePolicyGroupRequest) (*idm.StorePolicyGroupResponse, error) {
 
-	groupsCacheValid = false
+	dao, er := manager.Resolve[policy.DAO](ctx)
+	if er != nil {
+		return nil, er
+	}
+
+	if ka, er := cache_helper.ResolveCache(ctx, common.CacheTypeShared, groupsCacheConfig); er == nil {
+		_ = ka.Delete("policyGroup")
+	}
+
 	response := &idm.StorePolicyGroupResponse{}
 
-	stored, err := h.dao.StorePolicyGroup(ctx, request.PolicyGroup)
+	stored, err := dao.StorePolicyGroup(ctx, request.PolicyGroup)
 	if err != nil {
 		return nil, err
 	}
@@ -139,16 +223,25 @@ func (h *Handler) StorePolicyGroup(ctx context.Context, request *idm.StorePolicy
 		log.GetAuditId(common.AuditPolicyGroupStore),
 		stored.ZapUuid(),
 	)
+	_ = broker.Publish(ctx, common.TopicIdmPolicies, &idm.ChangeEvent{Type: idm.ChangeEventType_UPDATE})
 
 	return response, nil
 }
 
 func (h *Handler) DeletePolicyGroup(ctx context.Context, request *idm.DeletePolicyGroupRequest) (*idm.DeletePolicyGroupResponse, error) {
 
-	groupsCacheValid = false
+	dao, er := manager.Resolve[policy.DAO](ctx)
+	if er != nil {
+		return nil, er
+	}
+
+	if ka, er := cache_helper.ResolveCache(ctx, common.CacheTypeShared, groupsCacheConfig); er == nil {
+		_ = ka.Delete("policyGroup")
+	}
+
 	response := &idm.DeletePolicyGroupResponse{}
 
-	err := h.dao.DeletePolicyGroup(ctx, request.PolicyGroup)
+	err := dao.DeletePolicyGroup(ctx, request.PolicyGroup)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +252,7 @@ func (h *Handler) DeletePolicyGroup(ctx context.Context, request *idm.DeletePoli
 		log.GetAuditId(common.AuditPolicyGroupDelete),
 		request.PolicyGroup.ZapUuid(),
 	)
+	_ = broker.Publish(ctx, common.TopicIdmPolicies, &idm.ChangeEvent{Type: idm.ChangeEventType_UPDATE})
 
 	return response, nil
-
 }

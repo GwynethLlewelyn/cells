@@ -21,17 +21,24 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	clientgrpc "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common"
+	clientgrpc "github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+)
+
+var (
+	searchAclOffset int
+	searchAclLimit  int
 )
 
 var searchAclCmd = &cobra.Command{
@@ -42,10 +49,21 @@ DESCRIPTION
 
   List ACLs currently stored in the ACL microservice.
 
+EXAMPLES
+
+  1. List all ACLs that give READ access
+  $ ` + os.Args[0] + ` admin acl search -a "READ"
+
+  2. List all ACLs for root group  
+  $ ` + os.Args[0] + ` admin acl search -r "ROOT_GROUP"
+
+  3. List all ACLs of a given node 
+  $ ` + os.Args[0] + ` admin acl search -n "53a65cc3-e407-4fcc-9230-5630ff054659"
+
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		client := idm.NewACLServiceClient(clientgrpc.GetClientConnFromCtx(cmd.Context(), common.ServiceAcl))
+		client := idm.NewACLServiceClient(clientgrpc.ResolveConn(cmd.Context(), common.ServiceAclGRPC))
 
 		var aclActions []*idm.ACLAction
 		for _, action := range actions {
@@ -64,13 +82,17 @@ DESCRIPTION
 
 		// Exit if query is empty
 		if len(query.Value) == 0 {
-			log.Fatal("Please provide at least one of --action, --role_id, --workspace_id or --node_id")
+			cmd.Help()
+			fmt.Println("")
+			log.Fatal("Wrong arguments: please provide at least one of --action, --role_id, --workspace_id or --node_id")
 			return
 		}
 
 		stream, err := client.SearchACL(cmd.Context(), &idm.SearchACLRequest{
 			Query: &service.Query{
 				SubQueries: []*anypb.Any{query},
+				Limit:      int64(searchAclLimit),
+				Offset:     int64(searchAclOffset),
 			},
 		})
 
@@ -81,19 +103,38 @@ DESCRIPTION
 		table := tablewriter.NewWriter(cmd.OutOrStdout())
 		table.SetHeader([]string{"Id", "Action", "Node_ID", "Role_ID", "Workspace_ID"})
 
+		res := 0
 		for {
 			response, err := stream.Recv()
-
 			if err != nil {
 				if err != io.EOF {
 					log.Fatal(err)
 				}
 				break
 			}
+			res++
 
 			table.Append([]string{response.ACL.ID, response.ACL.Action.String(), response.ACL.NodeID, response.ACL.RoleID, response.ACL.WorkspaceID})
 		}
-		table.Render()
+
+		if res > 0 {
+			table.Render()
+
+			msg := fmt.Sprintf("Showing %d result", res)
+			if res > 1 {
+				msg += "s"
+			}
+			if searchAclOffset > 0 {
+				msg += fmt.Sprintf(" at offset %d", searchAclOffset)
+			}
+			if res == searchAclLimit {
+				msg += " (Max. row number limit has been hit)"
+			}
+			cmd.Println(msg)
+			cmd.Println(" ")
+		} else {
+			cmd.Println("No results")
+		}
 	},
 }
 
@@ -102,6 +143,8 @@ func init() {
 	searchAclCmd.Flags().StringArrayVarP(&roleIDs, "role_id", "r", []string{}, "RoleIDs")
 	searchAclCmd.Flags().StringArrayVarP(&workspaceIDs, "workspace_id", "w", []string{}, "WorkspaceIDs")
 	searchAclCmd.Flags().StringArrayVarP(&nodeIDs, "node_id", "n", []string{}, "NodeIDs")
+	searchAclCmd.Flags().IntVarP(&searchAclOffset, "offset", "o", 0, "Add an offset to the query when necessary")
+	searchAclCmd.Flags().IntVarP(&searchAclLimit, "limit", "l", 100, "Max. number of returned rows, 0 for unlimited")
 
 	AclCmd.AddCommand(searchAclCmd)
 }

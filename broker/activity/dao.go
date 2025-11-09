@@ -28,13 +28,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/boltdb"
-	"github.com/pydio/cells/v4/common/dao/mongodb"
-	"github.com/pydio/cells/v4/common/proto/activity"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/service"
 )
-
-var testEnv bool
 
 type BoxName string
 
@@ -46,9 +44,11 @@ const (
 	BoxLastSent      BoxName = "lastsent"
 )
 
-type DAO interface {
-	dao.DAO
+var (
+	Drivers = service.StorageDrivers{}
+)
 
+type DAO interface {
 	// PostActivity posts an activity to target inbox.
 	PostActivity(ctx context.Context, ownerType activity.OwnerType, ownerId string, boxName BoxName, object *activity.Object, publish bool) error
 
@@ -63,7 +63,7 @@ type DAO interface {
 	CountUnreadForUser(ctx context.Context, userId string) int
 
 	// ActivitiesFor loads activities for a given owner. Targets "outbox" by default.
-	ActivitiesFor(ctx context.Context, ownerType activity.OwnerType, ownerId string, boxName BoxName, refBoxOffset BoxName, reverseOffset int64, limit int64, result chan *activity.Object, done chan bool) error
+	ActivitiesFor(ctx context.Context, ownerType activity.OwnerType, ownerId string, boxName BoxName, refBoxOffset BoxName, reverseOffset int64, limit int64, streamFilter string, result chan *activity.Object, done chan bool) error
 
 	// StoreLastUserInbox stores the last read uint ID for a given box.
 	StoreLastUserInbox(ctx context.Context, userId string, boxName BoxName, activityId string) error
@@ -74,75 +74,72 @@ type DAO interface {
 
 	// Purge removes records based on a maximum number of records and/or based on the activity update date
 	// It keeps at least minCount record(s) - to see last activity - even if older than expected date
-	Purge(ctx context.Context, logger func(string), ownerType activity.OwnerType, ownerId string, boxName BoxName, minCount, maxCount int, updatedBefore time.Time, compactDB, clearBackup bool) error
+	Purge(ctx context.Context, logger func(string, int), ownerType activity.OwnerType, ownerId string, boxName BoxName, minCount, maxCount int, updatedBefore time.Time, compactDB, clearBackup bool) error
 
 	// AllActivities is used for internal migrations only
-	allActivities(ctx context.Context) (chan *docActivity, int, error)
+	AllActivities(ctx context.Context) (chan *BatchActivity, int, error)
 	// AllSubscriptions is used for internal migrations only
-	allSubscriptions(ctx context.Context) (chan *activity.Subscription, int, error)
+	AllSubscriptions(ctx context.Context) (chan *activity.Subscription, int, error)
 }
 
-type batchActivity struct {
+type BatchActivity struct {
 	*activity.Object
-	ownerType  activity.OwnerType
-	ownerId    string
-	boxName    BoxName
-	publishCtx context.Context
+	OwnerType  activity.OwnerType
+	OwnerId    string
+	BoxName    BoxName
+	PublishCtx context.Context
 }
 
-type batchDAO interface {
-	BatchPost([]*batchActivity) error
+type BatchDAO interface {
+	BatchPost([]*BatchActivity) error
 }
 
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case boltdb.DAO:
-		bi := &boltdbimpl{DAO: v, InboxMaxSize: 1000}
-		if testEnv {
-			return bi, nil
-		} else {
-			return WithCache(bi), nil
-		}
-	case mongodb.DAO:
-		mi := &mongoimpl{DAO: v}
-		return mi, nil
+func QueryFieldsTransformer(s string) (string, error) {
+	switch s {
+	case "eventType":
+		return "type", nil
+	case "eventDate":
+		return "updated", nil
+	case "actorId":
+		return "actor.id", nil
+	case "actorName":
+		return "actor.name", nil
+	case "objectName":
+		return "object.name", nil
 	}
-	return nil, dao.UnsupportedDriverType("")
+	return s, errors.New("unrecognized field name for query")
 }
 
-func Migrate(f dao.DAO, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) (map[string]int, error) {
-	ctx := context.Background()
+func Migrate(ctx, fromCtx, toCtx context.Context, dryRun bool, status chan service.MigratorStatus) (map[string]int, error) {
+
 	out := map[string]int{
 		"Activities":    0,
 		"Subscriptions": 0,
 	}
-	testEnv = true // Disable cache
-	var from, to DAO
-	if df, e := NewDAO(ctx, f); e == nil {
-		from = df.(DAO)
-	} else {
-		return out, e
+	noCache = true // Disable cache
+	from, er := manager.Resolve[DAO](fromCtx)
+	if er != nil {
+		return nil, er
 	}
-	if dt, e := NewDAO(ctx, t); e == nil {
-		to = dt.(DAO)
-	} else {
-		return out, e
+	to, er := manager.Resolve[DAO](toCtx)
+	if er != nil {
+		return nil, er
 	}
-	aa, total, er := from.allActivities(ctx)
+	aa, total, er := from.AllActivities(ctx)
 	if er != nil {
 		return nil, er
 	}
 	for a := range aa {
 		if dryRun {
 			out["Activities"]++
-		} else if er := to.PostActivity(ctx, activity.OwnerType(a.OwnerType), a.OwnerId, BoxName(a.BoxName), a.Object, false); er == nil {
+		} else if er := to.PostActivity(ctx, a.OwnerType, a.OwnerId, a.BoxName, a.Object, false); er == nil {
 			out["Activities"]++
 		}
 		if total > 0 {
-			status <- dao.MigratorStatus{Total: int64(total), Count: int64(out["Activities"])}
+			status <- service.MigratorStatus{Total: int64(total), Count: int64(out["Activities"])}
 		}
 	}
-	ss, sTotal, er := from.allSubscriptions(ctx)
+	ss, sTotal, er := from.AllSubscriptions(ctx)
 	if er != nil {
 		return out, er
 	}
@@ -153,7 +150,7 @@ func Migrate(f dao.DAO, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) 
 			out["Subscriptions"]++
 		}
 		if sTotal > 0 {
-			status <- dao.MigratorStatus{Total: int64(sTotal), Count: int64(out["Subscriptions"])}
+			status <- service.MigratorStatus{Total: int64(sTotal), Count: int64(out["Subscriptions"])}
 		}
 	}
 	return out, nil

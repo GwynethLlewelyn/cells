@@ -21,13 +21,15 @@
 package lib
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
-	"github.com/pydio/cells/v4/common/runtime"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/runtime"
 )
 
 // Frontends
@@ -60,36 +62,36 @@ func restoreProgress(in chan float64, done chan bool, publisher func(event *Inst
 	}
 }
 
-func actionFrontendsAdd(c *install.InstallConfig) error {
+func actionFrontendsAdd(ctx context.Context, c *install.InstallConfig) error {
 
 	conf := &frontendsConfig{
 		Hosts:    c.GetFrontendHosts(),
-		Login:    c.GetFrontendLogin(),
-		Password: c.GetFrontendPassword(),
-		Confirm:  c.GetFrontendRepeatPassword(),
+		Login:    os.ExpandEnv(c.GetFrontendLogin()),
+		Password: os.ExpandEnv(c.GetFrontendPassword()),
+		Confirm:  os.ExpandEnv(c.GetFrontendRepeatPassword()),
 	}
 
 	if conf.Login != "" && conf.Password != "" && conf.Confirm == conf.Password {
 		sEnc := base64.StdEncoding.EncodeToString([]byte(conf.Login + "||||" + conf.Password))
 		fmt.Println("Adding admin credentials to config, to be inserted at next start")
-		if err := config.Set(sEnc, "defaults", "root"); err != nil {
+		if err := config.Set(ctx, sEnc, "defaults", "root"); err != nil {
 			return err
 		}
 	}
 
 	if c.FrontendApplicationTitle != "" {
-		if err := config.Set(c.FrontendApplicationTitle, "frontend", "plugin", "core.pydio", "APPLICATION_TITLE"); err != nil {
+		if err := config.Set(ctx, c.FrontendApplicationTitle, config.FrontendPluginPath(config.KeyFrontPluginCorePydio, config.KeyFrontApplicationTitle)...); err != nil {
 			return err
 		}
 	}
 
 	if c.FrontendDefaultLanguage != "" {
-		if err := config.Set(c.FrontendDefaultLanguage, "frontend", "plugin", "core.pydio", "DEFAULT_LANGUAGE"); err != nil {
+		if err := config.Set(ctx, c.FrontendDefaultLanguage, config.FrontendPluginPath(config.KeyFrontPluginCorePydio, config.KeyFrontDefaultLanguage)...); err != nil {
 			return err
 		}
 	}
 
-	if err := config.Save("cli", "Set default admin user and frontend configs"); err != nil {
+	if err := config.Save(ctx, "cli", "Set default admin user and frontend configs"); err != nil {
 		return err
 	}
 

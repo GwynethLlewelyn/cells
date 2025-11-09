@@ -24,16 +24,15 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"github.com/pydio/cells/v4/common/proto/tree"
 	"io"
-	"io/ioutil"
 	"path"
 	"sort"
 	"strings"
 
-	"github.com/pydio/cells/v4/common/proto/rest"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/statics"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/utils/statics"
 )
 
 var (
@@ -104,7 +103,7 @@ func (e *Embedded) ByUUID(ctx context.Context, uuid string) (Node, error) {
 		}
 	}
 	if node == nil {
-		return nil, errors.NotFound("template.not.found", "Cannot find template with this identifier")
+		return nil, errors.WithStack(errors.TemplateNotFound)
 	} else {
 		return node, nil
 	}
@@ -119,7 +118,7 @@ func (en *EmbeddedNode) Read(ctx context.Context) (io.Reader, int64, error) {
 	if e != nil {
 		return nil, 0, e
 	}
-	data, _ := ioutil.ReadAll(file)
+	data, _ := io.ReadAll(file)
 	file.Close()
 	r := bytes.NewReader(data)
 	return r, int64(len(data)), nil

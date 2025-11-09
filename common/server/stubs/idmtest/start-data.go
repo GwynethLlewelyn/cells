@@ -21,17 +21,25 @@
 package idmtest
 
 import (
-	"io/ioutil"
+	"context"
+	"fmt"
+	"os"
 	"path"
 	"runtime"
 	"sync"
 
+	grpc2 "google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/rest"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type TestData struct {
@@ -66,7 +74,7 @@ func GetStartData() (*TestData, error) {
 		roles := &rest.RolesCollection{}
 		acls := &rest.ACLCollection{}
 
-		if bb, parseErr = ioutil.ReadFile(path.Join(path.Dir(filename), "testdata", "start-users.json")); parseErr != nil {
+		if bb, parseErr = os.ReadFile(path.Join(path.Dir(filename), "testdata", "start-users.json")); parseErr != nil {
 			return
 		}
 		if parseErr = protojson.Unmarshal(bb, sd); parseErr != nil {
@@ -74,7 +82,7 @@ func GetStartData() (*TestData, error) {
 		}
 		startData.Users = sd.Users
 
-		if bb, parseErr = ioutil.ReadFile(path.Join(path.Dir(filename), "testdata", "start-ws.json")); parseErr != nil {
+		if bb, parseErr = os.ReadFile(path.Join(path.Dir(filename), "testdata", "start-ws.json")); parseErr != nil {
 			return
 		}
 		if parseErr = protojson.Unmarshal(bb, ws); parseErr != nil {
@@ -82,7 +90,7 @@ func GetStartData() (*TestData, error) {
 		}
 		startData.Workspaces = ws.Workspaces
 
-		if bb, parseErr = ioutil.ReadFile(path.Join(path.Dir(filename), "testdata", "start-roles.json")); parseErr != nil {
+		if bb, parseErr = os.ReadFile(path.Join(path.Dir(filename), "testdata", "start-roles.json")); parseErr != nil {
 			return
 		}
 		if parseErr = protojson.Unmarshal(bb, roles); parseErr != nil {
@@ -90,7 +98,7 @@ func GetStartData() (*TestData, error) {
 		}
 		startData.Roles = roles.GetRoles()
 
-		if bb, parseErr = ioutil.ReadFile(path.Join(path.Dir(filename), "testdata", "start-acls.json")); parseErr != nil {
+		if bb, parseErr = os.ReadFile(path.Join(path.Dir(filename), "testdata", "start-acls.json")); parseErr != nil {
 			return
 		}
 		if parseErr = protojson.Unmarshal(bb, acls); parseErr != nil {
@@ -102,30 +110,34 @@ func GetStartData() (*TestData, error) {
 	return startData, parseErr
 }
 
-func RegisterIdmMocksWithData(testData *TestData) error {
-	us, er := NewUsersService(testData.Users...)
-	if er != nil {
-		return er
-	}
-	grpc.RegisterMock(common.ServiceUser, us)
+func RegisterIdmMocksWithData(ctx context.Context, testData *TestData) error {
 
-	rs, er := NewRolesService(testData.Roles...)
-	if er != nil {
-		return nil
+	var reg registry.Registry
+	if !propagator.Get(ctx, registry.ContextKey, &reg) {
+		return errors.New("cannot find registry in context")
 	}
-	grpc.RegisterMock(common.ServiceRole, rs)
-
-	as, er := NewACLService(testData.ACLs...)
-	if er != nil {
-		return er
+	ii, _ := reg.List(registry.WithType(pb.ItemType_SERVICE))
+	for _, item := range ii {
+		svc := item.(service.Service)
+		var cc grpc2.ClientConnInterface
+		var err error
+		switch item.Name() {
+		case common.ServiceUserGRPC:
+			cc, err = NewUsersService(ctx, svc, testData.Users...)
+		case common.ServiceRoleGRPC:
+			cc, err = NewRolesService(ctx, svc, testData.Roles...)
+		case common.ServiceAclGRPC:
+			cc, err = NewACLService(ctx, svc, testData.ACLs...)
+		case common.ServiceWorkspaceGRPC:
+			cc, err = NewWorkspacesService(ctx, svc, testData.Workspaces...)
+		default:
+			continue
+		}
+		if err != nil {
+			fmt.Println("Returning error for ", item.Name())
+			return err
+		}
+		grpc.RegisterMock(item.Name(), cc)
 	}
-	grpc.RegisterMock(common.ServiceAcl, as)
-
-	ws, er := NewWorkspacesService(testData.Workspaces...)
-	if er != nil {
-		return er
-	}
-	grpc.RegisterMock(common.ServiceWorkspace, ws)
-
 	return nil
 }

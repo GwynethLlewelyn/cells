@@ -22,12 +22,12 @@ package proc
 
 import (
 	"context"
-	"fmt"
 	"path"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/sync/merger"
-	"github.com/pydio/cells/v4/common/sync/model"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/merger"
+	"github.com/pydio/cells/v5/common/sync/model"
 )
 
 // processMetadata applies the Metadata operations (OpCreateMeta, OpUpdateMeta, OpDeleteMeta)
@@ -35,20 +35,25 @@ func (pr *Processor) processMetadata(canceler context.Context, operation merger.
 	if mr, ok := operation.Target().(model.MetadataReceiver); ok {
 		opNode := operation.GetNode()
 		if opNode == nil {
-			return fmt.Errorf("cannot find operation node for operating on metadata")
+			return errors.New("cannot find operation node for operating on metadata")
 		}
-		parentUuid := operation.GetNode().GetStringMeta(merger.MetaNodeParentUUIDMeta)
+		protoNode := operation.GetNode().AsProto()
+		var parentUuid, parentPath string
+		parentUuid = protoNode.GetStringMeta(merger.MetaNodeParentUUIDMeta)
+		parentPath = protoNode.GetStringMeta(merger.MetaNodeParentPathMeta)
+
 		if parentUuid == "" {
-			return fmt.Errorf("cannot find parent Uuid for operating on Metadata")
+			return errors.New("cannot find parent Uuid for operating on Metadata")
 		}
-		parentPath := operation.GetNode().GetStringMeta(merger.MetaNodeParentPathMeta)
 		switch operation.Type() {
 		case merger.OpCreateMeta:
-			return mr.CreateMetadata(canceler, &tree.Node{Uuid: parentUuid, Path: parentPath}, path.Base(opNode.GetPath()), opNode.Etag)
+			return mr.CreateMetadata(canceler, &tree.Node{Uuid: parentUuid, Path: parentPath}, path.Base(opNode.GetPath()), opNode.GetEtag())
 		case merger.OpUpdateMeta:
-			return mr.UpdateMetadata(canceler, &tree.Node{Uuid: parentUuid, Path: parentPath}, path.Base(opNode.GetPath()), opNode.Etag)
+			return mr.UpdateMetadata(canceler, &tree.Node{Uuid: parentUuid, Path: parentPath}, path.Base(opNode.GetPath()), opNode.GetEtag())
 		case merger.OpDeleteMeta:
 			return mr.DeleteMetadata(canceler, &tree.Node{Uuid: parentUuid, Path: parentPath}, path.Base(opNode.GetPath()))
+		default:
+			// ignore
 		}
 	}
 	return nil

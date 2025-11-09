@@ -21,7 +21,7 @@
     "other": "If you did not trigger this request, you can safely ignore that. If you keep receiving emails like this, please alert your administrator as it may be a security issue."
   },
   "Mail.ResetPassword.LinkLabel": {
-    "other": "Reset My Password"
+    "other": "Återställ mitt lösenord"
   },
   "Mail.ResetPassword.LinkInstructions": {
     "other": "Click to reset your password"
@@ -96,7 +96,7 @@
     "other": "{{.TplData.Inviter}} is sharing a file with you.\n\n '{{.TplData.Message}}' \n\n {{if .TplData.Expire}}Link will expire on {{.TplData.Expire}}{{end}}\n\n{{if .TplData.MaxDownloads}}Maximum downloads :{{.TplData.MaxDownloads}}{{end}}"
   },
   "Mail.PublicFile.LinkLabel": {
-    "other": "Open {{.TplData.FileName}}"
+    "other": "Öppna {{.TplData.FileName}}"
   },
   "Mail.PublicFile.LinkInstructions": {
     "other": "Click to preview the file in your browser"
@@ -143,6 +143,9 @@
   "Mail.Config.From.Description": {
     "other": "Address to use as default when sending emails. You should use a proper support email instead of no-reply email."
   },
+  "Mail.Config.FixOutlookDisplay": {
+    "other": "Outlook Clients Fix (disable CSS inlining)"
+  },
   "Mail.Config.Queue.Label": {
     "other": "Queue Type"
   },
@@ -174,7 +177,7 @@
     "other": "Target folder for writing emails"
   },
   "Mail.Config.Smtp.Label": {
-    "other": "SMTP Server"
+    "other": "SMTP-server"
   },
   "Mail.Config.Smtp.Host.Label": {
     "other": "Server Hostname"
@@ -199,6 +202,12 @@
   },
   "Mail.Config.Smtp.Password.Description": {
     "other": "Password required to connect to the SMTP server"
+  },
+  "Mail.Config.Smtp.Security.Label": {
+    "other": "Connection Security"
+  },
+  "Mail.Config.Smtp.Security.Description": {
+    "other": "Protocol used for securing connection. Clear is not supported, if required use a custom Sendmail instead."
   },
   "Mail.Config.Smtp.SkipVerify.Label": {
     "other": "Self-signed Certificate"

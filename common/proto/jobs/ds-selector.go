@@ -26,12 +26,20 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/object"
-	service "github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/proto/object"
+	service "github.com/pydio/cells/v5/common/proto/service"
 )
 
-func (m *DataSourceSelector) Filter(ctx context.Context, input ActionMessage) (ActionMessage, *ActionMessage, bool) {
+func (m *DataSourceSelector) FilterID() string {
+	return "DataSourceFilter"
+}
+
+func (m *DataSourceSelector) ApplyClearInput(msg *ActionMessage) *ActionMessage {
+	return msg.WithDataSource(nil)
+}
+
+func (m *DataSourceSelector) Filter(ctx context.Context, input *ActionMessage) (*ActionMessage, *ActionMessage, bool) {
 	var passed, excluded []*object.DataSource
 	for _, ds := range input.DataSources {
 		if m.All || m.evaluate(ctx, m.Query, input, ds) {
@@ -43,18 +51,25 @@ func (m *DataSourceSelector) Filter(ctx context.Context, input ActionMessage) (A
 	input.DataSources = passed
 	var x *ActionMessage
 	if len(excluded) > 0 {
-		filteredOutput := input
+		filteredOutput := input.Clone()
 		filteredOutput.DataSources = excluded
-		x = &filteredOutput
+		x = filteredOutput
 	}
 	return input, x, len(passed) > 0
 }
 
-func (m *DataSourceSelector) Select(ctx context.Context, input ActionMessage, objects chan interface{}, done chan bool) error {
+func (m *DataSourceSelector) Select(ctx context.Context, input *ActionMessage, objects chan interface{}, done chan bool) error {
 	defer func() {
 		done <- true
 	}()
-	for _, ds := range m.loadDSS() {
+	// Simply FanOut Input.DataSources without performing queries
+	if m.FanOutInput {
+		for _, ds := range input.DataSources {
+			objects <- proto.Clone(ds).(*object.DataSource)
+		}
+		return nil
+	}
+	for _, ds := range m.loadDSS(ctx) {
 		if m.All || m.evaluate(ctx, m.Query, input, ds) {
 			objects <- ds
 		}
@@ -66,15 +81,29 @@ func (m *DataSourceSelector) MultipleSelection() bool {
 	return m.Collect
 }
 
-func (m *DataSourceSelector) loadDSS() (sources []*object.DataSource) {
-	for _, ds := range config.ListSourcesFromConfig() {
+func (m *DataSourceSelector) SelectorID() string {
+	return "DataSourceSelector"
+}
+
+func (m *DataSourceSelector) SelectorLabel() string {
+	if m.Label != "" {
+		return m.Label
+	}
+	return m.SelectorID()
+}
+
+func (m *DataSourceSelector) loadDSS(ctx context.Context) (sources []*object.DataSource) {
+	for _, ds := range config.ListSourcesFromConfig(ctx) {
 		sources = append(sources, ds)
 	}
 	return
 }
 
-func (m *DataSourceSelector) evaluate(ctx context.Context, query *service.Query, input ActionMessage, dsObject *object.DataSource) bool {
+func (m *DataSourceSelector) evaluate(ctx context.Context, query *service.Query, input *ActionMessage, dsObject *object.DataSource) bool {
 
+	if query == nil {
+		return true
+	}
 	var bb []bool
 	for _, q := range query.SubQueries {
 		msg := &object.DataSourceSingleQuery{}
@@ -88,7 +117,7 @@ func (m *DataSourceSelector) evaluate(ctx context.Context, query *service.Query,
 			msg.PeerAddress = EvaluateFieldStr(ctx, input, msg.PeerAddress)
 			msg.EncryptionKey = EvaluateFieldStr(ctx, input, msg.EncryptionKey)
 			msg.VersioningPolicyName = EvaluateFieldStr(ctx, input, msg.VersioningPolicyName)
-			bb = append(bb, msg.Matches(dsObject))
+			bb = append(bb, msg.Matches(ctx, dsObject))
 		} else if e := anypb.UnmarshalTo(q, subQ, proto.UnmarshalOptions{}); e == nil {
 			bb = append(bb, m.evaluate(ctx, subQ, input, dsObject))
 		}

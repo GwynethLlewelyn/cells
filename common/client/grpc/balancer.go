@@ -22,18 +22,19 @@ package grpc
 
 import (
 	"errors"
-	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
 
 	"google.golang.org/grpc/attributes"
-
-	"github.com/pydio/cells/v4/common/client"
-	"github.com/pydio/cells/v4/common/service/context/ckeys"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/base"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client"
+
+	_ "google.golang.org/grpc/balancer/grpclb"
 )
 
 var (
@@ -109,10 +110,10 @@ func (r *rrPickerSubConn) Attributes() *attributes.Attributes {
 func (p *rrPicker) Pick(i balancer.PickInfo) (balancer.PickResult, error) {
 	var serviceName string
 	if md, o := metadata.FromOutgoingContext(i.Ctx); o {
-		serviceName = strings.Join(md.Get(ckeys.TargetServiceName), "")
+		serviceName = strings.Join(md.Get(common.CtxTargetServiceName), "")
 	}
 	if serviceName == "" {
-		return balancer.PickResult{}, fmt.Errorf("cannot find targetName in context")
+		return balancer.PickResult{}, errors.New("cannot find targetName in context")
 	}
 	pc, ok := p.pConns[serviceName]
 	if !ok {
@@ -152,7 +153,7 @@ func (p *rrPicker) Pick(i balancer.PickInfo) (balancer.PickResult, error) {
 			priorityPicks = p.applyFilter(f, priorityPicks)
 		}
 		if len(priorityPicks) > 0 {
-			fmt.Println("Returning priority processes first", len(priorityPicks))
+			// fmt.Println("Returning priority processes first", len(priorityPicks))
 			sc := priorityPicks[rand.Intn(len(priorityPicks))]
 			return balancer.PickResult{SubConn: sc.SubConn}, nil
 		}

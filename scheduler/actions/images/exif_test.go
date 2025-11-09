@@ -22,19 +22,19 @@ package images
 
 import (
 	"context"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/scheduler/actions"
+
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -56,7 +56,8 @@ func TestExifProcessor_Init(t *testing.T) {
 
 		action := &ExifProcessor{}
 		job := &jobs.Job{}
-		e := action.Init(job, &jobs.Action{})
+
+		e := action.Init(context.Background(), job, &jobs.Action{})
 		So(e, ShouldBeNil)
 
 	})
@@ -69,7 +70,7 @@ func TestExifProcessor_Run(t *testing.T) {
 		action := &ExifProcessor{}
 		job := &jobs.Job{}
 		// Test action without parameters
-		e := action.Init(job, &jobs.Action{})
+		e := action.Init(context.Background(), job, &jobs.Action{})
 		So(e, ShouldBeNil)
 		action.metaClient = nodes.NewHandlerMock()
 
@@ -77,10 +78,10 @@ func TestExifProcessor_Run(t *testing.T) {
 		uuidNode := uuid.New()
 		testDir := "testdata"
 
-		data, err := ioutil.ReadFile(filepath.Join(testDir, "exif.jpg"))
+		data, err := os.ReadFile(filepath.Join(testDir, "exif.jpg"))
 		So(err, ShouldBeNil)
 		target := filepath.Join(tmpDir, uuidNode+".jpg")
-		err = ioutil.WriteFile(target, data, 0755)
+		err = os.WriteFile(target, data, 0755)
 		log.Println(target)
 		So(err, ShouldBeNil)
 		defer os.Remove(target)
@@ -96,7 +97,7 @@ func TestExifProcessor_Run(t *testing.T) {
 
 		status := make(chan string)
 		progress := make(chan float32)
-		output, e := action.Run(context.Background(), &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		output, e := action.Run(context.Background(), &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{node},
 		})
 		close(status)
@@ -110,7 +111,7 @@ func TestExifProcessor_Run(t *testing.T) {
 		//jsonData, _ := json.Marshal(exifMeta)
 
 		referenceFile := filepath.Join(testDir, "exif.json")
-		refData, refE := ioutil.ReadFile(referenceFile)
+		refData, refE := os.ReadFile(referenceFile)
 		So(refE, ShouldBeNil)
 
 		var refStruct interface{}

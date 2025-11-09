@@ -1,3 +1,5 @@
+//go:build source
+
 /*
  * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
@@ -26,16 +28,17 @@ import (
 	"os"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/spf13/afero"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/proto/tree"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 var (
 	fs      = afero.NewMemMapFs()
 	buffer  = make([]byte, 1024)
-	handler TreeHandler
+	handler FsBrowser
 	ctx     = context.Background()
 )
 
@@ -78,7 +81,7 @@ func initTree() {
 
 func TestHandler(t *testing.T) {
 
-	handler = TreeHandler{FS: fs}
+	handler = FsBrowser{FS: fs}
 	initTree()
 
 	Convey("Create Node", t, func() {
@@ -134,7 +137,7 @@ func TestHandler(t *testing.T) {
 func TestHandlerWithPrefix(t *testing.T) {
 	initTree()
 	rootedFs := afero.NewBasePathFs(fs, "folder1")
-	handler = TreeHandler{FS: rootedFs}
+	handler = FsBrowser{FS: rootedFs}
 
 	Convey("Create Node", t, func() {
 		_, err := handler.CreateNode(ctx, &tree.CreateNodeRequest{Node: &tree.Node{

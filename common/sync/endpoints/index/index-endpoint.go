@@ -25,21 +25,20 @@ package index
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/sync/endpoints/memory"
-	"github.com/pydio/cells/v4/common/sync/model"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/endpoints/memory"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 type Client struct {
@@ -60,12 +59,12 @@ func (i *Client) GetEndpointInfo() model.EndpointInfo {
 
 }
 
-func (i *Client) Walk(walknFc model.WalkNodesFunc, root string, recursive bool) (err error) {
+func (i *Client) Walk(ctx context.Context, walknFc model.WalkNodesFunc, root string, recursive bool) (err error) {
 
 	if root == "/" {
 		root = ""
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	responseClient, e := i.readerClient.ListNodes(ctx, &tree.ListNodesRequest{
 		Node: &tree.Node{
@@ -76,7 +75,6 @@ func (i *Client) Walk(walknFc model.WalkNodesFunc, root string, recursive bool) 
 	if e != nil {
 		return e
 	}
-	defer responseClient.CloseSend()
 	for {
 		response, rErr := responseClient.Recv()
 		if rErr == io.EOF || rErr == io.ErrUnexpectedEOF || (rErr == nil && response == nil) {
@@ -89,7 +87,9 @@ func (i *Client) Walk(walknFc model.WalkNodesFunc, root string, recursive bool) 
 		if !response.Node.IsLeaf() {
 			response.Node.Etag = "-1"
 		}
-		walknFc(response.Node.Path, response.Node, nil)
+		if er := walknFc(response.Node.Path, tree.LightNodeFromProto(response.Node), nil); er != nil {
+			return er
+		}
 	}
 	return nil
 }
@@ -98,7 +98,7 @@ func (i *Client) Watch(_ string) (*model.WatchObject, error) {
 	return nil, errors.New("watch not implemented")
 }
 
-func (i *Client) LoadNode(ctx context.Context, path string, extendedStats ...bool) (node *tree.Node, err error) {
+func (i *Client) LoadNode(ctx context.Context, path string, extendedStats ...bool) (node tree.N, err error) {
 
 	log.Logger(ctx).Debug("LoadNode ByPath" + path)
 	var x bool
@@ -112,16 +112,16 @@ func (i *Client) LoadNode(ctx context.Context, path string, extendedStats ...boo
 	if e != nil {
 		return nil, e
 	}
-	return resp.Node, nil
+	return tree.LightNodeFromProto(resp.Node), nil
 
 }
 
 // LoadNodeByUuid makes this endpoint an UuidProvider
-func (i *Client) LoadNodeByUuid(ctx context.Context, uuid string) (node *tree.Node, err error) {
+func (i *Client) LoadNodeByUuid(ctx context.Context, uuid string) (node tree.N, err error) {
 
 	log.Logger(ctx).Debug("LoadNode ByUuid " + uuid)
 	if i.indexationSession() != "" {
-		ctx = metadata.NewContext(ctx, map[string]string{"x-indexation-session": i.indexationSession()})
+		ctx = propagator.NewContext(ctx, map[string]string{"x-indexation-session": i.indexationSession()})
 	}
 	if resp, e := i.readerClient.ReadNode(ctx, &tree.ReadNodeRequest{
 		Node: &tree.Node{
@@ -131,23 +131,23 @@ func (i *Client) LoadNodeByUuid(ctx context.Context, uuid string) (node *tree.No
 		return nil, e
 	} else {
 		resp.Node.Path = strings.TrimLeft(resp.Node.Path, "/")
-		return resp.Node, nil
+		return tree.LightNodeFromProto(resp.Node), nil
 	}
 
 }
 
-func (i *Client) CreateNode(ctx context.Context, node *tree.Node, updateIfExists bool) (err error) {
+func (i *Client) CreateNode(ctx context.Context, node tree.N, updateIfExists bool) (err error) {
 
 	session := i.indexationSession()
 
 	_, err = i.writerClient.CreateNode(ctx, &tree.CreateNodeRequest{
-		Node:              node,
+		Node:              node.AsProto(),
 		UpdateIfExists:    updateIfExists,
 		IndexationSession: session,
 	})
 
 	if session == "" {
-		log.Logger(ctx).Info("CreateNode", node.Zap(), zap.Error(err))
+		log.Logger(ctx).Info("CreateNode", node.ZapPath(), zap.Error(err))
 	}
 
 	return err
@@ -187,19 +187,19 @@ func (i *Client) MoveNode(ctx context.Context, oldPath string, newPath string) (
 	return err
 }
 
-func (i *Client) StartSession(ctx context.Context, rootNode *tree.Node, silent bool) (*tree.IndexationSession, error) {
+func (i *Client) StartSession(ctx context.Context, rootNode tree.N, silent bool) (string, error) {
 	sess := &tree.IndexationSession{
 		Uuid:        uuid.New(),
 		Description: "Indexation",
-		RootNode:    rootNode,
+		RootNode:    rootNode.AsProto(),
 		Silent:      silent,
 	}
 	resp, err := i.sessionClient.OpenSession(ctx, &tree.OpenSessionRequest{Session: sess})
 	if err != nil {
-		return nil, err
+		return "", err
 	} else {
 		i.internalSession = resp.Session
-		return resp.Session, nil
+		return resp.Session.GetUuid(), nil
 	}
 }
 
@@ -214,11 +214,11 @@ func (i *Client) FinishSession(ctx context.Context, sessionUuid string) error {
 	return err
 }
 
-func (i *Client) LockBranch(ctx context.Context, node *tree.Node, sessionUUID string, expireAfter time.Duration) error {
-	if node.Uuid == "" {
-		return fmt.Errorf("missing uuid for creating lock session ACL")
+func (i *Client) LockBranch(ctx context.Context, node tree.N, sessionUUID string, expireAfter time.Duration) error {
+	if node.GetUuid() == "" {
+		return errors.New("missing uuid for creating lock session ACL")
 	}
-	locker := permissions.NewLockSession(node.Uuid, sessionUUID, expireAfter)
+	locker := permissions.NewLockSession(node.GetUuid(), sessionUUID, expireAfter)
 	return locker.Lock(ctx)
 }
 
@@ -228,7 +228,7 @@ func (i *Client) UnlockBranch(ctx context.Context, sessionUUID string) error {
 }
 
 // GetCachedBranches implements CachedBranchProvider by loading branches in a MemDB
-func (i *Client) GetCachedBranches(ctx context.Context, roots ...string) model.PathSyncSource {
+func (i *Client) GetCachedBranches(ctx context.Context, roots ...string) (model.PathSyncSource, error) {
 	memDB := memory.NewMemDB()
 	// Make sure to dedup roots
 	rts := make(map[string]string)
@@ -236,13 +236,17 @@ func (i *Client) GetCachedBranches(ctx context.Context, roots ...string) model.P
 		rts[root] = root
 	}
 	for _, root := range rts {
-		i.Walk(func(path string, node *tree.Node, err error) {
+		e := i.Walk(ctx, func(path string, node tree.N, err error) error {
 			if err == nil {
-				memDB.CreateNode(ctx, node, false)
+				err = memDB.CreateNode(ctx, node, false)
 			}
+			return err
 		}, root, true)
+		if e != nil {
+			return nil, e
+		}
 	}
-	return memDB
+	return memDB, nil
 
 }
 

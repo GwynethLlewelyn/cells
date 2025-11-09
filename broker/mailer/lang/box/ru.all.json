@@ -51,7 +51,7 @@
     "other": "Добро пожаловать на {{.Configs.Title}}"
   },
   "Mail.Welcome.Intros": {
-    "other": "Для вас создана учётная запись {{.Configs.Title}}. \n Ваш логин: {{.TplData.Login}}{{if .TplData.Password}} , пароль: {{.TplData.Password}}. Вы можете изменить его при первом входе{{end}}."
+    "other": "Для вас создана учётная запись {{.Configs.Title}}. \nВаш логин: {{.TplData.Login}}{{if .TplData.Password}} , пароль: {{.TplData.Password}}. Вы можете изменить его при первом входе{{end}}."
   },
   "Mail.Welcome.LinkInstructions": {
     "other": "Нажмите, чтобы войти"
@@ -143,6 +143,9 @@
   "Mail.Config.From.Description": {
     "other": "Адрес, используемый по умолчанию при отправке писем. Вы должны использовать правильный email поддержки вместо email без ответа."
   },
+  "Mail.Config.FixOutlookDisplay": {
+    "other": "Исправление Outlook Клиентов (отключить встраивание CSS)"
+  },
   "Mail.Config.Queue.Label": {
     "other": "Тип очереди"
   },
@@ -200,6 +203,12 @@
   "Mail.Config.Smtp.Password.Description": {
     "other": "Пароль, используемый для подключения к SMTP серверу"
   },
+  "Mail.Config.Smtp.Security.Label": {
+    "other": "Безопасность Соединения"
+  },
+  "Mail.Config.Smtp.Security.Description": {
+    "other": "Протокол, используемый для защиты соединения. Очистка не поддерживается, при необходимости используйте вместо этого пользовательскую отправку по электронной почте."
+  },
   "Mail.Config.Smtp.SkipVerify.Label": {
     "other": "Самоподписанный сертификат"
   },
@@ -207,7 +216,7 @@
     "other": "Отключить проверку сертификата, если ваш сертификат SMTP сервера самоподписан"
   },
   "Mail.Config.Smtp.LocalName.Label": {
-    "other": "Dialer Local Name"
+    "other": "Локальное имя номеронабирателя"
   },
   "Mail.Config.Smtp.LocalName.Description": {
     "other": "SMTP отправляет 'localhost' в EHLO команде по умолчанию, используйте данное поле для назначения локального имени на выбор"
@@ -222,7 +231,7 @@
     "other": "Api Key, предоставленный SendGrid для подключения к сервису"
   },
   "Mail.Config.Sendmail.Label": {
-    "other": "Sendmail"
+    "other": "Отправить почту"
   },
   "Mail.Config.Sendmail.Legend": {
     "other": "ВНИМАНИЕ: По умолчанию путь к исполняемому файлу /usr/bin/sendmail. Если вам нужно изменить его, пожалуйста, не забудьте установить ключ 'defaults > sendmail' в файле конфигурации pydio.json."

@@ -18,30 +18,33 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"sync"
-
-	clientcontext "github.com/pydio/cells/v4/common/client/context"
 
 	"gocloud.dev/gcerrors"
 	"gocloud.dev/pubsub"
 	"gocloud.dev/pubsub/driver"
+	"google.golang.org/grpc/metadata"
 
-	pb "github.com/pydio/cells/v4/common/proto/broker"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	pb "github.com/pydio/cells/v5/common/proto/broker"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 var (
 	publishers  = make(map[string]pb.Broker_PublishClient)
 	pubLock     sync.Mutex
 	subscribers = make(map[string]*sharedSubscriber)
-	subLock     sync.Mutex
+	subLock     sync.RWMutex
 )
 
 type sharedSubscriber struct {
 	pb.Broker_SubscribeClient
-	cancel context.CancelFunc
-	host   string
-	out    map[string]chan []*pb.Message
+	cancel    context.CancelFunc
+	sharedKey string
+	out       map[string]chan []*pb.Message
 	sync.RWMutex
 }
 
@@ -49,6 +52,7 @@ func (s *sharedSubscriber) Dispatch() {
 	for {
 		resp, err := s.Recv()
 		if err != nil {
+			// TODO - Reconnect if not Canceled ?
 			return
 		}
 		s.RLock()
@@ -71,18 +75,22 @@ func (s *sharedSubscriber) Unsubscribe(subId string) {
 	delete(s.out, subId)
 	if len(s.out) == 0 && s.cancel != nil {
 		s.cancel()
-		delete(subscribers, s.host)
+		subLock.Lock()
+		delete(subscribers, s.sharedKey)
+		subLock.Unlock()
 	}
 }
 
 func init() {
 	o := new(URLOpener)
-	pubsub.DefaultURLMux().RegisterTopic(Scheme, o)
-	pubsub.DefaultURLMux().RegisterSubscription(Scheme, o)
+	for _, scheme := range schemes {
+		pubsub.DefaultURLMux().RegisterTopic(scheme, o)
+		pubsub.DefaultURLMux().RegisterSubscription(scheme, o)
+	}
 }
 
 // Scheme is the URL scheme grpc pubsub registers its URLOpeners under on pubsub.DefaultMux.
-const Scheme = "grpc"
+var schemes = []string{"grpc", "xds"}
 
 // URLOpener opens grpc pubsub URLs like "cells://topic".
 //
@@ -90,7 +98,7 @@ const Scheme = "grpc"
 //
 // Query parameters:
 //   - ackdeadline: The ack deadline for OpenSubscription, in time.ParseDuration formats.
-//       Defaults to 1m.
+//     Defaults to 1m.
 type URLOpener struct {
 	mu     sync.Mutex
 	topics map[string]*pubsub.Topic
@@ -102,10 +110,8 @@ func (o *URLOpener) OpenTopicURL(ctx context.Context, u *url.URL) (*pubsub.Topic
 	pubLock.Lock()
 	defer pubLock.Unlock()
 	if _, ok := publishers[u.Host]; !ok {
-		conn := clientcontext.GetClientConn(ctx)
-		if conn == nil {
-			return nil, errors.New("no connection provided")
-		}
+		// TODO - should handle multicontext
+		conn := grpc.ResolveConn(ctx, common.ServiceBrokerGRPC)
 
 		cli := pb.NewBrokerClient(conn)
 		if s, err := cli.Publish(ctx); err != nil {
@@ -115,42 +121,48 @@ func (o *URLOpener) OpenTopicURL(ctx context.Context, u *url.URL) (*pubsub.Topic
 		}
 	}
 
-	topicName := u.Path
+	topicName := strings.TrimPrefix(u.Path, "/")
+
 	return NewTopic(topicName, u.Host, WithPublisher(publishers[u.Host]))
 }
 
 // OpenSubscriptionURL opens a pubsub.Subscription based on u.
 func (o *URLOpener) OpenSubscriptionURL(ctx context.Context, u *url.URL) (*pubsub.Subscription, error) {
 
-	topicName := u.Path
+	topicName := strings.TrimPrefix(u.Path, "/")
 	queue := u.Query().Get("queue")
 
-	//return NewSubscription(topicName, WithContext(ctx))
+	// Use u.Host to share one connection for all subscriptions
+	// Use u.Host+u.Path to create one connection per subscription
+	sharedKey := u.Host + u.Path
 
-	subLock.Lock()
-	sub, ok := subscribers[u.Host]
+	subLock.RLock()
+	sub, ok := subscribers[sharedKey]
+	subLock.RUnlock()
 	if !ok {
-		conn := clientcontext.GetClientConn(ctx)
-		if conn == nil {
-			return nil, errors.New("no connection provided")
-		}
 
-		ct, ca := context.WithCancel(ctx)
-		cli, err := pb.NewBrokerClient(conn).Subscribe(ct)
+		// We will keep this subscription open - remove cancel here and manage our own cancel
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.WithoutCancel(ctx))
+
+		ctx = metadata.AppendToOutgoingContext(ctx, "cells-subscriber-id", strings.Join(runtime.ProcessStartTags(), " "))
+		cli, err := pb.NewBrokerClient(grpc.ResolveConn(ctx, common.ServiceBrokerGRPC)).Subscribe(ctx)
 		if err != nil {
-			ca()
+			cancel()
 			return nil, err
 		}
 		sub = &sharedSubscriber{
 			Broker_SubscribeClient: cli,
-			host:                   u.Host,
-			cancel:                 ca,
+			sharedKey:              sharedKey,
+			cancel:                 cancel,
 			out:                    make(map[string]chan []*pb.Message),
 		}
-		subscribers[u.Host] = sub
+		subLock.Lock()
+		subscribers[sharedKey] = sub
+		subLock.Unlock()
+
 		go sub.Dispatch()
 	}
-	subLock.Unlock()
 
 	return NewSubscription(topicName, WithQueue(queue), WithContext(ctx), WithSubscriber(sub))
 }
@@ -186,7 +198,7 @@ func NewTopic(path, pubKey string, opts ...Option) (*pubsub.Topic, error) {
 	}
 
 	if stream == nil {
-		conn := clientcontext.GetClientConn(ctx)
+		conn := runtime.GetClientConn(ctx)
 		if conn == nil {
 			return nil, errors.New("no connection provided")
 		}
@@ -332,36 +344,7 @@ func NewSubscription(path string, opts ...Option) (*pubsub.Subscription, error) 
 	}
 
 	if cli == nil {
-		ch = make(chan []*pb.Message, 5000)
-		conn := clientcontext.GetClientConn(ctx)
-		if conn == nil {
-			return nil, errors.New("no connection provided")
-		}
-		var err error
-		ct, ca := context.WithCancel(ctx)
-		cli, err = pb.NewBrokerClient(conn).Subscribe(ct)
-		if err != nil {
-			ca()
-			return nil, err
-		}
-		closer = func() error {
-			ca()
-			return nil
-		}
-
-		go func() {
-			for {
-				resp, err := cli.Recv()
-				if err != nil {
-					return
-				}
-
-				if subId == resp.Id {
-					ch <- resp.Messages
-				}
-			}
-		}()
-
+		return nil, errors.New("please pass a shared subscriber in the subscription options")
 	}
 
 	req := &pb.SubscribeRequest{

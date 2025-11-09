@@ -24,10 +24,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/service/errors"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
 )
 
 var (
@@ -89,30 +88,28 @@ func (m *ActionsManager) DescribeActions(languages ...string) map[string]ActionD
 }
 
 // LoadActionForm tries to load a forms.Form object that can be serialized for frontend
-func (m *ActionsManager) LoadActionForm(actionID string) (*forms.Form, error) {
+func (m *ActionsManager) LoadActionForm(ctx context.Context, actionID string) (*forms.Form, error) {
 	if action, ok := m.ActionById(actionID); ok {
 		if desc, ok := action.(DescriptionProviderAction); ok {
-			form := desc.GetParametersForm()
+			form := desc.GetParametersForm(ctx)
 			if form != nil {
 				return form, nil
 			}
 		}
 	}
-	return nil, errors.NotFound("action.not.found", "cannot find action with ID %s", actionID)
+	return nil, errors.WithMessagef(errors.ActionNotFound, "cannot find action with ID %s", actionID)
 }
 
-type ignoredAction struct {
-	common.RuntimeHolder
-}
+type ignoredAction struct{}
 
 func (i *ignoredAction) GetName() string {
 	return IgnoredActionName
 }
 
-func (i *ignoredAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (i *ignoredAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	return nil
 }
 
-func (i *ignoredAction) Run(_ context.Context, _ *RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (i *ignoredAction) Run(ctx context.Context, channels *RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 	return input, nil
 }

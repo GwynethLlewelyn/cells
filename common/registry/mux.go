@@ -22,8 +22,9 @@ package registry
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/utils/openurl"
 	"net/url"
+
+	"github.com/pydio/cells/v5/common/utils/openurl"
 )
 
 // URLOpener represents types than can open Registries based on a URL.
@@ -57,14 +58,18 @@ func (mux *URLMux) Register(scheme string, opener URLOpener) {
 	mux.schemes.Register("registry", "Registry", scheme, opener)
 }
 
-// OpenTopic calls OpenTopicURL with the URL parsed from urlstr.
-// OpenTopic is safe to call from multiple goroutines.
+// OpenRegistry calls OpenTopicURL with the URL parsed from urlstr.
+// OpenRegistry is safe to call from multiple goroutines.
 func (mux *URLMux) OpenRegistry(ctx context.Context, urlstr string) (Registry, error) {
 	opener, u, err := mux.schemes.FromString("Registry", urlstr)
 	if err != nil {
 		return nil, err
 	}
-	return opener.(URLOpener).OpenURL(ctx, u)
+	reg, err := opener.(URLOpener).OpenURL(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return reg, nil
 }
 
 var defaultURLMux = &URLMux{}

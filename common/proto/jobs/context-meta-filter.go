@@ -30,45 +30,50 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	"github.com/pydio/cells/v4/idm/policy/converter"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/middleware/keys"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/idm/policy/converter"
 )
 
-func (m *ContextMetaFilter) Filter(ctx context.Context, input ActionMessage) (ActionMessage, bool) {
+func (m *ContextMetaFilter) FilterID() string {
+	return "ContextMetaFilter"
+}
+
+func (m *ContextMetaFilter) Filter(ctx context.Context, input *ActionMessage) (*ActionMessage, *ActionMessage, bool) {
 	if len(m.Query.SubQueries) == 0 {
-		return input, true
+		return input, nil, true
 	}
 	if m.Type == ContextMetaFilterType_ContextUser {
 		// Switch an IdmSelector with ContextUser as input
-		return m.filterContextUserQueries(ctx, input)
+		r := m.filterContextUserQueries(ctx, input)
+		return input, nil, r
 	} else {
 		// Apply Policy filter
-		return m.filterPolicyQueries(ctx, input)
+		r := m.filterPolicyQueries(ctx, input)
+		return input, nil, r
 	}
 }
 
-func (m *ContextMetaFilter) filterPolicyQueries(ctx context.Context, input ActionMessage) (ActionMessage, bool) {
+func (m *ContextMetaFilter) filterPolicyQueries(ctx context.Context, input *ActionMessage) bool {
 
 	policyContext := make(map[string]interface{})
-	if ctxMeta, has := metadata.FromContextRead(ctx); has {
+	if ctxMeta, has := propagator.FromContextRead(ctx); has {
 		for _, key := range []string{
-			servicecontext.HttpMetaRemoteAddress,
-			servicecontext.HttpMetaRequestURI,
-			servicecontext.HttpMetaRequestMethod,
-			servicecontext.HttpMetaUserAgent,
-			servicecontext.HttpMetaContentType,
-			servicecontext.HttpMetaCookiesString,
-			servicecontext.HttpMetaProtocol,
-			servicecontext.HttpMetaHostname,
-			servicecontext.HttpMetaHost,
-			servicecontext.HttpMetaPort,
-			servicecontext.ServerTime,
+			keys.HttpMetaRemoteAddress,
+			keys.HttpMetaRequestURI,
+			keys.HttpMetaRequestMethod,
+			keys.HttpMetaUserAgent,
+			keys.HttpMetaContentType,
+			keys.HttpMetaCookiesString,
+			keys.HttpMetaProtocol,
+			keys.HttpMetaHostname,
+			keys.HttpMetaHost,
+			keys.HttpMetaPort,
+			keys.ServerTime,
 		} {
 			if val, hasKey := ctxMeta[key]; hasKey {
 				policyContext[key] = val
@@ -82,7 +87,7 @@ func (m *ContextMetaFilter) filterPolicyQueries(ctx context.Context, input Actio
 		var c ContextMetaSingleQuery
 		if e := anypb.UnmarshalTo(q, &c, proto.UnmarshalOptions{}); e == nil {
 			idPol := &idm.Policy{
-				Id:        uuid.New(),
+				ID:        uuid.New(),
 				Subjects:  []string{"ctx"},
 				Actions:   []string{"ctx"},
 				Resources: []string{"ctx"},
@@ -91,42 +96,41 @@ func (m *ContextMetaFilter) filterPolicyQueries(ctx context.Context, input Actio
 					c.FieldName: c.Condition,
 				},
 			}
-			warden.Manager.Create(converter.ProtoToLadonPolicy(idPol))
+			_ = warden.Manager.Create(ctx, converter.ProtoToLadonPolicy(idPol))
 		}
 	}
-	if err := warden.IsAllowed(&ladon.Request{
+	if err := warden.IsAllowed(ctx, &ladon.Request{
 		Subject:  "ctx",
 		Action:   "ctx",
 		Resource: "ctx",
 		Context:  policyContext,
 	}); err != nil {
 		log.Logger(ctx).Debug("Filter not passing : ", zap.Error(err))
-		return input, false
+		return false
 	}
-	return input, true
+	return true
 }
 
-func (m *ContextMetaFilter) filterContextUserQueries(ctx context.Context, input ActionMessage) (ActionMessage, bool) {
+func (m *ContextMetaFilter) filterContextUserQueries(ctx context.Context, input *ActionMessage) bool {
 	selector := &IdmSelector{
 		Type:  IdmSelectorType_User,
 		Query: m.Query,
 	}
-	username, _ := permissions.FindUserNameInContext(ctx)
+	username := claimsUsernameParser(ctx)
 	var user *idm.User
 	if username == "" {
 		log.Logger(ctx).Debug("Applying filter on ContextUser: return false as user is not found in context")
-		return input, false
+		return false
 	}
 	if username == common.PydioSystemUsername {
 		user = &idm.User{Login: username}
-	} else if u, err := permissions.SearchUniqueUser(ctx, username, "", &idm.UserSingleQuery{Login: username}); err == nil {
+	} else if u, err := clientUniqueUser(ctx, username, "", &idm.UserSingleQuery{Login: username}); err == nil {
 		user = u
 	} else {
 		log.Logger(ctx).Debug("Applying filter on ContextUser: return false as user is not found in the system")
-		return input, false
+		return false
 	}
 	// replace user
-	tmpInput := input.WithUser(user)
-	_, _, pass := selector.Filter(ctx, tmpInput)
-	return input, pass
+	_, _, pass := selector.Filter(ctx, input.WithUser(user))
+	return pass
 }

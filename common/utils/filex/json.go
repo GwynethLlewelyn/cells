@@ -55,7 +55,6 @@ func Read(filename string, readOnly ...bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return b, nil
 }
 
@@ -70,7 +69,7 @@ func Save(filename string, b []byte) error {
 	}
 	defer f.Close()
 
-	if _, err := f.WriteString(string(b)); err != nil {
+	if _, err := f.Write(b); err != nil {
 		return err
 	}
 

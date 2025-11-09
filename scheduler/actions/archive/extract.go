@@ -27,15 +27,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/archive"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/scheduler/actions"
-	"github.com/pydio/cells/v4/scheduler/actions/tools"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes/archive"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/scheduler/actions"
+	"github.com/pydio/cells/v5/scheduler/actions/tools"
 )
 
 var (
@@ -53,7 +53,7 @@ func (ex *ExtractAction) GetDescription(_ ...string) actions.ActionDescription {
 	return actions.ActionDescription{
 		ID:                extractActionName,
 		Label:             "Extract Archive",
-		Icon:              "package-up",
+		Icon:              "archive-search",
 		Category:          actions.ActionCategoryArchives,
 		Description:       "Extract files and folders from a Zip, Tar or Tar.gz archive",
 		SummaryTemplate:   "",
@@ -64,7 +64,7 @@ func (ex *ExtractAction) GetDescription(_ ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (ex *ExtractAction) GetParametersForm() *forms.Form {
+func (ex *ExtractAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -103,7 +103,7 @@ func (ex *ExtractAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (ex *ExtractAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (ex *ExtractAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if format, ok := action.Parameters["format"]; ok {
 		ex.format = format
 	}
@@ -115,7 +115,7 @@ func (ex *ExtractAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (ex *ExtractAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (ex *ExtractAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil
@@ -143,7 +143,7 @@ func (ex *ExtractAction) Run(ctx context.Context, channels *actions.RunnableChan
 	if format == "" || format == detectFormat {
 		format = strings.ToLower(strings.TrimLeft(ext, "."))
 		if format != zipFormat && format != tarFormat && format != tarGzFormat {
-			e := fmt.Errorf("Could not extract format from file extension (" + ext + ")")
+			e := fmt.Errorf("could not extract format from file extension %s", ext)
 			return input.WithError(e), e
 		}
 	}
@@ -170,7 +170,7 @@ func (ex *ExtractAction) Run(ctx context.Context, channels *actions.RunnableChan
 	case "tar.gz":
 		err = reader.ExtractAllTar(ctx, true, archiveNode, targetNode, channels.StatusMsg)
 	default:
-		err = errors.BadRequest(common.ServiceJobs, "Unsupported archive format:"+format)
+		err = errors.WithMessage(errors.InvalidParameters, "unsupported archive format:"+format)
 	}
 	if err != nil {
 		// Remove failed extraction folder ?
@@ -179,6 +179,13 @@ func (ex *ExtractAction) Run(ctx context.Context, channels *actions.RunnableChan
 	}
 
 	log.TasksLogger(ctx).Info(fmt.Sprintf("Archive %s was extracted in %s", path.Base(archiveNode.Path), targetNode.GetPath()))
+	log.Auditer(ctx).Info(
+		fmt.Sprintf("Archive [%s] extracted to [%s]", archiveNode.GetPath(), targetNode.GetPath()),
+		log.GetAuditId(common.AuditNodeCreate),
+		archiveNode.Zap("archive"),
+		targetNode.Zap("target"),
+		archiveNode.ZapSize(),
+	)
 
 	output := input.WithNode(targetNode)
 

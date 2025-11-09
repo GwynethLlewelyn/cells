@@ -21,14 +21,15 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/discovery/install/lib"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/discovery/install/lib"
 )
 
 type configDatabase struct {
@@ -43,9 +44,9 @@ type configDbService struct {
 	serviceName string
 }
 
-func configDatabaseList() (dd []*configDatabase) {
+func configDatabaseList(ctx context.Context) (dd []*configDatabase) {
 
-	m := config.Get("databases").Map()
+	m := config.Get(ctx, "databases").Map()
 
 	for id, v := range m {
 
@@ -89,42 +90,48 @@ func configDatabaseList() (dd []*configDatabase) {
 		log.Fatal(e.Error())
 	}
 
-	for _, s := range ss {
-		var defaultDriver string
-		for _, sOpt := range s.Options().Storages {
-			if sOpt.DefaultDriver != nil {
-				driver, dsn := sOpt.DefaultDriver()
-				defaultDriver = driver
-				skip := false
-				// Exclude already registered
-				for _, d := range dd {
-					if d.driver == driver && d.dsn == dsn {
-						d.services = append(d.services, configDbService{serviceName: s.Name(), storageKey: sOpt.StorageKey})
-						skip = true
-						break
+	_ = ss
+	/*
+		// TODO
+		for _, s := range ss {
+			var defaultDriver string
+			for _, sOpt := range s.Options().StorageOptions.SupportedDrivers {
+
+				if sOpt.DefaultDriver != nil {
+					driver, dsn := sOpt.DefaultDriver()
+					defaultDriver = driver
+					skip := false
+					// Exclude already registered
+					for _, d := range dd {
+						if d.driver == driver && d.dsn == dsn {
+							d.services = append(d.services, configDbService{serviceName: s.Name(), storageKey: sOpt.StorageKey})
+							skip = true
+							break
+						}
 					}
+					if skip {
+						continue
+					}
+					dd = append(dd, &configDatabase{
+						driver:   driver,
+						dsn:      dsn,
+						services: []configDbService{{serviceName: s.Name(), storageKey: sOpt.StorageKey}},
+					})
 				}
-				if skip {
-					continue
-				}
-				dd = append(dd, &configDatabase{
-					driver:   driver,
-					dsn:      dsn,
-					services: []configDbService{{serviceName: s.Name(), storageKey: sOpt.StorageKey}},
-				})
-			}
-			for _, supported := range sOpt.SupportedDrivers {
-				if supported == defaultDriver {
-					continue
-				}
-				for _, d := range dd {
-					if d.driver == supported {
-						d.services = append(d.services, configDbService{serviceName: s.Name(), storageKey: sOpt.StorageKey})
+				for _, supported := range sOpt.SupportedDrivers {
+					if supported == defaultDriver {
+						continue
+					}
+					for _, d := range dd {
+						if d.driver == supported {
+							d.services = append(d.services, configDbService{serviceName: s.Name(), storageKey: sOpt.StorageKey})
+						}
 					}
 				}
 			}
 		}
-	}
+
+	*/
 
 	return
 }
@@ -144,7 +151,7 @@ DESCRIPTION
 		table.SetHeader([]string{"Driver", "DSN", "Possible Services"})
 
 		// List all databases value
-		dd := configDatabaseList()
+		dd := configDatabaseList(cmd.Context())
 		for _, d := range dd {
 			var ss []string
 			for _, s := range d.services {

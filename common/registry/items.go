@@ -20,7 +20,11 @@
 
 package registry
 
-import "github.com/pydio/cells/v4/common/proto/registry"
+import "github.com/pydio/cells/v5/common/proto/registry"
+
+type Convertible interface {
+	As(interface{}) bool
+}
 
 // Item is the main interface for registry items
 type Item interface {
@@ -28,6 +32,15 @@ type Item interface {
 	ID() string
 	Metadata() map[string]string
 	As(interface{}) bool
+}
+
+func ItemsAs[T any](ii []Item) (converted []T) {
+	for _, it := range ii {
+		var ty T
+		it.As(&ty)
+		converted = append(converted, ty)
+	}
+	return
 }
 
 type StatusReporter interface {
@@ -61,11 +74,6 @@ type Service interface {
 
 	Start(oo ...RegisterOption) error
 	Stop(oo ...RegisterOption) error
-
-	ServerScheme() string
-	//IsGeneric() bool
-	//IsGRPC() bool
-	//IsREST() bool
 }
 
 // Dao stores a DAO in the registry
@@ -73,7 +81,7 @@ type Dao interface {
 	Item
 
 	Driver() string
-	Dsn() string
+	DSN() string
 }
 
 // Edge links two vertices together
@@ -83,9 +91,66 @@ type Edge interface {
 	Vertices() []string
 }
 
+type Endpoint interface {
+	Item
+
+	Handler() any
+}
+
 // Generic is the simplest Item implementation
 type Generic interface {
 	Item
 
 	Type() registry.ItemType
+}
+
+type RichItem[T any] struct {
+	UUID     string
+	RichName string
+	Meta     map[string]string
+	Typ      registry.ItemType
+
+	item T
+}
+
+func (r *RichItem[T]) ID() string {
+	return r.UUID
+}
+
+func (r *RichItem[T]) Name() string {
+	return r.RichName
+}
+
+func (r *RichItem[T]) Metadata() map[string]string {
+	return r.Meta
+}
+
+func (r *RichItem[T]) Type() registry.ItemType {
+	return r.Typ
+}
+
+func (r *RichItem[T]) SetMetadata(meta map[string]string) {
+	r.Meta = meta
+}
+
+func (r *RichItem[T]) As(t any) bool {
+	if v, ok := t.(*T); ok {
+		*v = r.item
+		return true
+	}
+
+	if convertible, ok := any(r.item).(Convertible); ok {
+		return convertible.As(t)
+	}
+
+	return false
+}
+
+func NewRichItem[T any](id string, name string, typ registry.ItemType, base T) Item {
+	return &RichItem[T]{
+		item:     base,
+		UUID:     id,
+		RichName: name,
+		Typ:      typ,
+	}
 }

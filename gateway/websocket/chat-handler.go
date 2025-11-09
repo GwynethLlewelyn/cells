@@ -22,28 +22,28 @@ package websocket
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 	"time"
 
-	lkauth "github.com/livekit/protocol/auth"
-	"github.com/pydio/melody"
+	"github.com/microcosm-cc/bluemonday"
+	"github.com/olahol/melody"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	nodescontext "github.com/pydio/cells/v4/common/nodes/context"
-	"github.com/pydio/cells/v4/common/proto/chat"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/proto/chat"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/telemetry/tracing"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 const (
@@ -51,16 +51,21 @@ const (
 )
 
 type ChatHandler struct {
-	ctx       context.Context
+	//ctx       context.Context
 	Websocket *melody.Melody
-	Pool      nodes.SourcesPool
+}
+
+type sessionRoom struct {
+	uuid       string
+	typeString string
+	typeObject string
+	readonly   bool
 }
 
 // NewChatHandler creates a new ChatHandler
 func NewChatHandler(ctx context.Context) *ChatHandler {
-	w := &ChatHandler{ctx: ctx}
-	w.Pool = nodescontext.GetSourcesPool(ctx)
-	w.initHandlers(ctx)
+	w := &ChatHandler{}
+	w.initHandlers()
 	return w
 }
 
@@ -95,26 +100,30 @@ func (c *ChatHandler) BroadcastChatMessage(ctx context.Context, msg *chat.ChatEv
 		buff, _ = protojson.Marshal(wsMessage)
 
 	} else {
-		return fmt.Errorf("Event should provide at least a Msg or a Room")
+		return errors.New("Event should provide at least a Msg or a Room")
 	}
 
 	return c.Websocket.BroadcastFilter(buff, func(session *melody.Session) bool {
+		if !runtime.MultiMatches(session.Request.Context(), ctx) {
+			return false
+		}
 		if session.IsClosed() {
 			log.Logger(ctx).Error("Session is closed")
 			return false
 		}
-		_, found := c.roomInSession(session, compareRoomId)
+		_, found := c.roomInSession(ctx, session, compareRoomId)
 		return found
 	})
 
 }
 
-func (c *ChatHandler) initHandlers(ctx context.Context) {
+func (c *ChatHandler) initHandlers() {
 
 	c.Websocket = melody.New()
 	c.Websocket.Config.MaxMessageSize = 2048
 
 	c.Websocket.HandleError(func(session *melody.Session, i error) {
+		ctx := session.Request.Context()
 		if !strings.Contains(i.Error(), "close 1000 (normal)") {
 			log.Logger(ctx).Debug("HandleError", zap.Error(i))
 		}
@@ -130,24 +139,29 @@ func (c *ChatHandler) initHandlers(ctx context.Context) {
 
 	c.Websocket.HandleMessage(func(session *melody.Session, payload []byte) {
 
+		ct := propagator.ForkedBackgroundWithMeta(session.Request.Context())
+
+		var span trace.Span
 		msg := &Message{}
 		e := json.Unmarshal(payload, msg)
 		if e == nil {
+			ct, span = tracing.StartLocalSpan(ct, "/ws/chat/"+string(msg.Type))
+			defer span.End()
 			switch msg.Type {
 			case MsgSubscribe:
 				if msg.JWT == "" {
-					session.CloseWithMsg(NewErrorMessageString("Empty JWT"))
-					log.Logger(ctx).Debug("empty jwt")
+					_ = session.CloseWithMsg(NewErrorMessageString("Empty JWT"))
+					log.Logger(ct).Debug("empty jwt")
 					return
 				}
 				verifier := auth.DefaultJWTVerifier()
-				_, claims, e := verifier.Verify(ctx, msg.JWT)
+				_, claims, e := verifier.Verify(ct, msg.JWT)
 				if e != nil {
-					log.Logger(ctx).Error("invalid jwt received from websocket connection")
-					session.CloseWithMsg(NewErrorMessage(e))
+					log.Logger(ct).Error("invalid jwt received from websocket connection")
+					_ = session.CloseWithMsg(NewErrorMessage(e))
 					return
 				}
-				updateSessionFromClaims(ctx, session, claims, c.Pool)
+				updateSessionFromClaims(ct, session, claims)
 				return
 
 			case MsgUnsubscribe:
@@ -159,25 +173,26 @@ func (c *ChatHandler) initHandlers(ctx context.Context) {
 		chatMsg := &chat.WebSocketMessage{}
 		e = protojson.Unmarshal(payload, chatMsg)
 		if e != nil {
-			log.Logger(ctx).Debug("Could not unmarshal message", zap.Error(e))
+			log.Logger(ct).Debug("Could not unmarshal message", zap.Error(e))
 			return
 		}
-		// SAVE CTX IN SESSION?
-		// ctx := context.Background()
-		log.Logger(ctx).Debug("Got Message", zap.Any("msg", chatMsg))
+		ct, span = tracing.StartLocalSpan(ct, "/ws/chat/"+chatMsg.Type.String())
+		defer span.End()
+
+		log.Logger(ct).Debug("Got Message", zap.Any("msg", chatMsg))
 		var userName string
 		if userData, ok := session.Get(SessionUsernameKey); !ok && userData != nil {
-			log.Logger(ctx).Debug("Chat Message requires ws subscription first")
+			log.Logger(ct).Debug("Chat Message requires ws subscription first")
 			return
 		} else {
 			userName, ok = userData.(string)
 			if !ok {
-				log.Logger(ctx).Debug("Chat Message requires ws subscription first")
+				log.Logger(ct).Debug("Chat Message requires ws subscription first")
 				return
 			}
 		}
 
-		chatClient := chat.NewChatServiceClient(grpc.GetClientConnFromCtx(c.ctx, common.ServiceChat))
+		chatClient := chat.NewChatServiceClient(grpc.ResolveConn(ct, common.ServiceChatGRPC))
 
 		switch chatMsg.Type {
 
@@ -185,7 +200,7 @@ func (c *ChatHandler) initHandlers(ctx context.Context) {
 
 			sessRoom := &sessionRoom{}
 			if readonly, e := c.auth(session, chatMsg.Room); e != nil {
-				log.Logger(ctx).Error("Not authorized to join this room", zap.Error(e))
+				log.Logger(ct).Error("Not authorized to join this room", zap.Error(e))
 				break
 			} else {
 				sessRoom.readonly = readonly
@@ -194,41 +209,42 @@ func (c *ChatHandler) initHandlers(ctx context.Context) {
 			if chatMsg.Message != nil && chatMsg.Message.Message == "PING" {
 				isPing = true
 			}
-			foundRoom, e1 := c.findOrCreateRoom(ctx, chatMsg.Room, !isPing)
+			foundRoom, e1 := c.findOrCreateRoom(ct, chatMsg.Room, !isPing)
 			if e1 != nil || foundRoom == nil {
-				log.Logger(ctx).Debug("CANNOT JOIN", zap.Any("msg", chatMsg), zap.Any("r", foundRoom), zap.Error(e1))
+				log.Logger(ct).Debug("CANNOT JOIN", zap.Any("msg", chatMsg), zap.Any("r", foundRoom), zap.Error(e1))
 				break
 			}
 			sessRoom.uuid = foundRoom.Uuid
-			c.heartbeat(ctx, userName, foundRoom)
-			c.storeSessionRoom(session, sessRoom)
+			sessRoom.typeString = foundRoom.Type.String()
+			sessRoom.typeObject = foundRoom.RoomTypeObject
+			c.heartbeat(ct, userName, foundRoom)
+			c.storeSessionRoom(ct, session, sessRoom)
 			// Update Room Users
-			if save := c.appendUserToRoom(foundRoom, userName); save {
+			if save := c.appendUserToRoom(ct, foundRoom, userName); save {
 
-				_, e := chatClient.PutRoom(ctx, &chat.PutRoomRequest{Room: foundRoom})
+				_, e := chatClient.PutRoom(ct, &chat.PutRoomRequest{Room: foundRoom})
 				if e != nil {
-					log.Logger(ctx).Error("Error while putting room", zap.Error(e))
+					log.Logger(ct).Error("Error while putting room", zap.Error(e))
 				}
 			}
 
 		case chat.WsMessageType_LEAVE:
 
-			foundRoom, e1 := c.findOrCreateRoom(ctx, chatMsg.Room, false)
+			foundRoom, e1 := c.findOrCreateRoom(ct, chatMsg.Room, false)
 			if e1 == nil && foundRoom != nil {
-				if save := c.removeUserFromRoom(foundRoom, userName); save {
-					chatClient.PutRoom(ctx, &chat.PutRoomRequest{Room: foundRoom})
-					log.Logger(ctx).Debug("LEAVE", zap.Any("msg", chatMsg), zap.Any("r", foundRoom))
+				if save := c.removeUserFromRoom(ct, foundRoom, userName); save {
+					chatClient.PutRoom(ct, &chat.PutRoomRequest{Room: foundRoom})
+					log.Logger(ct).Debug("LEAVE", zap.Any("msg", chatMsg), zap.Any("r", foundRoom))
 				}
-				c.removeSessionRoom(session, foundRoom.Uuid)
+				c.removeSessionRoom(ct, session, foundRoom.Uuid)
 			}
 
 		case chat.WsMessageType_HISTORY:
 			// Must arrive AFTER a JOIN message
-			foundRoom, e1 := c.findOrCreateRoom(ctx, chatMsg.Room, false)
+			foundRoom, e1 := c.findOrCreateRoom(ct, chatMsg.Room, false)
 			if e1 != nil || foundRoom == nil {
 				break
 			}
-			c.sendVideoInfoIfSupported(ctx, foundRoom.Uuid, session)
 			request := &chat.ListMessagesRequest{RoomUuid: foundRoom.Uuid}
 			if chatMsg.Message != nil {
 				var offData map[string]int
@@ -242,52 +258,101 @@ func (c *ChatHandler) initHandlers(ctx context.Context) {
 					}
 				}
 			}
+			// First make sure to send a RoomUpdate
+			wsMessage := &chat.WebSocketMessage{
+				Type: chat.WsMessageType_ROOM_UPDATE,
+				Room: foundRoom,
+			}
+			buff, _ := protojson.Marshal(wsMessage)
+			session.Write(buff)
+
 			// List existing Messages
-			ct, ca := context.WithCancel(ctx)
+			ct, ca := context.WithCancel(ct)
 			defer ca()
 			stream, e2 := chatClient.ListMessages(ct, request)
 			if e2 == nil {
+				count := 0
+				var first *chat.ChatMessage
 				for {
 					resp, e3 := stream.Recv()
 					if e3 != nil {
 						break
 					}
-					b, _ := protojson.Marshal(resp.Message)
-					session.Write(b)
+					if count == 0 {
+						first = resp.GetMessage()
+					}
+					b, _ := protojson.Marshal(resp.GetMessage())
+					_ = session.Write(b)
+					count++
+				}
+				if request.Limit > 0 && count == int(request.Limit) && first != nil {
+					// indicate that there may be more pending messages
+					type HasMoreData struct {
+						Type      string `json:"@type"`
+						RoomUuid  string `json:"RoomUuid"`
+						Timestamp int64  `json:"Timestamp"`
+						Offset    int    `json:"Offset"`
+						Limit     int    `json:"Limit"`
+					}
+					b, _ := json.Marshal(HasMoreData{
+						Type:      "MAY_HAVE_MORE",
+						RoomUuid:  foundRoom.Uuid,
+						Timestamp: first.GetTimestamp(),
+						Offset:    int(request.Offset + request.Limit),
+						Limit:     int(request.Limit),
+					})
+					_ = session.Write(b)
 				}
 			}
 
 		case chat.WsMessageType_POST:
 
-			log.Logger(ctx).Debug("POST", zap.Any("msg", chatMsg))
-			if session, found := c.roomInSession(session, chatMsg.Message.RoomUuid); !found || session.readonly {
-				log.Logger(ctx).Error("Not authorized to post in this room")
+			log.Logger(ct).Debug("POST", zap.Any("msg", chatMsg))
+			var knownRoom *chat.ChatRoom
+			if room, found := c.roomInSession(ct, session, chatMsg.Message.RoomUuid); !found || room.readonly {
+				log.Logger(ct).Error("Not authorized to post in this room")
 				break
+			} else {
+				knownRoom = &chat.ChatRoom{
+					Uuid:           room.uuid,
+					Type:           chat.RoomType(chat.RoomType_value[room.typeString]),
+					RoomTypeObject: room.typeObject,
+				}
 			}
 			message := chatMsg.Message
 			message.Author = userName
+			message.Message = bluemonday.UGCPolicy().Sanitize(message.Message)
 			message.Timestamp = time.Now().Unix()
-			_, e := chatClient.PostMessage(ctx, &chat.PostMessageRequest{
-				Messages: []*chat.ChatMessage{message},
+			_, e := chatClient.PostMessage(ct, &chat.PostMessageRequest{
+				Messages:   []*chat.ChatMessage{message},
+				KnownRooms: map[string]*chat.ChatRoom{message.RoomUuid: knownRoom},
 			})
 			if e != nil {
-				log.Logger(ctx).Error("Error while posting message", zap.Any("msg", message), zap.Error(e))
+				log.Logger(ct).Error("Error while posting message", zap.Any("msg", message), zap.Error(e))
 			}
 
 		case chat.WsMessageType_DELETE_MSG:
 
-			log.Logger(ctx).Debug("Delete", zap.Any("msg", chatMsg))
-			if session, found := c.roomInSession(session, chatMsg.Message.RoomUuid); !found || session.readonly {
-				log.Logger(ctx).Error("Not authorized to post in this room")
+			log.Logger(ct).Debug("Delete", zap.Any("msg", chatMsg))
+			var knownRoom *chat.ChatRoom
+			if room, found := c.roomInSession(ct, session, chatMsg.Message.RoomUuid); !found || room.readonly {
+				log.Logger(ct).Error("Not authorized to post in this room")
 				break
+			} else {
+				knownRoom = &chat.ChatRoom{
+					Uuid:           room.uuid,
+					Type:           chat.RoomType(chat.RoomType_value[room.typeString]),
+					RoomTypeObject: room.typeObject,
+				}
 			}
 			message := chatMsg.Message
 			if message.Author == userName {
-				_, e := chatClient.DeleteMessage(ctx, &chat.DeleteMessageRequest{
-					Messages: []*chat.ChatMessage{message},
+				_, e := chatClient.DeleteMessage(ct, &chat.DeleteMessageRequest{
+					Messages:   []*chat.ChatMessage{message},
+					KnownRooms: map[string]*chat.ChatRoom{message.RoomUuid: knownRoom},
 				})
 				if e != nil {
-					log.Logger(ctx).Error("Error while deleting message", zap.Any("msg", message), zap.Error(e))
+					log.Logger(ct).Error("Error while deleting message", zap.Any("msg", message), zap.Error(e))
 				}
 			}
 
@@ -297,12 +362,7 @@ func (c *ChatHandler) initHandlers(ctx context.Context) {
 
 }
 
-type sessionRoom struct {
-	uuid     string
-	readonly bool
-}
-
-func (c *ChatHandler) roomInSession(session *melody.Session, roomUuid string) (*sessionRoom, bool) {
+func (c *ChatHandler) roomInSession(ctx context.Context, session *melody.Session, roomUuid string) (*sessionRoom, bool) {
 	if key, ok := session.Get(SessionRoomKey); ok && key != nil {
 		rooms := key.([]*sessionRoom)
 		for _, v := range rooms {
@@ -310,12 +370,12 @@ func (c *ChatHandler) roomInSession(session *melody.Session, roomUuid string) (*
 				return v, true
 			}
 		}
-		log.Logger(context.Background()).Debug("looking for rooms in session", zap.String("search", roomUuid))
+		log.Logger(ctx).Debug("looking for rooms in session", zap.String("search", roomUuid))
 	}
 	return nil, false
 }
 
-func (c *ChatHandler) storeSessionRoom(session *melody.Session, room *sessionRoom) *melody.Session {
+func (c *ChatHandler) storeSessionRoom(ctx context.Context, session *melody.Session, room *sessionRoom) *melody.Session {
 	var rooms []*sessionRoom
 	if key, ok := session.Get(SessionRoomKey); ok && key != nil {
 		rooms = key.([]*sessionRoom)
@@ -328,15 +388,15 @@ func (c *ChatHandler) storeSessionRoom(session *melody.Session, room *sessionRoo
 	}
 	if !found {
 		rooms = append(rooms, room)
-		log.Logger(context.Background()).Debug("storing rooms to session", zap.Any("room", room.uuid), zap.Int("rooms length", len(rooms)))
+		log.Logger(ctx).Debug("storing rooms to session", zap.Any("room", room.uuid), zap.Int("rooms length", len(rooms)))
 		session.Set(SessionRoomKey, rooms)
 	} else {
-		log.Logger(context.Background()).Debug("rooms to session already found", zap.Any("room", room.uuid), zap.Int("rooms length", len(rooms)))
+		log.Logger(ctx).Debug("rooms to session already found", zap.Any("room", room.uuid), zap.Int("rooms length", len(rooms)))
 	}
 	return session
 }
 
-func (c *ChatHandler) removeSessionRoom(session *melody.Session, roomUuid string) *melody.Session {
+func (c *ChatHandler) removeSessionRoom(ctx context.Context, session *melody.Session, roomUuid string) *melody.Session {
 	var rooms []*sessionRoom
 	if key, ok := session.Get(SessionRoomKey); ok && key != nil {
 		rooms = key.([]*sessionRoom)
@@ -347,14 +407,14 @@ func (c *ChatHandler) removeSessionRoom(session *melody.Session, roomUuid string
 			newRooms = append(newRooms, k)
 		}
 	}
-	log.Logger(context.Background()).Debug("removing room from session", zap.Any("room", roomUuid), zap.Int("rooms length", len(newRooms)))
+	log.Logger(ctx).Debug("removing room from session", zap.Any("room", roomUuid), zap.Int("rooms length", len(newRooms)))
 	session.Set(SessionRoomKey, newRooms)
 	return session
 }
 
 func (c *ChatHandler) findOrCreateRoom(ctx context.Context, room *chat.ChatRoom, createIfNotExists bool) (*chat.ChatRoom, error) {
 
-	chatClient := chat.NewChatServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceChat))
+	chatClient := chat.NewChatServiceClient(grpc.ResolveConn(ctx, common.ServiceChatGRPC))
 	ct, ca := context.WithCancel(ctx)
 	defer ca()
 	s, e := chatClient.ListRooms(ct, &chat.ListRoomsRequest{
@@ -385,13 +445,13 @@ func (c *ChatHandler) findOrCreateRoom(ctx context.Context, room *chat.ChatRoom,
 		return nil, e1
 	}
 	if resp.Room == nil {
-		return nil, fmt.Errorf("nil room in response, this is not normal")
+		return nil, errors.New("nil room in response, this is not normal")
 	}
 	return resp.Room, nil
 
 }
 
-func (c *ChatHandler) appendUserToRoom(room *chat.ChatRoom, userName string) bool {
+func (c *ChatHandler) appendUserToRoom(ctx context.Context, room *chat.ChatRoom, userName string) bool {
 	uniq := map[string]string{}
 	for _, u := range room.Users {
 		uniq[u] = u
@@ -407,7 +467,7 @@ func (c *ChatHandler) appendUserToRoom(room *chat.ChatRoom, userName string) boo
 	return true
 }
 
-func (c *ChatHandler) removeUserFromRoom(room *chat.ChatRoom, userName string) bool {
+func (c *ChatHandler) removeUserFromRoom(ctx context.Context, room *chat.ChatRoom, userName string) bool {
 	users := []string{}
 	var found bool
 	for _, u := range room.Users {
@@ -427,7 +487,7 @@ var uuidRouter nodes.Client
 func (c *ChatHandler) auth(session *melody.Session, room *chat.ChatRoom) (bool, error) {
 
 	var readonly bool
-	ctx, err := prepareRemoteContext(c.ctx, session)
+	ctx, err := prepareRemoteContext(session.Request.Context(), session)
 	if err != nil {
 		return false, err
 	}
@@ -437,7 +497,7 @@ func (c *ChatHandler) auth(session *melody.Session, room *chat.ChatRoom) (bool, 
 
 		// Check node is readable and writeable
 		if uuidRouter == nil {
-			uuidRouter = compose.UuidClient(c.ctx)
+			uuidRouter = compose.UuidClient()
 		}
 		resp, e := uuidRouter.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: room.RoomTypeObject}})
 		if e != nil {
@@ -455,56 +515,4 @@ func (c *ChatHandler) auth(session *melody.Session, room *chat.ChatRoom) (bool, 
 		// TODO
 	}
 	return readonly, nil
-}
-
-func (c *ChatHandler) sendVideoInfoIfSupported(ctx context.Context, roomUuid string, session *melody.Session) {
-	if os.Getenv("CELLS_ENABLE_LIVEKIT") == "" {
-		return
-	}
-	conf := config.Get("frontend", "plugin", "action.livekit")
-	if !conf.Val(config.KeyFrontPluginEnabled).Bool() {
-		return
-	}
-	var lkUrl string
-	if mc, ok := session.Get(SessionMetaContext); ok {
-		meta := mc.(map[string]string)
-		if host, o := meta[servicecontext.HttpMetaHost]; o && host != "" {
-			lkUrl = "wss://" + host
-		}
-	}
-	if lkUrl == "" {
-		return
-	}
-	apiKey := conf.Val("LK_API_KEY").String()
-	apiSecret := conf.Val("LK_API_SECRET").String()
-	apiSecret = config.Vault().Val(apiSecret).String()
-	sessionUser, _ := session.Get(SessionUsernameKey)
-
-	if token, e := c.getLKJoinToken(apiKey, apiSecret, roomUuid, sessionUser.(string)); e == nil {
-		type CallData struct {
-			Type     string `json:"@type"`
-			RoomUuid string `json:"RoomUuid"`
-			Url      string `json:"Url"`
-			Token    string `json:"Token"`
-		}
-		cd, _ := json.Marshal(&CallData{Type: "VIDEO_CALL", RoomUuid: roomUuid, Url: lkUrl, Token: token})
-		session.Write(cd)
-	} else {
-		log.Logger(ctx).Error("Cannot load LK Token")
-	}
-
-}
-
-// getLKJoinToken computes a valid token for Livekit server
-func (c *ChatHandler) getLKJoinToken(apiKey, apiSecret, room, identity string) (string, error) {
-	at := lkauth.NewAccessToken(apiKey, apiSecret)
-	grant := &lkauth.VideoGrant{
-		RoomJoin: true,
-		Room:     room,
-	}
-	at.AddGrant(grant).
-		SetIdentity(identity).
-		SetValidFor(time.Hour)
-
-	return at.ToJWT()
 }

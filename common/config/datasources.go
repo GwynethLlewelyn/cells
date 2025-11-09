@@ -21,18 +21,19 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/net"
-	standard "github.com/pydio/cells/v4/common/utils/std"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/net"
+	standard "github.com/pydio/cells/v5/common/utils/std"
 )
 
 var (
@@ -40,41 +41,48 @@ var (
 )
 
 // ListMinioConfigsFromConfig scans configs for objects services configs
-func ListMinioConfigsFromConfig() map[string]*object.MinioConfig {
+func ListMinioConfigsFromConfig(ctx context.Context, skipSecret ...bool) map[string]*object.MinioConfig {
 	res := make(map[string]*object.MinioConfig)
 
-	names := SourceNamesForDataServices(common.ServiceDataObjects)
+	names := SourceNamesForDataServices(ctx, common.ServiceDataObjects)
 	for _, name := range names {
-		var conf *object.MinioConfig
-		if e := Get(configx.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataObjects_+name)).Scan(&conf); e == nil && conf != nil {
-			res[name] = conf
+		res[name] = GetMinioConfigForName(ctx, name, len(skipSecret) == 1 && skipSecret[0])
+	}
+	return res
+}
+
+func GetMinioConfigForName(ctx context.Context, name string, skipSecret bool) *object.MinioConfig {
+	var conf *object.MinioConfig
+	if e := Get(ctx, standard.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataObjects_+name)).Scan(&conf); e == nil && conf != nil {
+		if !skipSecret {
 			// Replace ApiSecret with value from vault
-			if sec := GetSecret(conf.ApiSecret).String(); sec != "" {
+			if sec := GetSecret(ctx, conf.ApiSecret).String(); sec != "" {
 				conf.ApiSecret = sec
 			}
 		}
 	}
-	return res
+
+	return conf
 }
 
 // ListSourcesFromConfig scans configs for sync services configs
-func ListSourcesFromConfig() map[string]*object.DataSource {
+func ListSourcesFromConfig(ctx context.Context) map[string]*object.DataSource {
 	res := make(map[string]*object.DataSource)
-	names := SourceNamesForDataServices(common.ServiceDataSync)
+	names := SourceNamesForDataServices(ctx, common.ServiceDataSync)
 	for _, name := range names {
-		if conf, e := GetSourceInfoByName(name); e == nil {
+		if conf, e := GetSourceInfoByName(ctx, name); e == nil {
 			res[name] = conf
 		}
 	}
 	return res
 }
 
-func GetSourceInfoByName(dsName string) (*object.DataSource, error) {
+func GetSourceInfoByName(ctx context.Context, dsName string) (*object.DataSource, error) {
 	var conf *object.DataSource
-	c := Get(configx.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+dsName))
+	c := Get(ctx, standard.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+dsName))
 	if e := c.Scan(&conf); e == nil {
 		if conf == nil {
-			return nil, fmt.Errorf("cannot load source by name " + dsName)
+			return nil, errors.New("cannot load source by name " + dsName)
 		}
 		return conf, nil
 	} else {
@@ -83,8 +91,8 @@ func GetSourceInfoByName(dsName string) (*object.DataSource, error) {
 }
 
 // SourceNamesForDataServices list sourceNames from the config, excluding the timestamp key
-func SourceNamesForDataServices(dataSrvType string) []string {
-	return SourceNamesFromDataConfigs(Get(configx.FormatPath("services", common.ServiceGrpcNamespace_+dataSrvType)))
+func SourceNamesForDataServices(ctx context.Context, dataSrvType string) []string {
+	return SourceNamesFromDataConfigs(Get(ctx, standard.FormatPath("services", common.ServiceGrpcNamespace_+dataSrvType)))
 }
 
 // SourceNamesFromDataConfigs list sourceNames from the config, excluding the timestamp key
@@ -105,34 +113,34 @@ func SourceNamesFiltered(names []string) []string {
 }
 
 // SourceNamesToConfig saves index and sync sources to configs
-func SourceNamesToConfig(sources map[string]*object.DataSource) {
+func SourceNamesToConfig(ctx context.Context, sources map[string]*object.DataSource) {
 	var sourcesJsonKey []string
 	for name := range sources {
 		sourcesJsonKey = append(sourcesJsonKey, name)
 	}
 	// Append a timestamped value to make sure it modifies the sources and triggers a config.Watch() event
 	sourcesJsonKey = append(sourcesJsonKey, fmt.Sprintf("%s%v", sourcesTimestampPrefix, time.Now().Unix()))
-	Set(sourcesJsonKey, configx.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataSync, "sources"))
-	Set(sourcesJsonKey, configx.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataIndex, "sources"))
+	Set(ctx, sourcesJsonKey, standard.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataSync, "sources"))
+	Set(ctx, sourcesJsonKey, standard.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataIndex, "sources"))
 }
 
 // TouchSourceNamesForDataServices update the timestamp set with the source list
-func TouchSourceNamesForDataServices(dataSrvType string) {
-	sources := SourceNamesForDataServices(dataSrvType)
+func TouchSourceNamesForDataServices(ctx context.Context, dataSrvType string) {
+	sources := SourceNamesForDataServices(ctx, dataSrvType)
 	sources = append(sources, fmt.Sprintf("%s%v", sourcesTimestampPrefix, time.Now().Unix()))
-	Set(sources, configx.FormatPath("services", common.ServiceGrpcNamespace_+dataSrvType, "sources"))
-	Save(common.PydioSystemUsername, "Touch sources update date for "+dataSrvType)
+	Set(ctx, sources, standard.FormatPath("services", common.ServiceGrpcNamespace_+dataSrvType, "sources"))
+	Save(ctx, common.PydioSystemUsername, "Touch sources update date for "+dataSrvType)
 }
 
 // MinioConfigNamesToConfig saves objects sources to config
-func MinioConfigNamesToConfig(sources map[string]*object.MinioConfig) {
+func MinioConfigNamesToConfig(ctx context.Context, sources map[string]*object.MinioConfig) {
 	var sourcesJSONKey []string
 	for name := range sources {
 		sourcesJSONKey = append(sourcesJSONKey, name)
 	}
 	// Append a timestamped value to make sure it modifies the sources and triggers a config.Watch() event
 	sourcesJSONKey = append(sourcesJSONKey, fmt.Sprintf("%s%v", sourcesTimestampPrefix, time.Now().Unix()))
-	Set(sourcesJSONKey, configx.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataObjects, "sources"))
+	Set(ctx, sourcesJSONKey, standard.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceDataObjects, "sources"))
 }
 
 // IndexServiceTableNames returns table names for indexes
@@ -166,7 +174,7 @@ func UnusedMinioServers(minios map[string]*object.MinioConfig, sources map[strin
 }
 
 // FactorizeMinioServers tries to find exisiting MinioConfig that can be directly reused by the new source, or creates a new one
-func FactorizeMinioServers(existingConfigs map[string]*object.MinioConfig, newSource *object.DataSource, update bool) (config *object.MinioConfig, e error) {
+func FactorizeMinioServers(ctx context.Context, existingConfigs map[string]*object.MinioConfig, newSource *object.DataSource, update bool) (config *object.MinioConfig, e error) {
 
 	if newSource.StorageType == object.StorageType_S3 {
 		if gateway := filterGatewaysWithKeys(existingConfigs, newSource.StorageType, newSource.ApiKey, newSource.StorageConfiguration[object.StorageKeyCustomEndpoint]); gateway != nil {
@@ -176,6 +184,14 @@ func FactorizeMinioServers(existingConfigs map[string]*object.MinioConfig, newSo
 			// If it's an update then we want to change the config secret
 			if !update {
 				newSource.ApiSecret = config.ApiSecret
+			} else {
+				// We may have to update signature version
+				if sv, o := newSource.StorageConfiguration[object.StorageKeySignatureVersion]; o {
+					if config.GatewayConfiguration == nil {
+						config.GatewayConfiguration = make(map[string]string, 1)
+					}
+					config.GatewayConfiguration[object.StorageKeySignatureVersion] = sv
+				}
 			}
 		} else if update {
 			// Update existing config
@@ -183,6 +199,12 @@ func FactorizeMinioServers(existingConfigs map[string]*object.MinioConfig, newSo
 			config.ApiKey = newSource.ApiKey
 			config.ApiSecret = newSource.ApiSecret
 			config.EndpointUrl = newSource.StorageConfiguration[object.StorageKeyCustomEndpoint]
+			if sv, o := newSource.StorageConfiguration[object.StorageKeySignatureVersion]; o {
+				if config.GatewayConfiguration == nil {
+					config.GatewayConfiguration = make(map[string]string, 1)
+				}
+				config.GatewayConfiguration[object.StorageKeySignatureVersion] = sv
+			}
 		} else {
 			config = &object.MinioConfig{
 				Name:        createConfigName(existingConfigs, object.StorageType_S3),
@@ -191,6 +213,11 @@ func FactorizeMinioServers(existingConfigs map[string]*object.MinioConfig, newSo
 				ApiSecret:   newSource.ApiSecret,
 				RunningPort: createConfigPort(existingConfigs, newSource.ObjectsPort),
 				EndpointUrl: newSource.StorageConfiguration[object.StorageKeyCustomEndpoint],
+			}
+			if sv, o := newSource.StorageConfiguration[object.StorageKeySignatureVersion]; o {
+				config.GatewayConfiguration = map[string]string{
+					object.StorageKeySignatureVersion: sv,
+				}
 			}
 		}
 	} else if newSource.StorageType == object.StorageType_AZURE {
@@ -240,10 +267,12 @@ func FactorizeMinioServers(existingConfigs map[string]*object.MinioConfig, newSo
 			}
 			if updateCredsSecret {
 				if crtSecretId != "" {
-					DelSecret(crtSecretId)
+					_ = DelSecret(ctx, crtSecretId)
 				}
 				secretId := NewKeyForSecret()
-				SetSecret(secretId, creds)
+				if er := SetSecret(ctx, secretId, creds); er != nil {
+					return nil, fmt.Errorf("error while saving secret key %w", er)
+				}
 				config.GatewayConfiguration = map[string]string{object.StorageKeyJsonCredentials: secretId}
 				newSource.StorageConfiguration[object.StorageKeyJsonCredentials] = secretId
 			}
@@ -255,7 +284,9 @@ func FactorizeMinioServers(existingConfigs map[string]*object.MinioConfig, newSo
 			}
 			// Replace credentials by a secret Key
 			secretId := NewKeyForSecret()
-			SetSecret(secretId, creds)
+			if er := SetSecret(ctx, secretId, creds); er != nil {
+				return nil, fmt.Errorf("error while saving secrte key %w", er)
+			}
 			newSource.StorageConfiguration[object.StorageKeyJsonCredentials] = secretId
 			config = &object.MinioConfig{
 				Name:                 createConfigName(existingConfigs, object.StorageType_GCS),
@@ -372,9 +403,13 @@ func filterMiniosWithBaseFolder(configs map[string]*object.MinioConfig, peerAddr
 		if source.StorageType == object.StorageType_LOCAL && net.PeerAddressesAreSameNode(source.PeerAddress, peerAddress) {
 			sep := string(os.PathSeparator)
 			if source.LocalFolder == folder {
+				// If one of these are empty (= start on all node) and not the other one, we don't know how to choose.
+				if (source.PeerAddress == "" && peerAddress != "") || (source.PeerAddress != "" && peerAddress == "") {
+					return nil, errors.WithMessagef(errors.DatasourceConflict, "there is a Peer Address conflict between two object services pointing on %s. Make sure to either set Peer Addresses everywhere, or no address at all.", source.LocalFolder)
+				}
 				return source, nil
 			} else if strings.HasPrefix(source.LocalFolder, strings.TrimRight(folder, sep)+sep) || strings.HasPrefix(folder, strings.TrimRight(source.LocalFolder, sep)+sep) {
-				return nil, errors.Conflict("datasource.nested.path", "object service %s is already pointing to %s, make sure to avoid using nested paths for different datasources", source.Name, source.LocalFolder)
+				return nil, errors.WithMessagef(errors.DatasourceConflict, "object service %s is already pointing to %s, make sure to avoid using nested paths for different datasources", source.Name, source.LocalFolder)
 			}
 		}
 	}

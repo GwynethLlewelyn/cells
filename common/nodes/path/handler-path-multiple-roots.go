@@ -22,19 +22,20 @@ package path
 
 import (
 	"context"
+	"path"
 	"strings"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func WithMultipleRoots() nodes.Option {
@@ -75,13 +76,13 @@ func (m *MultipleRootsHandler) setWorkspaceRootFlag(ws *idm.Workspace, node *tre
 
 func (m *MultipleRootsHandler) updateInputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
-	branch, set := nodes.GetBranchInfo(ctx, identifier)
+	branch, er := nodes.GetBranchInfo(ctx, identifier)
 	//log.Logger(ctx).Info("updateInput", zap.Any("branch", branch), zap.Bool("set", set), node.Zap())
-	if !set || (branch.Workspace != nil && branch.UUID == "ROOT") || branch.Client != nil {
+	if er != nil || (branch.Workspace != nil && branch.UUID == "ROOT") || branch.Client != nil {
 		return ctx, node, nil
 	}
 	if len(branch.RootUUIDs) == 1 {
-		rootNode, err := m.LookupRoot(branch.RootUUIDs[0])
+		rootNode, err := m.LookupRoot(ctx, branch.RootUUIDs[0])
 		if err != nil {
 			return ctx, node, err
 		}
@@ -96,7 +97,7 @@ func (m *MultipleRootsHandler) updateInputBranch(ctx context.Context, node *tree
 	parts := strings.Split(strings.Trim(node.Path, "/"), "/")
 	if len(parts) > 0 {
 		rootId := parts[0]
-		rootKeys, e := m.GetRootKeys(branch.RootUUIDs)
+		rootKeys, e := m.GetRootKeys(ctx, branch.RootUUIDs)
 		if e != nil {
 			return ctx, out, e
 		}
@@ -110,38 +111,45 @@ func (m *MultipleRootsHandler) updateInputBranch(ctx context.Context, node *tree
 		}
 	}
 	if branch.Root == nil {
-		return ctx, node, errors.NotFound("node.not.found", "Cannot find root node")
+		return ctx, node, errors.WithMessage(errors.NodeNotFound, "Cannot find root node")
+	} else if dsName := branch.Root.GetStringMeta(common.MetaNamespaceDatasourceName); dsName == "" {
+		log.Logger(ctx).Warn("Loaded a branch.Root without datasource name info!", branch.Root.Zap())
 	}
 	return ctx, m.setWorkspaceRootFlag(branch.Workspace, out), nil
 }
 
 func (m *MultipleRootsHandler) updateOutputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
-	branch, set := nodes.GetBranchInfo(ctx, identifier)
+	branch, er := nodes.GetBranchInfo(ctx, identifier)
 	out := node.Clone()
-	if set && branch.DataSource != nil && branch.Workspace != nil && branch.UUID != "ROOT" {
+	if er == nil && branch.DataSource != nil && branch.Workspace != nil && branch.UUID != "ROOT" {
 		if branch.EncryptionMode != object.EncryptionMode_CLEAR {
 			out.MustSetMeta(common.MetaFlagEncrypted, "true")
 		}
 		if branch.VersioningPolicyName != "" {
 			out.MustSetMeta(common.MetaFlagVersioning, "true")
 		}
+		if h, o := branch.ConfigurationByKey(object.StorageKeyHashingVersion); o {
+			out.MustSetMeta(common.MetaFlagHashingVersion, h)
+		}
 	}
-	if !set || branch.Workspace == nil || branch.UUID == "ROOT" || len(branch.RootUUIDs) < 2 {
+	if er != nil || branch.Workspace == nil || branch.UUID == "ROOT" {
+		// Todo
 		return ctx, m.setWorkspaceRootFlag(branch.Workspace, out), nil
 	}
 	if len(branch.RootUUIDs) == 1 {
-		root, _ := m.LookupRoot(branch.RootUUIDs[0])
-		if !root.IsLeaf() {
+		if root, er := m.LookupRoot(ctx, branch.RootUUIDs[0]); er == nil && !root.IsLeaf() {
 			return ctx, m.setWorkspaceRootFlag(branch.Workspace, out), nil
+		} else if er != nil {
+			return ctx, node, errors.WithMessage(errors.BranchInfoRootMissing, identifier)
 		}
 	}
 	if branch.Root == nil {
-		return ctx, node, nodes.ErrBranchInfoRootMissing(identifier)
+		return ctx, node, errors.WithMessage(errors.BranchInfoRootMissing, identifier)
 	}
 	// Prepend root node Uuid
 	out = m.setWorkspaceRootFlag(branch.Workspace, out)
-	out.Path = m.MakeRootKey(branch.Root) + "/" + strings.TrimLeft(node.Path, "/")
+	out.Path = path.Join(m.MakeRootKey(branch.Root), strings.TrimLeft(node.Path, "/"))
 	return ctx, out, nil
 }
 
@@ -149,11 +157,14 @@ func (m *MultipleRootsHandler) ListNodes(ctx context.Context, in *tree.ListNodes
 
 	// First try, without modifying ctx & node
 	_, out, err := m.updateInputBranch(ctx, in.Node, "in")
-	if err != nil && errors.FromError(err).Status == "Not Found" {
+	if errors.Is(err, errors.StatusNotFound) {
 
-		branch, _ := nodes.GetBranchInfo(ctx, "in")
+		branch, er := nodes.GetBranchInfo(ctx, "in")
+		if er != nil {
+			return nil, er
+		}
 		streamer := nodes.NewWrappingStreamer(ctx)
-		nn, e := m.GetRootKeys(branch.RootUUIDs)
+		nn, e := m.GetRootKeys(ctx, branch.RootUUIDs)
 		if e != nil {
 			return streamer, e
 		}
@@ -176,7 +187,7 @@ func (m *MultipleRootsHandler) ListNodes(ctx context.Context, in *tree.ListNodes
 				}
 				node.MustSetMeta(common.MetaFlagWorkspaceRoot, "true")
 				log.Logger(ctx).Debug("[Multiple Root] Sending back node", node.Zap())
-				streamer.Send(&tree.ListNodesResponse{Node: node})
+				_ = streamer.Send(&tree.ListNodesResponse{Node: node})
 			}
 		}()
 		return streamer, nil
@@ -190,12 +201,11 @@ func (m *MultipleRootsHandler) ReadNode(ctx context.Context, in *tree.ReadNodeRe
 
 	// First try, without modifying ctx & node
 	_, out, err := m.updateInputBranch(ctx, in.Node, "in")
-	if err != nil && errors.FromError(err).Status == "Not Found" && (in.Node.Path == "/" || in.Node.Path == "") {
+	if err != nil && errors.Is(err, errors.StatusNotFound) && (in.Node.Path == "/" || in.Node.Path == "") {
 
-		// Load root nodes and
-		// return a fake root node
+		// Load multiple root nodes and build a fake parent node
 		branch, _ := nodes.GetBranchInfo(ctx, "in")
-		nn, e := m.GetRootKeys(branch.RootUUIDs)
+		nn, e := m.GetRootKeys(ctx, branch.RootUUIDs)
 		if e != nil {
 			return &tree.ReadNodeResponse{Success: true, Node: &tree.Node{Path: ""}}, nil
 		}
@@ -205,11 +215,25 @@ func (m *MultipleRootsHandler) ReadNode(ctx context.Context, in *tree.ReadNodeRe
 			Size:  0,
 			MTime: 0,
 		}
+		hashingVersion := ""
 		for _, node := range nn {
 			fakeNode.Size += node.Size
 			if node.MTime > fakeNode.MTime {
 				fakeNode.MTime = node.MTime
 			}
+			if dsName := node.GetStringMeta(common.MetaNamespaceDatasourceName); dsName != "" {
+				if ls, er := nodes.GetSourcesPool(ctx).GetDataSourceInfo(dsName); er == nil {
+					h, _ := ls.ConfigurationByKey(object.StorageKeyHashingVersion)
+					if hashingVersion != "" && h != hashingVersion {
+						hashingVersion = "mixed"
+					} else {
+						hashingVersion = h
+					}
+				}
+			}
+		}
+		if hashingVersion != "" {
+			fakeNode.MustSetMeta(common.MetaFlagHashingVersion, hashingVersion)
 		}
 		fakeNode.MustSetMeta(common.MetaNamespaceNodeName, branch.Workspace.Label)
 		fakeNode.MustSetMeta(common.MetaFlagVirtualRoot, "true")

@@ -30,17 +30,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nicksnyder/go-i18n/i18n"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
 	"go.uber.org/zap"
+
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 type (
@@ -94,10 +95,7 @@ func extractDSFlat(ctx context.Context, handler Handler, sourceNode, targetNode 
 
 // Is403 checks if error is not nil and has code 403
 func Is403(e error) bool {
-	if e == nil {
-		return false
-	}
-	return errors.FromError(e).Code == 403
+	return errors.Is(e, errors.StatusForbidden)
 }
 
 // CopyMoveNodes performs a recursive copy or move operation of a node to a new location. It can be inter- or intra-datasources.
@@ -133,7 +131,7 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 			go func() {
 				<-time.After(10 * time.Second)
 				log.Logger(ctx).Info("Forcing close session " + session + " and unlock")
-				broker.MustPublish(context.Background(), common.TopicIndexEvent, &tree.IndexEvent{
+				broker.MustPublish(propagator.ForkedBackgroundWithMeta(ctx), common.TopicIndexEvent, &tree.IndexEvent{
 					SessionForceClose: session,
 				})
 				if locker != nil {
@@ -146,7 +144,7 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 	}()
 
 	publishError := func(dsName, errorPath string) {
-		broker.MustPublish(context.Background(), common.TopicIndexEvent, &tree.IndexEvent{
+		broker.MustPublish(propagator.ForkedBackgroundWithMeta(ctx), common.TopicIndexEvent, &tree.IndexEvent{
 			ErrorDetected:  true,
 			DataSourceName: dsName,
 			ErrorPath:      errorPath,
@@ -212,12 +210,13 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 			log.Logger(ctx).Debug("[Flat Target] Creating target folder before copy")
 			// Manually create target folder
 			tgtUuid := uuid.New()
-			tgt := ctx
+			rootFolderCtx := ctx
 			if move {
 				tgtUuid = sourceNode.Uuid
-				tgt = metadata.WithAdditionalMetadata(tgt, map[string]string{common.XPydioMoveUuid: session})
+				rootFolderCtx = propagator.WithAdditionalMetadata(rootFolderCtx, map[string]string{common.XPydioMoveUuid: session})
+				rootFolderCtx = WithSkipDefaultMeta(rootFolderCtx)
 			}
-			if _, e := router.CreateNode(tgt, &tree.CreateNodeRequest{Node: &tree.Node{
+			if _, e := router.CreateNode(rootFolderCtx, &tree.CreateNodeRequest{Node: &tree.Node{
 				Uuid:  tgtUuid,
 				Path:  targetNode.Path,
 				Type:  tree.NodeType_COLLECTION,
@@ -269,7 +268,7 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 		if statErrors > 0 {
 			// There are some missing children, this copy/move operation will fail - interrupt now
 			publishError(sourceDs, sourceNode.Path)
-			return fmt.Errorf("errors found while copy/move node, stopping")
+			return errors.New("errors found while copy/move node, stopping")
 		}
 
 		if len(children) > 0 {
@@ -296,13 +295,19 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 				folderNode.Path = targetPath
 				folderNode.Uuid = uuid.New()
 				createContext := skipAclContext
+				if move {
+					createContext = WithSkipDefaultMeta(createContext)
+				} else {
+					// Clear metadata before copy!
+					folderNode.MetaStore = map[string]string{}
+				}
 				sess := session
 				if (targetFlat || sourceFlat) && move {
 					if sourceFlat && fileCounts == 0 && fI == len(children)-1 {
 						log.Logger(ctx).Info("Sending session close on last folder")
 						sess = common.SyncSessionClose_ + session
 					}
-					createContext = metadata.WithAdditionalMetadata(createContext, map[string]string{
+					createContext = propagator.WithAdditionalMetadata(createContext, map[string]string{
 						common.XPydioMoveUuid: session,
 					})
 					folderNode.Uuid = childNode.Uuid
@@ -418,7 +423,7 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 		}
 		statusChan <- copyMoveStatusKey(sourceNode.Path, move, tFunc...)
 
-		_, e := router.CopyObject(metadata.WithAdditionalMetadata(ctx, copyCtxMeta), sourceNode, targetNode, &models.CopyRequestData{
+		_, e := router.CopyObject(propagator.WithAdditionalMetadata(ctx, copyCtxMeta), sourceNode, targetNode, &models.CopyRequestData{
 			Metadata: copyMeta,
 			Progress: &copyPgReader{offset: 0, total: sourceNode.Size, progressChan: progressChan},
 		})
@@ -427,9 +432,9 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 			publishError(targetDs, targetNode.Path)
 			panic(e)
 		}
-		// Remove Source Node
+		// Remove Source N
 		if move {
-			ctx = metadata.WithAdditionalMetadata(ctx, deleteMeta)
+			ctx = propagator.WithAdditionalMetadata(ctx, deleteMeta)
 			_, moveErr := router.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: sourceNode})
 			if moveErr != nil {
 				logger.Error("-- Delete Source Error / Reverting Copy", zap.Error(moveErr), sourceNode.Zap())
@@ -444,14 +449,14 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 			// Flat source : remove original folder
 			log.Logger(ctx).Info("Removing source folder after move")
 			// Manually create target folder
-			tgt := metadata.WithAdditionalMetadata(ctx, map[string]string{common.XPydioMoveUuid: session})
+			tgt := propagator.WithAdditionalMetadata(ctx, map[string]string{common.XPydioMoveUuid: session})
 			if _, e := router.DeleteNode(tgt, &tree.DeleteNodeRequest{Node: sourceNode}); e != nil {
 				return e
 			}
 
 			if !targetFlat && childrenMoved == 0 {
 				// Moved only an empty folder - make sure to close sync session
-				_ = broker.Publish(context.Background(), common.TopicIndexEvent, &tree.IndexEvent{
+				_ = broker.Publish(propagator.ForkedBackgroundWithMeta(ctx), common.TopicIndexEvent, &tree.IndexEvent{
 					SessionForceClose: session,
 				})
 			}
@@ -463,6 +468,10 @@ func CopyMoveNodes(ctx context.Context, router Handler, sourceNode *tree.Node, t
 			session = common.SyncSessionClose_ + session
 			logger.Debug("-- Copying sourceNode with empty Uuid - Close Session")
 			targetNode.Type = tree.NodeType_COLLECTION
+			// Warning - It may have been already created by createParentIfNotExists, do not override UUID !
+			if r, e := router.ReadNode(ctx, &tree.ReadNodeRequest{Node: targetNode}); e == nil && r != nil {
+				targetNode.Uuid = r.GetNode().GetUuid()
+			}
 			_, e := router.CreateNode(ctx, &tree.CreateNodeRequest{Node: targetNode, IndexationSession: session, UpdateIfExists: true})
 			if e != nil {
 				panic(e)
@@ -545,7 +554,7 @@ func processCopyMove(ctx context.Context, handler Handler, session string, move,
 				ctxMeta[common.XPydioMoveUuid] = session
 			}
 		}
-		_, e := handler.CopyObject(metadata.WithAdditionalMetadata(ctx, ctxMeta), childNode, targetNode, &models.CopyRequestData{
+		_, e := handler.CopyObject(propagator.WithAdditionalMetadata(ctx, ctxMeta), childNode, targetNode, &models.CopyRequestData{
 			Metadata: meta,
 			Progress: progress,
 		})
@@ -573,7 +582,7 @@ func processCopyMove(ctx context.Context, handler Handler, session string, move,
 		}
 		delCtx := ctx
 		if crossDs {
-			delCtx = metadata.WithAdditionalMetadata(ctx, map[string]string{common.XPydioMoveUuid: originalSession})
+			delCtx = propagator.WithAdditionalMetadata(ctx, map[string]string{common.XPydioMoveUuid: originalSession})
 		}
 		_, moveErr := handler.DeleteNode(delCtx, &tree.DeleteNodeRequest{Node: childNode, IndexationSession: session})
 		if moveErr != nil {
@@ -584,7 +593,7 @@ func processCopyMove(ctx context.Context, handler Handler, session string, move,
 				}
 			}
 			if Is403(moveErr) {
-				moveErr = fmt.Errorf("some original objects are not allowed to be deleted") // replace by a non-403 to trigger error
+				moveErr = errors.New("some original objects are not allowed to be deleted") // replace by a non-403 to trigger error
 			} else {
 				publishError(sourceDs, childNode.Path)
 			}

@@ -27,18 +27,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -46,9 +44,6 @@ var (
 )
 
 type OnDeleteVersionsAction struct {
-	common.RuntimeHolder
-	Handler    nodes.Handler
-	Pool       nodes.SourcesPool
 	rootFolder string
 }
 
@@ -65,7 +60,7 @@ func (c *OnDeleteVersionsAction) GetDescription(lang ...string) actions.ActionDe
 	}
 }
 
-func (c *OnDeleteVersionsAction) GetParametersForm() *forms.Form {
+func (c *OnDeleteVersionsAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -89,10 +84,8 @@ func (c *OnDeleteVersionsAction) GetName() string {
 }
 
 // Init passes the parameters to a newly created PruneVersionsAction.
-func (c *OnDeleteVersionsAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *OnDeleteVersionsAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
-	c.Handler = getRouter(c.GetRuntimeContext())
-	c.Pool = getRouter(c.GetRuntimeContext()).GetClientsPool()
 	var ok bool
 	if c.rootFolder, ok = action.Parameters["rootFolder"]; !ok {
 		c.rootFolder = "$DELETED"
@@ -101,7 +94,7 @@ func (c *OnDeleteVersionsAction) Init(job *jobs.Job, action *jobs.Action) error 
 }
 
 // Run processes the actual action code.
-func (c *OnDeleteVersionsAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *OnDeleteVersionsAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil // Ignore
@@ -115,7 +108,7 @@ func (c *OnDeleteVersionsAction) Run(ctx context.Context, channels *actions.Runn
 	if policy == nil {
 		return input.WithIgnore(), nil
 	}
-	ds, e := DataSourceForPolicy(c.GetRuntimeContext(), policy)
+	ds, e := DataSourceForPolicy(ctx, policy)
 	if e != nil {
 		return input.WithError(e), e
 	}
@@ -127,7 +120,7 @@ func (c *OnDeleteVersionsAction) Run(ctx context.Context, channels *actions.Runn
 	prefix := strings.TrimSuffix(base, ext)
 	parentCreated := false
 
-	versionClient := tree.NewNodeVersionerClient(grpc.GetClientConnFromCtx(c.GetRuntimeContext(), common.ServiceVersions))
+	versionClient := tree.NewNodeVersionerClient(grpc.ResolveConn(ctx, common.ServiceVersionsGRPC))
 
 	if response, err := versionClient.PruneVersions(ctx, &tree.PruneVersionsRequest{UniqueNode: node}); err == nil {
 		deleteStrategy := policy.GetNodeDeletedStrategy()
@@ -140,7 +133,7 @@ func (c *OnDeleteVersionsAction) Run(ctx context.Context, channels *actions.Runn
 			if move {
 				backupNode := deleteNode.Clone()
 				// Create base-{DATE}-001-vUUID.ext
-				seeded := fmt.Sprintf("%s-%03d-%s-%s%s", prefix, i+1, time.Now().Format("2006-01-02"), strings.Split(version.GetUuid(), "-")[0], ext)
+				seeded := fmt.Sprintf("%s-%03d-%s-%s%s", prefix, i+1, time.Now().Format("2006-01-02"), strings.Split(version.GetVersionId(), "-")[0], ext)
 				backupNode.Path = path.Join(dir, seeded)
 				// Create parents if they do not exist
 				if !parentCreated {
@@ -150,14 +143,14 @@ func (c *OnDeleteVersionsAction) Run(ctx context.Context, channels *actions.Runn
 						parentCreated = true
 					}
 				}
-				_, err := c.Handler.UpdateNode(ctx, &tree.UpdateNodeRequest{From: deleteNode, To: backupNode})
+				_, err = getRouter().UpdateNode(ctx, &tree.UpdateNodeRequest{From: deleteNode, To: backupNode})
 				if err != nil {
 					log.TasksLogger(ctx).Error("Error while trying to move version "+deleteNode.Uuid+" to "+backupNode.Path, zap.Error(err))
 				} else {
 					log.TasksLogger(ctx).Info("[Delete Versions Task] Moved version to "+backupNode.Path, zap.String("fileId", deleteNode.Uuid))
 				}
 			} else {
-				_, err := c.Handler.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: deleteNode})
+				_, err = getRouter().DeleteNode(ctx, &tree.DeleteNodeRequest{Node: deleteNode})
 				if err != nil {
 					log.TasksLogger(ctx).Error("Error while trying to delete version "+deleteNode.Uuid, zap.Error(err))
 				} else {
@@ -182,13 +175,13 @@ func (c *OnDeleteVersionsAction) CreateParents(ctx context.Context, dirPath stri
 	for _, p := range parts {
 		crt = path.Join(crt, p)
 		dirNode := &tree.Node{Path: crt, Type: tree.NodeType_COLLECTION, MTime: time.Now().Unix()}
-		if _, e := c.Handler.ReadNode(ctx, &tree.ReadNodeRequest{Node: dirNode}); e == nil {
+		if _, e := getRouter().ReadNode(ctx, &tree.ReadNodeRequest{Node: dirNode, StatFlags: []uint32{tree.StatFlagExistsOnly}}); e == nil {
 			// Already exists
 			continue
 		}
 		log.TasksLogger(ctx).Info("Creating folder " + dirNode.GetPath())
 		dirNode.Uuid = uuid.New()
-		if _, er := c.Handler.CreateNode(ctx, &tree.CreateNodeRequest{Node: dirNode}); er != nil {
+		if _, er := getRouter().CreateNode(ctx, &tree.CreateNodeRequest{Node: dirNode}); er != nil {
 			return er
 		}
 	}

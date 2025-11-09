@@ -22,22 +22,18 @@ package acl
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
-
-var pathNotReadable = errors.Forbidden("path.not.readable", "path is not readable")
-var pathNotWriteable = errors.Forbidden("path.not.writeable", "path is not writeable")
 
 func WithFilter() nodes.Option {
 	return func(options *nodes.RouterOptions) {
@@ -65,8 +61,8 @@ func (a *FilterHandler) skipContext(ctx context.Context, identifier ...string) b
 	if len(identifier) > 0 {
 		id = identifier[0]
 	}
-	bI, ok := nodes.GetBranchInfo(ctx, id)
-	return ok && (bI.Binary || bI.TransparentBinary)
+	bI, er := nodes.GetBranchInfo(ctx, id)
+	return er == nil && (bI.Binary || bI.IndexedBinary)
 }
 
 // ReadNode checks if node is readable and forward to next middleware.
@@ -77,12 +73,17 @@ func (a *FilterHandler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, 
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
 
 	// First load ancestors or grab them from BranchInfo
-	ctx, parents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", a.ClientsPool, false)
+	ctx, parents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", false)
 	if err != nil {
+		// Recheck is used to send proper error to user (NotFound vs Forbidden)
+		// If ExistsOnly, we don't care about the error code
+		if tree.StatFlags(in.StatFlags).ExistsOnly() {
+			return nil, err
+		}
 		return nil, a.recheckParents(ctx, err, in.Node, true, false)
 	}
 	if !accessList.CanRead(ctx, parents...) && !accessList.CanWrite(ctx, parents...) {
-		return nil, pathNotReadable
+		return nil, errors.WithStack(errors.PathNotReadable)
 	}
 	checkDl := in.Node.HasMetaKey(nodes.MetaAclCheckDownload)
 	checkSync := in.Node.HasMetaKey(nodes.MetaAclCheckSyncable)
@@ -94,10 +95,19 @@ func (a *FilterHandler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, 
 		n := response.Node.Clone()
 		n.MustSetMeta(common.MetaFlagReadonly, "true")
 		response.Node = n
+	} else if !accessList.CanRead(ctx, parents...) && accessList.CanWrite(ctx, parents...) {
+		n := response.Node.Clone()
+		// Set special flag and remove children info
+		n.MustSetMeta(common.MetaFlagWriteOnly, "true")
+		delete(n.MetaStore, common.MetaFlagChildrenCount)
+		delete(n.MetaStore, common.MetaFlagChildrenFolders)
+		delete(n.MetaStore, common.MetaFlagChildrenFiles)
+		delete(n.MetaStore, common.MetaFlagRecursiveCount)
+		response.Node = n
 	}
 	updatedParents := append([]*tree.Node{response.GetNode()}, parents[1:]...)
 	if checkDl && accessList.HasExplicitDeny(ctx, permissions.FlagDownload, updatedParents...) {
-		return nil, errors.Forbidden("download.forbidden", "Node cannot be downloaded")
+		return nil, errors.WithStack(errors.PathDownloadForbidden)
 	}
 	if checkSync && accessList.HasExplicitDeny(ctx, permissions.FlagSync, updatedParents...) {
 		n := response.Node.Clone()
@@ -114,13 +124,13 @@ func (a *FilterHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequest
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
 	// First load ancestors or grab them from BranchInfo
-	ctx, parents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", a.ClientsPool, false)
+	ctx, parents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", false)
 	if err != nil {
 		return nil, a.recheckParents(ctx, err, in.Node, true, false)
 	}
 
 	if !accessList.CanRead(ctx, parents...) {
-		return nil, errors.Forbidden("node.not.readable", "Node is not readable")
+		return nil, errors.WithStack(errors.PathNotReadable)
 	}
 
 	stream, err := a.Next.ListNodes(ctx, in, opts...)
@@ -131,10 +141,10 @@ func (a *FilterHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequest
 	go func() {
 		defer s.CloseSend()
 		for {
-			resp, err := stream.Recv()
-			if err != nil {
-				if err != io.EOF && err != io.ErrUnexpectedEOF {
-					s.SendError(err)
+			resp, er := stream.Recv()
+			if er != nil {
+				if !errors.IsStreamFinished(er) {
+					_ = s.SendError(er)
 				}
 				break
 			}
@@ -142,7 +152,10 @@ func (a *FilterHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequest
 				continue
 			}
 			// FILTER OUT NON READABLE NODES
-			newBranch := []*tree.Node{resp.Node}
+			var newBranch []*tree.Node
+			if len(parents) > 0 && parents[0].Path != resp.Node.Path {
+				newBranch = append(newBranch, resp.Node)
+			}
 			newBranch = append(newBranch, parents...)
 			if !accessList.CanRead(ctx, newBranch...) {
 				continue
@@ -152,7 +165,7 @@ func (a *FilterHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequest
 				n.MustSetMeta(common.MetaFlagReadonly, "true")
 				resp.Node = n
 			}
-			s.Send(resp)
+			_ = s.Send(resp)
 		}
 	}()
 
@@ -164,12 +177,12 @@ func (a *FilterHandler) CreateNode(ctx context.Context, in *tree.CreateNodeReque
 		return a.Next.CreateNode(ctx, in, opts...)
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
-	ctx, toParents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", a.ClientsPool, true)
+	ctx, toParents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", true)
 	if err != nil {
 		return nil, err
 	}
 	if !accessList.CanWrite(ctx, toParents...) {
-		return nil, pathNotWriteable
+		return nil, errors.WithStack(errors.PathNotWriteable)
 	}
 	return a.Next.CreateNode(ctx, in, opts...)
 }
@@ -179,19 +192,19 @@ func (a *FilterHandler) UpdateNode(ctx context.Context, in *tree.UpdateNodeReque
 		return a.Next.UpdateNode(ctx, in, opts...)
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
-	ctx, fromParents, err := nodes.AncestorsListFromContext(ctx, in.From, "from", a.ClientsPool, false)
+	ctx, fromParents, err := nodes.AncestorsListFromContext(ctx, in.From, "from", false)
 	if err != nil {
 		return nil, a.recheckParents(ctx, err, in.From, true, false)
 	}
 	if !accessList.CanRead(ctx, fromParents...) {
-		return nil, pathNotReadable
+		return nil, errors.PathNotReadable
 	}
-	ctx, toParents, err := nodes.AncestorsListFromContext(ctx, in.To, "to", a.ClientsPool, true)
+	ctx, toParents, err := nodes.AncestorsListFromContext(ctx, in.To, "to", true)
 	if err != nil {
 		return nil, err
 	}
 	if !accessList.CanWrite(ctx, toParents...) {
-		return nil, pathNotWriteable
+		return nil, errors.WithStack(errors.PathNotWriteable)
 	}
 	return a.Next.UpdateNode(ctx, in, opts...)
 }
@@ -201,15 +214,15 @@ func (a *FilterHandler) DeleteNode(ctx context.Context, in *tree.DeleteNodeReque
 		return a.Next.DeleteNode(ctx, in, opts...)
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
-	ctx, delParents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", a.ClientsPool, false)
+	ctx, delParents, err := nodes.AncestorsListFromContext(ctx, in.Node, "in", false)
 	if err != nil {
 		return nil, a.recheckParents(ctx, err, in.Node, true, false)
 	}
 	if !accessList.CanWrite(ctx, delParents...) {
-		return nil, pathNotWriteable
+		return nil, errors.WithStack(errors.PathNotWriteable)
 	}
 	if accessList.HasExplicitDeny(ctx, permissions.FlagDelete, delParents...) {
-		return nil, errors.Forbidden("delete.forbidden", "Node cannot be deleted")
+		return nil, errors.WithStack(errors.PathDeleteForbidden)
 	}
 	return a.Next.DeleteNode(ctx, in, opts...)
 }
@@ -220,20 +233,20 @@ func (a *FilterHandler) GetObject(ctx context.Context, node *tree.Node, requestD
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
 	// First load ancestors or grab them from BranchInfo
-	ctx, parents, err := nodes.AncestorsListFromContext(ctx, node, "in", a.ClientsPool, false)
+	ctx, parents, err := nodes.AncestorsListFromContext(ctx, node, "in", false)
 	if err != nil {
 		return nil, a.recheckParents(ctx, err, node, true, false)
 	}
 	if !accessList.CanRead(ctx, parents...) {
-		return nil, pathNotReadable
+		return nil, errors.WithStack(errors.PathNotReadable)
 	}
 	if accessList.HasExplicitDeny(ctx, permissions.FlagDownload, parents...) {
-		return nil, errors.Forbidden("download.forbidden", "Node is not downloadable")
+		return nil, errors.WithStack(errors.PathDownloadForbidden)
 	}
 	return a.Next.GetObject(ctx, node, requestData)
 }
 
-func (a *FilterHandler) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (a *FilterHandler) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	if a.skipContext(ctx) {
 		return a.Next.PutObject(ctx, node, reader, requestData)
 	}
@@ -242,15 +255,15 @@ func (a *FilterHandler) PutObject(ctx context.Context, node *tree.Node, reader i
 	checkNode := node.Clone()
 	checkNode.Type = tree.NodeType_LEAF
 	checkNode.Size = requestData.Size
-	ctx, parents, err := nodes.AncestorsListFromContext(ctx, checkNode, "in", a.ClientsPool, true)
+	ctx, parents, err := nodes.AncestorsListFromContext(ctx, checkNode, "in", true)
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 	if !accessList.CanWrite(ctx, parents...) {
-		return 0, pathNotWriteable
+		return models.ObjectInfo{}, errors.WithStack(errors.PathNotWriteable)
 	}
 	if accessList.HasExplicitDeny(ctx, permissions.FlagUpload, parents...) {
-		return 0, errors.Forbidden("upload.forbidden", "Parents have upload explicitly disabled")
+		return models.ObjectInfo{}, errors.WithStack(errors.PathUploadForbidden)
 	}
 	return a.Next.PutObject(ctx, node, reader, requestData)
 }
@@ -261,44 +274,44 @@ func (a *FilterHandler) MultipartCreate(ctx context.Context, node *tree.Node, re
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
 	// First load ancestors or grab them from BranchInfo
-	ctx, parents, err := nodes.AncestorsListFromContext(ctx, node, "in", a.ClientsPool, true)
+	ctx, parents, err := nodes.AncestorsListFromContext(ctx, node, "in", true)
 	if err != nil {
 		return "", err
 	}
 	if !accessList.CanWrite(ctx, parents...) {
-		return "", pathNotWriteable
+		return "", errors.WithStack(errors.PathNotWriteable)
 	}
 	if accessList.HasExplicitDeny(ctx, permissions.FlagUpload, parents...) {
-		return "", errors.Forbidden("upload.forbidden", "Parents have upload explicitly disabled")
+		return "", errors.WithStack(errors.PathUploadForbidden)
 	}
 	return a.Next.MultipartCreate(ctx, node, requestData)
 }
 
-func (a *FilterHandler) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (a *FilterHandler) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 	if a.skipContext(ctx) {
 		return a.Next.CopyObject(ctx, from, to, requestData)
 	}
 	accessList := ctx.Value(ctxUserAccessListKey{}).(*permissions.AccessList)
-	ctx, fromParents, err := nodes.AncestorsListFromContext(ctx, from, "from", a.ClientsPool, false)
+	ctx, fromParents, err := nodes.AncestorsListFromContext(ctx, from, "from", false)
 	if err != nil {
-		return 0, a.recheckParents(ctx, err, from, true, false)
+		return models.ObjectInfo{}, a.recheckParents(ctx, err, from, true, false)
 	}
 	if !accessList.CanRead(ctx, fromParents...) {
-		return 0, pathNotReadable
+		return models.ObjectInfo{}, errors.WithStack(errors.PathNotReadable)
 	}
-	ctx, toParents, err := nodes.AncestorsListFromContext(ctx, to, "to", a.ClientsPool, true)
+	ctx, toParents, err := nodes.AncestorsListFromContext(ctx, to, "to", true)
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 	if !accessList.CanWrite(ctx, toParents...) {
-		return 0, pathNotWriteable
+		return models.ObjectInfo{}, errors.WithStack(errors.PathNotWriteable)
 	}
 	if accessList.HasExplicitDeny(ctx, permissions.FlagUpload, toParents...) {
-		return 0, errors.Forbidden("upload.forbidden", "Parents have upload explicitly disabled")
+		return models.ObjectInfo{}, errors.WithStack(errors.PathUploadForbidden)
 	}
 	fullTargets := append(toParents, to)
 	if accessList.HasExplicitDeny(ctx, permissions.FlagDownload, fromParents...) && !accessList.HasExplicitDeny(ctx, permissions.FlagDownload, fullTargets...) {
-		return 0, errors.Forbidden("upload.forbidden", "Source has download explicitly disabled and target does not")
+		return models.ObjectInfo{}, errors.WithStack(errors.PathDownloadForbidden)
 	}
 	return a.Next.CopyObject(ctx, from, to, requestData)
 }
@@ -348,21 +361,21 @@ func (a *FilterHandler) checkPerm(c context.Context, node *tree.Node, identifier
 
 	val := c.Value(ctxUserAccessListKey{})
 	if val == nil {
-		return fmt.Errorf("cannot find accessList in context for checking permissions")
+		return errors.WithStack(errors.AccessListNotFound)
 	}
 	accessList := val.(*permissions.AccessList)
-	ctx, parents, err := nodes.AncestorsListFromContext(c, node, identifier, a.ClientsPool, orParents)
+	ctx, parents, err := nodes.AncestorsListFromContext(c, node, identifier, orParents)
 	if err != nil {
 		return a.recheckParents(c, err, node, read, write)
 	}
 	if read && !accessList.CanRead(ctx, parents...) {
-		return pathNotReadable
+		return errors.WithStack(errors.PathNotReadable)
 	}
 	if write && !accessList.CanWrite(ctx, parents...) {
-		return pathNotWriteable
+		return errors.WithStack(errors.PathNotWriteable)
 	}
 	if len(explicitFlags) > 0 && accessList.HasExplicitDeny(ctx, explicitFlags[0], parents...) {
-		return errors.Forbidden("explicit.deny", "path has explicit denies for flag "+permissions.FlagsToNames[explicitFlags[0]])
+		return errors.WithMessagef(errors.PathExplicitDeny, "path has explicit denies for flag %s", permissions.FlagsToNames[explicitFlags[0]])
 	}
 	return nil
 
@@ -370,26 +383,26 @@ func (a *FilterHandler) checkPerm(c context.Context, node *tree.Node, identifier
 
 func (a *FilterHandler) recheckParents(c context.Context, originalError error, node *tree.Node, read, write bool) error {
 
-	if errors.FromError(originalError).Code != 404 {
+	if !errors.Is(originalError, errors.StatusNotFound) {
 		return originalError
 	}
 
 	val := c.Value(ctxUserAccessListKey{})
 	if val == nil {
-		return fmt.Errorf("cannot find accessList in context for checking permissions")
+		return errors.New("cannot find accessList in context for checking permissions")
 	}
 	accessList := val.(*permissions.AccessList)
 
-	parents, e := nodes.BuildAncestorsListOrParent(c, a.ClientsPool.GetTreeClient(), node)
+	parents, e := nodes.BuildAncestorsListOrParent(c, nodes.GetSourcesPool(c).GetTreeClient(), node)
 	if e != nil {
 		return e
 	}
 
 	if read && !accessList.CanRead(c, parents...) {
-		return pathNotReadable
+		return errors.WithStack(errors.PathNotReadable)
 	}
 	if write && !accessList.CanWrite(c, parents...) {
-		return pathNotWriteable
+		return errors.WithStack(errors.PathNotWriteable)
 	}
 
 	return originalError

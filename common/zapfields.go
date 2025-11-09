@@ -44,11 +44,14 @@ const (
 	AuditNodeRead       = "12"
 	AuditNodeList       = "13"
 	AuditNodeUpdate     = "14"
-	AuditNodeDelete     = "15"
-	AuditWsCreate       = "16"
-	AuditWsUpdate       = "17"
-	AuditWsDelete       = "18"
+	AuditNodeUpdatePath = "20"
 	AuditNodeMovedToBin = "19"
+	AuditNodeDelete     = "15"
+
+	// Ws Event
+	AuditWsCreate = "16"
+	AuditWsUpdate = "17"
+	AuditWsDelete = "18"
 
 	// S3 Objects
 	AuditObjectGet = "21"
@@ -90,6 +93,7 @@ const (
 	KeyContext = "Context"
 
 	// Follow a given request between the various services
+	KeySpanOtel       = "SpanOtel"
 	KeySpanUuid       = "SpanUuid"
 	KeySpanParentUuid = "SpanParentUuid"
 	KeySpanRootUuid   = "SpanRootUuid"
@@ -98,9 +102,10 @@ const (
 	KeyOperationUuid  = "OperationUuid"
 	KeyOperationLabel = "OperationLabel"
 
-	KeyNode     = "Node"
-	KeyNodeUuid = "NodeUuid"
-	KeyNodePath = "NodePath"
+	KeyNode         = "Node"
+	KeyNodeUuid     = "NodeUuid"
+	KeyNodePath     = "NodePath"
+	KeyTransferSize = "TransferSize"
 
 	KeyWorkspace      = "Workspace"
 	KeyWorkspaceUuid  = "WorkspaceUuid"
@@ -152,6 +157,7 @@ const (
 	KeySchedulerJobId      = "SchedulerJobUuid"
 	KeySchedulerTaskId     = "SchedulerTaskUuid"
 	KeySchedulerActionPath = "SchedulerTaskActionPath"
+	KeySchedulerActionTags = "SchedulerTaskActionTags"
 
 	// Cells
 	KeyCell     = "Cell"

@@ -18,24 +18,27 @@ package pydio
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
-	madmin "github.com/minio/madmin-go"
-	minio "github.com/minio/minio/cmd"
-
 	"github.com/minio/cli"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	cerrors "github.com/pydio/cells/v4/common/service/errors"
+	minio "github.com/minio/minio/cmd"
+	"github.com/minio/minio/pkg/auth"
+	"github.com/minio/minio/pkg/bucket/policy"
+	"github.com/minio/minio/pkg/bucket/policy/condition"
+
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 const (
@@ -74,7 +77,7 @@ func (l *pydioObjects) MakeBucketWithLocation(_ context.Context, _ string, _ min
 	return minio.NotImplemented{}
 }
 
-func (l *pydioObjects) DeleteBucket(_ context.Context, _ string, _ minio.DeleteBucketOptions) error {
+func (l *pydioObjects) DeleteBucket(_ context.Context, _ string, _ bool) error {
 	return minio.NotImplemented{}
 }
 
@@ -88,9 +91,9 @@ func (p *Pydio) Name() string {
 }
 
 // NewGatewayLayer returns a new  ObjectLayer.
-func (p *Pydio) NewGatewayLayer(_ madmin.Credentials) (minio.ObjectLayer, error) {
+func (p *Pydio) NewGatewayLayer(_ *minio.Globals, _ auth.Credentials) (minio.ObjectLayer, error) {
 	o := &pydioObjects{
-		Router: compose.PathClient(p.RuntimeCtx, nodes.WithReadEventsLogging(), nodes.WithAuditEventsLogging()),
+		Router: compose.PathClient(nodes.WithReadEventsLogging(), nodes.WithAuditEventsLogging()),
 	}
 	return o, nil
 }
@@ -104,6 +107,9 @@ func (p *Pydio) Production() bool {
 
 // Handler for 'minio gateway azure' command line.
 func pydioGatewayMain(ctx *cli.Context) {
+	sd, _ := runtime.ServiceDataDir(common.ServiceGatewayData)
+	_ = ctx.Set("config-dir", filepath.Join(sd, "cfg"))
+	_ = ctx.Set("certs-dir", filepath.Join(sd, "certs"))
 	minio.StartGateway(ctx, PydioGateway)
 }
 
@@ -137,32 +143,35 @@ func fromPydioNodeObjectInfo(bucket string, node *tree.Node) minio.ObjectInfo {
 }
 
 func pydioToMinioError(err error, bucket, key string) error {
-	mErr := cerrors.FromError(err)
-	switch mErr.Code {
-	case 403:
+	if errors.Is(err, errors.StatusForbidden) {
 		err = minio.PrefixAccessDenied{
 			Bucket: bucket,
 			Object: key,
 		}
-	case 404:
+	} else if errors.Is(err, errors.StatusNotFound) {
 		err = minio.ObjectNotFound{
 			Bucket: bucket,
 			Object: key,
 		}
-	case 422:
+	} else if errors.Is(err, errors.StatusQuotaReached) {
 		err = minio.PydioQuotaExceeded{
 			Bucket: bucket,
 			Object: key,
 		}
-	default:
-		if strings.Contains(err.Error(), "Forbidden") {
-			err = minio.PrefixAccessDenied{
-				Bucket: bucket,
-				Object: key,
-			}
-		}
 	}
 	return minio.ErrorRespToObjectError(err, bucket, key)
+}
+
+// GetBucketPolicy will get a fake policy that allows anonymous access to buckets (an additional layer is already checking all requests)
+func (l *pydioObjects) GetBucketPolicy(ctx context.Context, bucket string) (bucketPolicy *policy.Policy, err error) {
+	allowAllStatement := policy.NewStatement(
+		policy.Allow,
+		policy.NewPrincipal("*"),
+		policy.NewActionSet(policy.GetObjectAction, policy.PutObjectAction),
+		policy.NewResourceSet(policy.NewResource("*", "*")),
+		condition.NewFunctions(),
+	)
+	return &policy.Policy{Statements: []policy.Statement{allowAllStatement}}, nil
 }
 
 func (l *pydioObjects) ListPydioObjects(ctx context.Context, bucket string, prefix string, delimiter string, maxKeys int, versions bool) (objects []minio.ObjectInfo, prefixes []string, err error) {
@@ -191,7 +200,7 @@ func (l *pydioObjects) ListPydioObjects(ctx context.Context, bucket string, pref
 		FilterType:   FilterType,
 	})
 	if err != nil {
-		if cerrors.FromError(err).Code == 404 {
+		if errors.Is(err, errors.StatusNotFound) {
 			return nil, nil, nil // Ignore and return empty list
 		}
 		return nil, nil, pydioToMinioError(err, bucket, prefix)
@@ -315,8 +324,7 @@ func (l *pydioObjects) GetObjectInfo(ctx context.Context, bucket string, object 
 	}
 
 	if !readNodeResponse.Node.IsLeaf() {
-		e := errors.New("S3 API Cannot send object info for folder")
-		return minio.ObjectInfo{}, e
+		return minio.ObjectInfo{}, errors.WithStack(errors.NodeTypeConflict)
 	}
 
 	return fromPydioNodeObjectInfo(bucket, readNodeResponse.Node), nil
@@ -391,7 +399,7 @@ func (l *pydioObjects) PutObject(ctx context.Context, bucket, object string, dat
 		}
 	}
 
-	written, err := l.Router.PutObject(ctx, &tree.Node{
+	oi, err := l.Router.PutObject(ctx, &tree.Node{
 		Path: strings.TrimLeft(object, "/"),
 	}, data, &models.PutRequestData{
 		Size:      data.Size(),
@@ -403,11 +411,13 @@ func (l *pydioObjects) PutObject(ctx context.Context, bucket, object string, dat
 		log.Logger(ctx).Error("Error while putting object:" + err.Error())
 		return objInfo, pydioToMinioError(err, bucket, object)
 	}
-	// TODO : PutObject should return more info about written node
 	objInfo = minio.ObjectInfo{
-		Bucket: bucket,
-		Name:   object,
-		Size:   written,
+		Bucket:       bucket,
+		Name:         object,
+		Size:         oi.Size,
+		ETag:         oi.ETag,
+		StorageClass: oi.StorageClass,
+		ModTime:      oi.LastModified,
 	}
 	return objInfo, nil
 
@@ -422,7 +432,7 @@ func (l *pydioObjects) CopyObject(ctx context.Context, srcBucket string, srcObje
 		// log.Println(requestMetadata)
 		return objInfo, (&minio.NotImplemented{})
 	}
-	written, err := l.Router.CopyObject(ctx, &tree.Node{
+	oi, err := l.Router.CopyObject(ctx, &tree.Node{
 		Path: strings.TrimLeft(srcObject, "/"),
 	}, &tree.Node{
 		Path: strings.TrimLeft(destObject, "/"),
@@ -434,9 +444,12 @@ func (l *pydioObjects) CopyObject(ctx context.Context, srcBucket string, srcObje
 		return objInfo, pydioToMinioError(err, srcBucket, srcObject)
 	}
 	return minio.ObjectInfo{
-		Bucket: destBucket,
-		Name:   destObject,
-		Size:   written,
+		Bucket:       destBucket,
+		Name:         destObject,
+		Size:         oi.Size,
+		ETag:         oi.ETag,
+		StorageClass: oi.StorageClass,
+		ModTime:      oi.LastModified,
 	}, nil
 
 }

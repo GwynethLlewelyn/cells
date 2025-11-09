@@ -23,7 +23,7 @@ package mailer
 import (
 	hermes "github.com/matcornic/hermes/v2"
 
-	"github.com/pydio/cells/v4/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/proto/mailer"
 )
 
 func buildFromWelcomeTemplate(msg *mailer.Mail, to *mailer.User) error {
@@ -58,6 +58,7 @@ func buildFromWelcomeTemplate(msg *mailer.Mail, to *mailer.User) error {
 
 	// Generate an HTML email with the provided contents (for modern clients)
 	var err error
+	h.DisableCSSInlining = true
 	msg.ContentHtml, err = h.GenerateHTML(email)
 	if err != nil {
 		return err

@@ -32,12 +32,12 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/sync/merger"
-	"github.com/pydio/cells/v4/common/sync/model"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/merger"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 // ProcessFunc is a generic function signature for applying an operation
@@ -94,7 +94,7 @@ func (pr *Processor) Process(patch merger.Patch, cmd *model.Command) {
 
 	for _, f := range patch.PostFilter() {
 		if e := f(); e != nil {
-			patch.SetPatchError(e)
+			_ = patch.SetPatchError(e)
 			return
 		}
 	}
@@ -133,18 +133,18 @@ func (pr *Processor) Process(patch merger.Patch, cmd *model.Command) {
 	// some Pending operations.
 	flusher := func(tt ...merger.OperationType) {}
 	finalFlusher := func() {}
-	if session, err := patch.StartSession(&tree.Node{Path: "/"}); err == nil {
+	if sessionId, err := patch.StartSession(&tree.Node{Path: "/"}); err == nil {
 		finalFlusher = func() {
 			log.Logger(pr.GlobalContext).Info("Finishing patch session")
-			if e := patch.FinishSession(session.Uuid); e != nil {
-				patch.SetPatchError(e)
+			if e := patch.FinishSession(sessionId); e != nil {
+				_ = patch.SetPatchError(e)
 			}
 		}
 		flusher = func(tt ...merger.OperationType) {
 			for _, t := range tt {
 				if val, ok := pending[t.String()]; ok && val > 0 {
-					if e := patch.FlushSession(session.Uuid); e != nil {
-						patch.SetPatchError(e)
+					if e := patch.FlushSession(sessionId); e != nil {
+						_ = patch.SetPatchError(e)
 					}
 					return
 				}
@@ -242,7 +242,8 @@ func (pr *Processor) Process(patch merger.Patch, cmd *model.Command) {
 			parallel <- o
 		})
 	} else {
-		patch.WalkOperations([]merger.OperationType{merger.OpCreateFile, merger.OpUpdateFile}, serialWalker)
+		patch.WalkOperations([]merger.OperationType{merger.OpCreateFile}, serialWalker)
+		patch.WalkOperations([]merger.OperationType{merger.OpUpdateFile}, serialWalker)
 	}
 	patch.WalkOperations([]merger.OperationType{merger.OpDelete}, func(o merger.Operation) {
 		if o.GetNode() != nil {
@@ -270,7 +271,7 @@ func (pr *Processor) Process(patch merger.Patch, cmd *model.Command) {
 	} else if h {
 		log.Logger(pr.GlobalContext).Error("Patch ended with errors", zap.Int("count", len(pE)))
 		for _, e := range pE {
-			log.Logger(pr.GlobalContext).Error("--- Error", zap.Error(e), zap.String("target", patch.Target().GetEndpointInfo().URI))
+			log.Logger(pr.GlobalContext).Error("--- Error: "+e.Error(), zap.Error(e), zap.String("target", patch.Target().GetEndpointInfo().URI))
 		}
 
 	}
@@ -356,6 +357,10 @@ func (pr *Processor) dataForOperation(p merger.Patch, op merger.Operation) (cb P
 			progress = "Transferring file"
 			complete = "Transferred file"
 			error = "Error while transferring file"
+		} else if op.Type() == merger.OpUpdateFile {
+			progress = "Updating file in index"
+			complete = "Updated file"
+			error = "Error while updating file in index"
 		} else {
 			progress = "Indexing file"
 			complete = "Indexed file"

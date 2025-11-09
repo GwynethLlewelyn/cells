@@ -22,30 +22,23 @@
 package index
 
 import (
-	"context"
-
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/sql"
-	"github.com/pydio/cells/v4/common/sql/index"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/storage/sql/index"
 )
+
+var Drivers = service.StorageDrivers{}
 
 // DAO interface
 type DAO interface {
 	index.DAO
 }
 
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{Handler: v.(*sql.Handler)}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+func WrapSessionDAO(session string, o DAO) DAO {
+	///return nil
+	return index.NewSessionDAO(session, 300, o)
 }
 
-func NewDAOCache(session string, o index.DAO) index.DAO {
-	return index.NewDAOCache(session, o)
-}
-
-func GetDAOCache(session string) index.DAO {
-	return index.GetDAOCache(session)
+func GetDAOCache(session string) DAO {
+	return nil
+	//return index.GetDAOCache(session)
 }

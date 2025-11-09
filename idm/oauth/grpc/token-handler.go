@@ -3,99 +3,122 @@ package grpc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha512"
 	"encoding/base64"
+	"hash"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/ory/fosite/token/hmac"
 	"github.com/ory/fosite/token/jwt"
-	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/auth"
-	"github.com/pydio/cells/v4/common/service/errors"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	"github.com/pydio/cells/v4/idm/oauth"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/auth"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/idm/oauth"
 )
 
 var tokensKey []byte
 
-type PatScopeClaims struct {
+type PATScopeClaims struct {
 	Scopes []string `json:"scopes"`
 }
 
-type PatHandler struct {
-	dao  oauth.DAO
-	name string
+type PATHandler struct {
 	auth.UnimplementedAuthTokenPrunerServer
 	auth.UnimplementedAuthTokenVerifierServer
 	auth.UnimplementedPersonalAccessTokenServiceServer
-	strategy *hmac.HMACStrategy
+
+	config hmac.HMACStrategyConfigurator
 }
 
-func (p *PatHandler) Name() string {
-	return p.name
+type configProvider struct{}
+
+func (c *configProvider) GetTokenEntropy(ctx context.Context) int {
+	//TODO - Recheck expected value
+	return 32
 }
 
-func (p *PatHandler) getDao(ctx context.Context) oauth.DAO {
-	return p.dao
-}
-
-func (p *PatHandler) getStrategy() *hmac.HMACStrategy {
-	if p.strategy == nil {
-		p.strategy = &hmac.HMACStrategy{
-			TokenEntropy:         32,
-			GlobalSecret:         p.getKey(),
-			RotatedGlobalSecrets: nil,
-			Mutex:                sync.Mutex{},
-		}
-	}
-	return p.strategy
-}
-
-func (p *PatHandler) getKey() []byte {
-
+func (c *configProvider) GetGlobalSecret(ctx context.Context) ([]byte, error) {
 	if len(tokensKey) > 0 {
-		return tokensKey
+		return tokensKey, nil
 	}
 
-	cVal := config.Get("defaults", "personalTokens", "secureKey")
+	cVal := config.Get(ctx, "defaults", "personalTokens", "secureKey")
 	if cVal.String() == "" {
-		tokensKey = p.generateRandomKey(32)
+		tokensKey = c.generateRandomKey(32)
 		strKey := base64.StdEncoding.EncodeToString(tokensKey)
-		cVal.Set(strKey)
-		config.Save(common.PydioSystemUsername, "Creating random key for personal tokens service")
+		_ = cVal.Set(strKey)
+		_ = config.Save(ctx, common.PydioSystemUsername, "Creating random key for personal tokens service")
 	} else if t, e := base64.StdEncoding.DecodeString(cVal.String()); e == nil {
 		tokensKey = t
 	} else {
-		log.Logger(context.Background()).Error("Could not read generated key for personal tokens!", zap.Error(e))
+		return nil, errors.WithMessage(errors.UnmarshalError, "Could not read generated key for personal tokens!")
 	}
-	return tokensKey
+	return tokensKey, nil
 }
 
-func (p *PatHandler) Verify(ctx context.Context, request *auth.VerifyTokenRequest) (*auth.VerifyTokenResponse, error) {
-	dao := p.getDao(ctx)
-	if err := p.getStrategy().Validate(request.Token); err != nil {
-		return nil, errors.Unauthorized("token.invalid", "Cannot validate token")
+func (c *configProvider) generateRandomKey(length int) []byte {
+	k := make([]byte, length)
+	if _, err := io.ReadFull(rand.Reader, k); err != nil {
+		return nil
 	}
-	pat, e := dao.Load(request.Token)
-	if e != nil {
-		return nil, errors.Unauthorized("token.not.found", "Cannot find corresponding Personal Access Token")
+	return k
+}
+
+func (c *configProvider) GetRotatedGlobalSecrets(ctx context.Context) ([][]byte, error) {
+	//TODO implement me ?
+	return [][]byte{}, nil
+}
+
+func (c *configProvider) GetHMACHasher(ctx context.Context) func() hash.Hash {
+	//TODO - Recheck expected value
+	return sha512.New512_256
+}
+
+func (p *PATHandler) getDao(ctx context.Context) (oauth.PatDAO, error) {
+	return manager.Resolve[oauth.PatDAO](ctx)
+}
+
+func (p *PATHandler) getStrategy() *hmac.HMACStrategy {
+	return &hmac.HMACStrategy{
+		Config: &configProvider{},
+		Mutex:  sync.Mutex{},
 	}
+}
+
+func (p *PATHandler) Verify(ctx context.Context, request *auth.VerifyTokenRequest) (*auth.VerifyTokenResponse, error) {
+	dao, err := p.getDao(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if er := p.getStrategy().Validate(ctx, request.Token); er != nil {
+		return nil, errors.Tag(er, errors.InvalidIDToken)
+	}
+
+	pat, err := dao.Load(request.Token)
+	if err != nil {
+		return nil, errors.Tag(err, errors.InvalidIDToken)
+	}
+
 	// Check Expiration Date
 	if time.Unix(pat.ExpiresAt, 0).Before(time.Now()) {
-		return nil, errors.Unauthorized("token.expired", "Personal token is expired")
+		return nil, errors.Tag(err, errors.ExpiredIDToken)
 	}
+
 	if pat.AutoRefreshWindow > 0 {
 		// Recompute expire date
 		pat.ExpiresAt = time.Now().Add(time.Duration(pat.AutoRefreshWindow) * time.Second).Unix()
 		if er := dao.Store(request.Token, pat, true); er != nil {
-			return nil, errors.BadRequest("internal.error", "Cannot store updated token "+er.Error())
+			return nil, errors.Tag(er, errors.StatusInternalServerError)
 		}
 	}
 
@@ -105,21 +128,30 @@ func (p *PatHandler) Verify(ctx context.Context, request *auth.VerifyTokenReques
 		ExpiresAt: time.Unix(pat.ExpiresAt, 0),
 		Audience:  []string{common.ServiceGrpcNamespace_ + common.ServiceToken},
 	}
-	if len(pat.Scopes) > 0 {
-		cl.Extra = map[string]interface{}{
-			"scopes": pat.Scopes,
+	if len(pat.Scopes) > 0 || pat.SecretPair != "" {
+		cl.Extra = map[string]interface{}{}
+		if len(pat.Scopes) > 0 {
+			cl.Extra["scopes"] = pat.Scopes
+		}
+		if len(pat.SecretPair) > 0 {
+			cl.Extra["secret_pair"] = pat.SecretPair
 		}
 	}
+
 	m, _ := json.Marshal(cl)
-	response := &auth.VerifyTokenResponse{
+
+	return &auth.VerifyTokenResponse{
 		Success: true,
 		Data:    m,
-	}
-	return response, nil
+	}, nil
 }
 
-func (p *PatHandler) Generate(ctx context.Context, request *auth.PatGenerateRequest) (*auth.PatGenerateResponse, error) {
-	dao := p.getDao(ctx)
+func (p *PATHandler) Generate(ctx context.Context, request *auth.PatGenerateRequest) (*auth.PatGenerateResponse, error) {
+	dao, err := p.getDao(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	token := &auth.PersonalAccessToken{
 		Uuid:              uuid.New(),
 		Type:              request.Type,
@@ -129,66 +161,88 @@ func (p *PatHandler) Generate(ctx context.Context, request *auth.PatGenerateRequ
 		Scopes:            request.Scopes,
 		AutoRefreshWindow: request.AutoRefreshWindow,
 		ExpiresAt:         request.ExpiresAt,
+		RevocationKey:     request.RevocationKey,
 	}
+
 	if request.AutoRefreshWindow > 0 {
 		request.ExpiresAt = time.Now().Add(time.Duration(request.AutoRefreshWindow) * time.Second).Unix()
 		token.ExpiresAt = request.ExpiresAt
 	} else if request.ExpiresAt > 0 {
 		token.ExpiresAt = request.ExpiresAt
 	} else {
-		return nil, errors.BadRequest("missing.parameters", "Please provide one of ExpiresAt or AutoRefreshWindow")
+		return nil, errors.WithMessage(errors.InvalidParameters, "Please provide one of ExpiresAt or AutoRefreshWindow")
 	}
+
 	token.CreatedAt = time.Now().Unix()
-	if uName, _ := permissions.FindUserNameInContext(ctx); uName != "" {
+	if uName := claim.UserNameFromContext(ctx); uName != "" {
 		token.CreatedBy = uName
 	}
-	accessToken, _, err := p.getStrategy().Generate()
+
+	accessToken, _, err := p.getStrategy().Generate(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if request.GenerateSecretPair {
+		token.SecretPair, err = std.CryptoRandKey(24)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if err := dao.Store(accessToken, token, false); err != nil {
 		return nil, err
 	}
-	response := &auth.PatGenerateResponse{
-		TokenUuid:   token.Uuid,
+
+	return &auth.PatGenerateResponse{
 		AccessToken: accessToken,
-	}
-	return response, nil
+		TokenUuid:   token.Uuid,
+		SecretPair:  token.SecretPair,
+	}, nil
 }
 
-func (p *PatHandler) Revoke(ctx context.Context, request *auth.PatRevokeRequest) (*auth.PatRevokeResponse, error) {
-	dao := p.getDao(ctx)
-	er := dao.Delete(request.GetUuid())
-	if er != nil {
-		return nil, er
-	} else {
-		return &auth.PatRevokeResponse{Success: true}, nil
+func (p *PATHandler) Revoke(ctx context.Context, request *auth.PatRevokeRequest) (*auth.PatRevokeResponse, error) {
+	// TODO - REVOKE BY RevocationKey
+	dao, err := p.getDao(ctx)
+	if err != nil {
+		return nil, err
 	}
+	if err := dao.Delete(request.GetUuid()); err != nil {
+		return nil, err
+	}
+
+	return &auth.PatRevokeResponse{
+		Success: true,
+	}, nil
 }
 
-func (p *PatHandler) List(ctx context.Context, request *auth.PatListRequest) (*auth.PatListResponse, error) {
-	dao := p.getDao(ctx)
-	tt, er := dao.List(request.Type, request.ByUserLogin)
-	if er != nil {
-		return nil, er
+func (p *PATHandler) List(ctx context.Context, request *auth.PatListRequest) (*auth.PatListResponse, error) {
+	dao, err := p.getDao(ctx)
+	if err != nil {
+		return nil, err
 	}
+
+	tt, err := dao.List(request.Type, request.ByUserLogin)
+	if err != nil {
+		return nil, err
+	}
+
 	return &auth.PatListResponse{
 		Tokens: tt,
 	}, nil
 }
 
-func (p *PatHandler) PruneTokens(ctx context.Context, request *auth.PruneTokensRequest) (*auth.PruneTokensResponse, error) {
-	i, e := p.getDao(ctx).PruneExpired()
-	if e != nil {
-		return nil, e
+func (p *PATHandler) PruneTokens(ctx context.Context, request *auth.PruneTokensRequest) (*auth.PruneTokensResponse, error) {
+	dao, err := p.getDao(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return &auth.PruneTokensResponse{Count: int32(i)}, nil
-}
 
-func (p *PatHandler) generateRandomKey(length int) []byte {
-	k := make([]byte, length)
-	if _, err := io.ReadFull(rand.Reader, k); err != nil {
-		return nil
+	i, err := dao.PruneExpired()
+	if err != nil {
+		return nil, err
 	}
-	return k
+
+	return &auth.PruneTokensResponse{
+		Count: int32(i),
+	}, nil
 }

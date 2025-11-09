@@ -22,25 +22,28 @@ package configtest
 
 import (
 	"fmt"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"sync"
 	"testing"
-	"time"
+
+	"golang.org/x/exp/maps"
+
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/utils/configx"
+
+	_ "github.com/pydio/cells/v5/common/config/memory"
 
 	. "github.com/smartystreets/goconvey/convey"
-
-	"github.com/pydio/cells/v4/common/config"
-	// Plugins to test
-	_ "github.com/pydio/cells/v4/common/config/etcd"
-	_ "github.com/pydio/cells/v4/common/config/file"
-	_ "github.com/pydio/cells/v4/common/config/memory"
 )
 
 func testWatch(t *testing.T, store config.Store) {
 	Convey("Given a default config initialised in a temp directory", t, func() {
 		Convey("Simple GetSet Works", func() {
-			go func() {
-				w, _ := store.Watch()
 
+			wg := &sync.WaitGroup{}
+
+			w, _ := store.Watch()
+
+			go func() {
 				for {
 					res, err := w.Next()
 					if err != nil {
@@ -48,13 +51,54 @@ func testWatch(t *testing.T, store config.Store) {
 					}
 
 					fmt.Println(string(res.(configx.Values).Bytes()))
+					wg.Done()
 				}
 			}()
 
+			wg.Add(1)
 			store.Val("first/second").Set("whatever")
-			<-time.After(1 * time.Second)
+			wg.Wait()
+
+			wg.Add(1)
 			store.Val("first/third").Set("whatever2")
-			<-time.After(3 * time.Second)
+			wg.Wait()
+
+			meta := make(map[string]string)
+			meta["test"] = "test"
+
+			val := Teststruct{Name: "test", Meta: meta}
+
+			fmt.Println("Setting val")
+			wg.Add(1)
+			store.Val("val").Set(val)
+			wg.Wait()
+
+			val.Name = "test2"
+			meta["test"] = "test2"
+
+			fmt.Println("Setting second val")
+			wg.Add(1)
+			store.Val("val").Set(val)
+			wg.Wait()
+
+			fmt.Println("Finished")
+
+			fmt.Println(store.Val("val").Get())
+
+			w.Stop()
 		})
 	})
+}
+
+type Teststruct struct {
+	Name string            `diff:"Name"`
+	Meta map[string]string `diff:"Meta"`
+}
+
+func (s Teststruct) Clone() interface{} {
+	clone := Teststruct{}
+	clone = s
+	clone.Meta = maps.Clone(s.Meta)
+
+	return clone
 }

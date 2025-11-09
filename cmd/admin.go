@@ -21,8 +21,32 @@
 package cmd
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/spf13/cobra"
+
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
 )
+
+var (
+	adminCmdGRPCTimeout string
+)
+
+func longGrpcCallTimeout() grpc.Option {
+	var d time.Duration
+	var e error
+	d = 60 * time.Minute
+	if adminCmdGRPCTimeout != "" {
+		d, e = time.ParseDuration(adminCmdGRPCTimeout)
+	}
+	if e != nil {
+		fmt.Printf("Warning, cannot parse grpc timeout (%v), a golang duration is expected(10m, 2h, etc).\nUsing default 60m\n", e)
+	}
+	return grpc.WithCallTimeout(d)
+}
 
 // AdminCmd groups the data manipulation commands
 // The sub-commands are connecting via gRPC to a **running** Cells instance.
@@ -39,11 +63,25 @@ DESCRIPTION
 `,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 
+		// TODO - Should do better with the runtime
 		bindViperFlags(cmd.Flags())
+		cellsViper.Set(runtime.KeyBootstrapYAML, ctlBootstrap)
 
-		_, _, er := initConfig(cmd.Context(), true)
+		ctx := runtime.MultiContextManager().RootContext(cmd.Context())
 
-		return er
+		mgr, err := manager.NewManager(ctx, runtime.NsCmd)
+		if err != nil {
+			return err
+		}
+
+		if err := mgr.Bootstrap(ctlBootstrap); err != nil {
+			return err
+		}
+
+		ctx = mgr.Context()
+		cmd.SetContext(ctx)
+
+		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cmd.Help()
@@ -52,6 +90,7 @@ DESCRIPTION
 
 func init() {
 	// Registry / Broker Flags
-	addExternalCmdRegistryFlags(AdminCmd.PersistentFlags())
+	// addExternalCmdRegistryFlags(AdminCmd.PersistentFlags())
+	AdminCmd.PersistentFlags().StringVarP(&adminCmdGRPCTimeout, "grpc_client_timeout", "", "60m", "Default timeout for long-running GRPC calls, expressed as a golang duration")
 	RootCmd.AddCommand(AdminCmd)
 }

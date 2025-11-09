@@ -21,44 +21,38 @@
 package compose
 
 import (
-	"context"
-
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/nodes/archive"
-	"github.com/pydio/cells/v4/common/nodes/binaries"
-	"github.com/pydio/cells/v4/common/nodes/core"
-	"github.com/pydio/cells/v4/common/nodes/encryption"
-	"github.com/pydio/cells/v4/common/nodes/events"
-	"github.com/pydio/cells/v4/common/nodes/path"
-	"github.com/pydio/cells/v4/common/nodes/put"
-	"github.com/pydio/cells/v4/common/nodes/sync"
-	"github.com/pydio/cells/v4/common/nodes/version"
-	"github.com/pydio/cells/v4/common/nodes/virtual"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/nodes/archive"
+	"github.com/pydio/cells/v5/common/nodes/binaries"
+	"github.com/pydio/cells/v5/common/nodes/core"
+	"github.com/pydio/cells/v5/common/nodes/encryption"
+	"github.com/pydio/cells/v5/common/nodes/events"
+	"github.com/pydio/cells/v5/common/nodes/path"
+	"github.com/pydio/cells/v5/common/nodes/put"
+	"github.com/pydio/cells/v5/common/nodes/sync"
+	"github.com/pydio/cells/v5/common/nodes/version"
+	"github.com/pydio/cells/v5/common/nodes/virtual"
 )
 
-func PathClient(ctx context.Context, oo ...nodes.Option) nodes.Client {
-	oo = append(oo, nodes.WithContext(ctx))
+func PathClient(oo ...nodes.Option) nodes.Client {
 	return NewClient(pathComposer(oo...)...)
 }
 
-func PathClientAdmin(ctx context.Context, oo ...nodes.Option) nodes.Client {
-	oo = append(oo, nodes.WithContext(ctx))
+func PathClientAdmin(oo ...nodes.Option) nodes.Client {
 	return NewClient(append(oo, pathComposer(nodes.AsAdmin())...)...)
 }
 
 func pathComposer(oo ...nodes.Option) []nodes.Option {
 
 	return append(oo,
-		nodes.WithCore(func(pool nodes.SourcesPool) nodes.Handler {
-			exe := &core.Executor{}
-			exe.SetClientsPool(pool)
-			return exe
-		}),
+		nodes.WithCore(&core.Executor{}),
+		nodes.WithTracer("PathClient", 2),
 		acl.WithAccessList(),
 		binaries.WithStore(common.PydioThumbstoreNamespace, true, false, false),
 		binaries.WithStore(common.PydioDocstoreBinariesNamespace, false, true, true),
+		path.WithPermanentPrefix(),
 		archive.WithArchives(),
 		path.WithWorkspace(),
 		path.WithMultipleRoots(),
@@ -66,11 +60,15 @@ func pathComposer(oo ...nodes.Option) []nodes.Option {
 		virtual.WithBrowser(),  // options.BrowseVirtualNodes
 		path.WithRootResolver(),
 		path.WithDatasource(),
+		path.WithRecyclePathHandler(),
 		sync.WithCache(), // options.SynchronousCache
 		events.WithAudit(),
+		acl.WithRefFilter(),
 		acl.WithFilter(),
 		events.WithRead(),
+		put.WithJobsDynamicMiddlewares(),
 		put.WithPutInterceptor(),
+		put.WithHashInterceptor(),
 		acl.WithLock(),
 		put.WithUploadLimiter(),
 		acl.WithContentLockFilter(),
@@ -79,5 +77,6 @@ func pathComposer(oo ...nodes.Option) []nodes.Option {
 		version.WithVersions(),
 		encryption.WithEncryption(),
 		core.WithFlatInterceptor(),
+		core.WithStructInterceptor(),
 	)
 }

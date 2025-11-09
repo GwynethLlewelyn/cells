@@ -21,12 +21,13 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
 	p "github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
+
+	"github.com/pydio/cells/v5/common/errors"
 )
 
 var userLogin string
@@ -50,14 +51,14 @@ EXAMPLE
 `,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if len(userLogin) == 0 {
-			return fmt.Errorf("missing argument: please provide a user id")
+			return errors.New("missing argument: please provide a user id")
 			// return errors.BadRequest(common.SERVICE_USER, "missing argument: please provide a user id")
 		}
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		if confirmDeletion(cmd, userLogin) {
-			err := deleteUser(context.Background(), userLogin)
+		if confirmUserDeletion(cmd, userLogin) {
+			err := deleteUser(cmd.Context(), userLogin)
 			if err != nil {
 				cmd.Printf("could not delete %s: %s", userLogin, err.Error())
 			}
@@ -65,9 +66,9 @@ EXAMPLE
 	},
 }
 
-func confirmDeletion(cmd *cobra.Command, login string) bool {
+func confirmUserDeletion(cmd *cobra.Command, login string) bool {
 
-	q := fmt.Sprintf("You are about to definitively remove user [%s], are you sure you want to proceed?", login)
+	q := fmt.Sprintf("You are about to definitively remove user [%s], are you sure you want to proceed", login)
 	confirm := p.Prompt{Label: q, IsConfirm: true}
 	// Always returns an error if the end user does not confirm
 	_, e := confirm.Run()

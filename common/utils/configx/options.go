@@ -21,17 +21,20 @@
 package configx
 
 import (
+	"bytes"
 	"context"
-	"sync"
+	"fmt"
 
 	"github.com/spf13/cast"
-
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	yaml "gopkg.in/yaml.v2"
 
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/openurl"
 )
+
+type Getter func() any
 
 type Unmarshaler interface {
 	Unmarshal([]byte, interface{}) error
@@ -52,7 +55,10 @@ type Decrypter interface {
 type Option func(*Options)
 
 type Options struct {
-	*sync.RWMutex
+	InitData interface{}
+
+	Storer
+
 	Unmarshaler
 	Marshaller
 	Encrypter
@@ -64,8 +70,34 @@ type Options struct {
 	// Do not create any resources
 	ReadOnly bool
 
+	ReferencePool map[string]*openurl.Pool[Values]
+
 	// Used to pass other potential options
 	Context context.Context
+}
+
+type WalkOption func(*WalkOptions)
+
+type WalkOptions struct {
+	Interceptor func(i int, v any) (bool, any)
+}
+
+func WithInterceptor(f func(i int, v any) (bool, any)) WalkOption {
+	return func(wo *WalkOptions) {
+		wo.Interceptor = f
+	}
+}
+
+func WithInitData(data interface{}) Option {
+	return func(o *Options) {
+		o.InitData = data
+	}
+}
+
+func WithStorer(data Storer) Option {
+	return func(o *Options) {
+		o.Storer = data
+	}
 }
 
 type jsonReader struct{}
@@ -93,6 +125,30 @@ func WithJSON() Option {
 	return func(o *Options) {
 		o.Unmarshaler = &jsonReader{}
 		o.Marshaller = &jsonWriter{}
+	}
+}
+
+type binaryReader struct{}
+
+func (g *binaryReader) Unmarshal(data []byte, out any) error {
+	b := bytes.NewBuffer(data)
+	_, err := fmt.Fscanln(b, out)
+	return err
+}
+
+type binaryWriter struct{}
+
+func (g *binaryWriter) Marshal(out any) ([]byte, error) {
+	// A simple encoding: plain text.
+	var b bytes.Buffer
+	fmt.Fprintln(&b, out)
+	return b.Bytes(), nil
+}
+
+func WithBinary() Option {
+	return func(o *Options) {
+		o.Unmarshaler = &binaryReader{}
+		o.Marshaller = &binaryWriter{}
 	}
 }
 
@@ -168,14 +224,17 @@ func WithReadOnly() Option {
 	}
 }
 
-func WithLock(m *sync.RWMutex) Option {
-	return func(o *Options) {
-		o.RWMutex = m
-	}
-}
-
 func WithSetCallback(f func([]string, interface{}) error) Option {
 	return func(o *Options) {
 		o.SetCallback = f
+	}
+}
+
+func WithReferencePool(key string, ref *openurl.Pool[Values]) Option {
+	return func(o *Options) {
+		if o.ReferencePool == nil {
+			o.ReferencePool = make(map[string]*openurl.Pool[Values])
+		}
+		o.ReferencePool[key] = ref
 	}
 }

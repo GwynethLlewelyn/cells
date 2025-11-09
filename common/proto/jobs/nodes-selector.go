@@ -24,38 +24,27 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strings"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
-
-type FreeStringEvaluator func(ctx context.Context, query string, node *tree.Node) bool
-
-var (
-	freeStringEvaluator FreeStringEvaluator
-)
-
-func RegisterNodesFreeStringEvaluator(f FreeStringEvaluator) {
-	freeStringEvaluator = f
-}
 
 type NodeMatcher struct {
 	*tree.Query
 }
 
-func (n *NodeMatcher) Matches(object interface{}) bool {
+func (n *NodeMatcher) Matches(ctx context.Context, object interface{}) bool {
 	if node, ok := object.(*tree.Node); ok {
-		return evaluateSingleQuery(n.Query, node)
+		return evaluateSingleQuery(ctx, n.Query, node)
 	} else {
 		return false
 	}
@@ -65,118 +54,192 @@ func (n *NodesSelector) MultipleSelection() bool {
 	return n.Collect
 }
 
-func (n *NodesSelector) Select(ctx context.Context, input ActionMessage, objects chan interface{}, done chan bool) error {
+func (n *NodesSelector) SelectorID() string {
+	return "NodesSelector"
+}
+
+func (n *NodesSelector) FilterID() string {
+	return "NodesFilter"
+}
+
+func (n *NodesSelector) SelectorLabel() string {
+	if n.Label != "" {
+		return n.Label
+	}
+	return n.SelectorID()
+}
+
+func (n *NodesSelector) ApplyClearInput(msg *ActionMessage) *ActionMessage {
+	return msg.WithNode(nil)
+}
+
+func (n *NodesSelector) Select(ctx context.Context, input *ActionMessage, objects chan interface{}, done chan bool) error {
 	defer func() {
 		done <- true
 	}()
 	selector := n.evaluatedClone(ctx, input)
+
+	// Absolute Paths pre-specified, just pass them without checking for existence
 	if len(selector.Pathes) > 0 {
 		for _, p := range selector.Pathes {
 			objects <- &tree.Node{
 				Path: p,
 			}
 		}
-	} else {
-		q := &tree.Query{}
-		if !selector.All && (selector.Query == nil || selector.Query.SubQueries == nil || len(selector.Query.SubQueries) == 0) {
-			return nil
+		return nil
+	}
+	// FanOut existing values from Input.Nodes and return
+	if selector.FanOutInput {
+		for _, n := range input.Nodes {
+			objects <- n.Clone()
 		}
+		return nil
+	}
 
-		if e := anypb.UnmarshalTo(selector.Query.SubQueries[0], q, proto.UnmarshalOptions{}); e != nil {
-			log.Logger(ctx).Error("Could not parse input query", zap.Error(e))
-			return e
+	if selector.Query == nil || selector.Query.SubQueries == nil || len(selector.Query.SubQueries) == 0 {
+		if selector.All {
+			log.Logger(ctx).Warn("warning, NodesSelector.All is deprecated and will return empty results as no query is passed")
+			log.TasksLogger(ctx).Warn("warning, NodesSelector.All is deprecated and will return empty results as no query is passed")
+		} else {
+			log.TasksLogger(ctx).Debug("Exiting selector as no query is passed")
 		}
-		if e := q.ParseDurationDate(); e != nil {
-			log.Logger(ctx).Error("Error while parsing DurationDate", zap.Error(e))
-			return e
-		}
-		// If paths are preset, just load nodes and do not go further
-		if len(q.Paths) > 0 {
-			sCli := tree.NewNodeProviderClient(grpc.GetClientConnFromCtx(ctx, common.ServiceTree))
-			for _, p := range q.Paths {
-				if r, e := sCli.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: p}}); e == nil {
-					objects <- r.GetNode()
-				}
-			}
-			return nil
-		}
-		// If UUIDs are preset, just load nodes and do not go further
-		if len(q.UUIDs) > 0 {
-			sCli := tree.NewNodeProviderClient(grpc.GetClientConnFromCtx(ctx, common.ServiceTree))
-			for _, uuid := range q.UUIDs {
-				if r, e := sCli.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: uuid}}); e == nil {
-					objects <- r.GetNode()
-				}
-			}
-			return nil
-		}
-		filter := func(n *tree.Node) bool {
-			return true
-		}
-		var total int
-		if q.FreeString != "" || q.Content != "" || q.FileNameOrContent != "" {
-			// Use the Search Service, relaunch search as long as there are results (request size cannot be empty)
+		return nil
+	}
 
-			// Search Service does not support PathDepth, reapply filtering on output
-			if q.PathDepth > 0 {
-				filter = func(n *tree.Node) bool {
-					depth := int32(len(strings.Split(strings.Trim(n.GetPath(), "/"), "/")))
-					return depth == q.PathDepth
-				}
-			} else if q.PathDepth == -1 && len(q.PathPrefix) == 1 {
-				// Special -1 case : just look for Depth(PathPrefix) + 1
-				filter = func(n *tree.Node) bool {
-					depth := int32(len(strings.Split(strings.Trim(n.GetPath(), "/"), "/")))
-					refDepth := int32(len(strings.Split(strings.Trim(q.PathPrefix[0], "/"), "/")))
-					return depth == refDepth+1
-				}
+	// Now handle query
+	q := &tree.Query{}
+	if e := anypb.UnmarshalTo(selector.Query.SubQueries[0], q, proto.UnmarshalOptions{}); e != nil {
+		log.Logger(ctx).Error("Could not parse input query", zap.Error(e))
+		return e
+	}
+	if e := q.ParseDurationDate(); e != nil {
+		log.Logger(ctx).Error("Error while parsing DurationDate", zap.Error(e))
+		return e
+	}
+	// If paths are preset, just load nodes and do not go further
+	if len(q.Paths) > 0 {
+		sCli := tree.NewNodeProviderClient(connexionResolver(ctx, common.ServiceTree))
+		for _, p := range q.Paths {
+			if r, e := sCli.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: p}}); e == nil {
+				objects <- r.GetNode()
 			}
-
-			var cursor int32
-			size := int32(50)
-			for {
-				req := &tree.SearchRequest{
-					Query:   q,
-					Details: true,
-					From:    cursor,
-					Size:    size,
-				}
-				res, loadMore, err := n.performListing(ctx, common.ServiceSearch, req, filter, objects)
-				if err != nil {
-					return err
-				}
-				total += res
-				if loadMore {
-					cursor += size
-				} else {
-					break
-				}
+		}
+		return nil
+	}
+	// If UUIDs are preset, just load nodes and do not go further
+	if len(q.UUIDs) > 0 {
+		sCli := tree.NewNodeProviderClient(connexionResolver(ctx, common.ServiceTree))
+		for _, uuid := range q.UUIDs {
+			if r, e := sCli.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: uuid}}); e == nil {
+				objects <- r.GetNode()
+			}
+		}
+		return nil
+	}
+	filter := func(n *tree.Node) bool {
+		return true
+	}
+	if q.FreeString != "" && strings.HasPrefix(strings.TrimSpace(q.FreeString), "(local)") {
+		filterString := strings.TrimPrefix(strings.TrimSpace(q.FreeString), "(local)")
+		q.FreeString = ""
+		if freeStringEvaluator != nil {
+			filter = func(n *tree.Node) bool {
+				return freeStringEvaluator(ctx, filterString, n)
 			}
 		} else {
-			// For simple requests, directly use the Tree service
-			var e error
-			req := &tree.SearchRequest{
-				Query:   q,
-				Details: true,
-			}
-			total, _, e = n.performListing(ctx, common.ServiceTree, req, filter, objects)
-			if e != nil {
-				return e
+			log.Logger(ctx).Error("Warning, no FreeStringEvaluator was registered for nodes selector, local free string will be ignored")
+		}
+	}
+	var offset, limit int32
+	var sortField string
+	var sortDesc bool
+	if n.Range != nil {
+		if of, er := EvaluateFieldInt(ctx, input, n.Range.Offset); er == nil {
+			offset = int32(of)
+		}
+		if li, er := EvaluateFieldInt(ctx, input, n.Range.Limit); er == nil {
+			limit = int32(li)
+		}
+		if n.Range.GetOrderBy() != "" {
+			if sf := EvaluateFieldStr(ctx, input, n.Range.GetOrderBy()); tree.ValidSortField(sf) {
+				sortField = sf
+				sortDesc = EvaluateFieldStr(ctx, input, n.Range.GetOrderDir()) == "desc"
 			}
 		}
-		log.Logger(ctx).Info("Selector finished request with query", zap.Any("q", q), zap.Int("count", total))
 	}
+
+	var total int32
+	if q.FreeString != "" || q.Content != "" || q.FileNameOrContent != "" {
+		// Use the Search Service, relaunch search as long as there are results (request size cannot be empty)
+
+		// Search Service does not support PathDepth, reapply filtering on output
+		if q.PathDepth > 0 {
+			filter = func(n *tree.Node) bool {
+				depth := int32(len(strings.Split(strings.Trim(n.GetPath(), "/"), "/")))
+				return depth == q.PathDepth
+			}
+		} else if q.PathDepth == -1 && len(q.PathPrefix) == 1 {
+			// Special -1 case : just look for Depth(PathPrefix) + 1
+			filter = func(n *tree.Node) bool {
+				depth := int32(len(strings.Split(strings.Trim(n.GetPath(), "/"), "/")))
+				refDepth := int32(len(strings.Split(strings.Trim(q.PathPrefix[0], "/"), "/")))
+				return depth == refDepth+1
+			}
+		}
+
+		cursor := offset  // start at required cursor
+		size := int32(50) // Use a default paging of 50
+		for {
+			pageSize := size
+			if limit > 0 && int32(total) < limit {
+				pageSize = int32(math.Min(float64(size), float64(limit-total)))
+			}
+			req := &tree.SearchRequest{
+				Query:       q,
+				Details:     true,
+				From:        cursor,
+				Size:        pageSize,
+				SortField:   sortField,
+				SortDirDesc: sortDesc,
+			}
+			res, loadMore, err := n.performListing(ctx, common.ServiceSearch, req, filter, objects)
+			if err != nil {
+				return err
+			}
+			total += res
+			if !loadMore || (limit > 0 && total >= limit) {
+				break
+			}
+			cursor += pageSize
+		}
+	} else {
+		// For simple requests, directly use the Tree service
+		var e error
+		req := &tree.SearchRequest{
+			Query:       q,
+			Details:     true,
+			From:        offset,
+			Size:        limit,
+			SortField:   sortField,
+			SortDirDesc: sortDesc,
+		}
+		total, _, e = n.performListing(ctx, common.ServiceTree, req, filter, objects)
+		if e != nil {
+			return e
+		}
+	}
+	log.Logger(ctx).Info("Selector finished request with query", zap.Any("q", *q), zap.Int32("count", total))
+
 	return nil
 }
 
-func (n *NodesSelector) performListing(ctx context.Context, serviceName string, req *tree.SearchRequest, filter func(n *tree.Node) bool, objects chan interface{}) (int, bool, error) {
-	treeClient := tree.NewSearcherClient(grpc.GetClientConnFromCtx(ctx, serviceName))
+func (n *NodesSelector) performListing(ctx context.Context, serviceName string, req *tree.SearchRequest, filter func(n *tree.Node) bool, objects chan interface{}) (int32, bool, error) {
+	treeClient := tree.NewSearcherClient(connexionResolver(ctx, serviceName))
 	sStream, eR := treeClient.Search(ctx, req)
 	if eR != nil {
 		return 0, false, eR
 	}
-	var received int32
-	var count int
+	var received, count int32
 	var stErr error
 	defer sStream.CloseSend()
 	for {
@@ -187,22 +250,22 @@ func (n *NodesSelector) performListing(ctx context.Context, serviceName string, 
 			}
 			break
 		}
-		if resp == nil || resp.Node == nil {
+		if resp == nil || resp.GetNode() == nil {
 			continue
 		}
 		received++
 		if !filter(resp.GetNode()) {
 			continue
 		}
-		log.Logger(ctx).Debug("Search Request with query received Node", resp.Node.ZapPath())
-		objects <- resp.Node
+		log.Logger(ctx).Debug("Search Request with query received Node", resp.GetNode().ZapPath())
+		objects <- resp.GetNode()
 		count++
 	}
 	mayHaveMore := req.Size > 0 && received == req.Size
 	return count, mayHaveMore, stErr
 }
 
-func (n *NodesSelector) Filter(ctx context.Context, input ActionMessage) (ActionMessage, *ActionMessage, bool) {
+func (n *NodesSelector) Filter(ctx context.Context, input *ActionMessage) (*ActionMessage, *ActionMessage, bool) {
 
 	var excluded []*tree.Node
 	if len(input.Nodes) == 0 {
@@ -238,7 +301,7 @@ func (n *NodesSelector) Filter(ctx context.Context, input ActionMessage) (Action
 			continue
 		}
 		if multi != nil {
-			if multi.Matches(node) {
+			if multi.Matches(ctx, node) {
 				newNodes = append(newNodes, node)
 			} else {
 				excluded = append(excluded, node)
@@ -249,15 +312,14 @@ func (n *NodesSelector) Filter(ctx context.Context, input ActionMessage) (Action
 	output.Nodes = newNodes
 	var xx *ActionMessage
 	if len(excluded) > 0 {
-		filteredOutput := input
-		filteredOutput.Nodes = excluded
-		xx = &filteredOutput
+		xx = input.Clone()
+		xx.Nodes = excluded
 	}
 	return output, xx, len(newNodes) > 0
 
 }
 
-func (n *NodesSelector) evaluatedClone(ctx context.Context, input ActionMessage) *NodesSelector {
+func (n *NodesSelector) evaluatedClone(ctx context.Context, input *ActionMessage) *NodesSelector {
 	if len(GetFieldEvaluators()) == 0 {
 		return n
 	}
@@ -303,7 +365,7 @@ func contains(slice []string, value string, prefix bool, lower bool) bool {
 	return false
 }
 
-func evaluateSingleQuery(q *tree.Query, node *tree.Node) (result bool) {
+func evaluateSingleQuery(ctx context.Context, q *tree.Query, node *tree.Node) (result bool) {
 
 	defer func() {
 		// Invert result if q.Not
@@ -333,7 +395,9 @@ func evaluateSingleQuery(q *tree.Query, node *tree.Node) (result bool) {
 	if (q.MinSize > 0 && node.Size < q.MinSize) || (q.MaxSize > 0 && node.Size > q.MaxSize) {
 		return false
 	}
-	q.ParseDurationDate()
+	if er := q.ParseDurationDate(); er != nil {
+		fmt.Println("[warn] Error while parsing Duration: " + er.Error())
+	}
 	if (q.MinDate > 0 && node.MTime < q.MinDate) || (q.MaxDate > 0 && node.MTime > q.MaxDate) {
 		return false
 	}
@@ -402,10 +466,10 @@ func evaluateSingleQuery(q *tree.Query, node *tree.Node) (result bool) {
 	// Bleve-style query string
 	if len(q.FreeString) > 0 {
 		if freeStringEvaluator == nil {
-			log.Logger(context.Background()).Error("Warning, no FreeStringEvaluator was registered for nodes selector")
+			log.Logger(ctx).Error("Warning, no FreeStringEvaluator was registered for nodes selector")
 			return false
 		} else {
-			return freeStringEvaluator(context.Background(), q.FreeString, node)
+			return freeStringEvaluator(ctx, q.FreeString, node)
 		}
 	}
 

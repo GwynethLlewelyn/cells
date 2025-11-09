@@ -23,6 +23,12 @@
   "database.legend.bold": {
     "other": "Assicurati che il tuo database utilizzi MySQL versione 5.6 o superiore"
   },
+  "database.legend1": {
+    "other": "Pydio requires at least one SQL storage for configuration and data indexation."
+  },
+  "database.legend2": {
+    "other": "Supported databases are MySQL/MariaDB or PostgreSQL or SQLite."
+  },
   "database.installDetected": {
     "other": "Sembra ci sia già un'installazione di Cells già configurata in questo database. Si prega di confermare per continuare o "
   },
@@ -63,19 +69,19 @@
     "other": "All'avvio viene creato un datasource predefinito per memorizzare i dati personali degli utenti e le celle. È possibile creare altri datasource in un secondo momento."
   },
   "advanced.mongo.title": {
-    "other": "Configure a MongoDB Connection"
+    "other": "Configura una connessione MongoDB"
   },
   "advanced.mongo.legend": {
-    "other": "This is better for scalability, and required for clustering deployment. If you do not have a Mongo DB ready, this can be done later."
+    "other": "Questo è migliore per la scalabilità, ed è necessario per il cluster di distribuzione. Se non hai un DB Mongo pronto, questo può essere fatto più tardi."
   },
   "advanced.mongo.host": {
-    "other": "Server host"
+    "other": "Host server"
   },
   "advanced.mongo.port": {
-    "other": "Server port"
+    "other": "Porta server"
   },
   "advanced.mongo.db": {
-    "other": "Database Name"
+    "other": "Nome del Database"
   },
   "advanced.mongo.username": {
     "other": "Username"
@@ -87,7 +93,7 @@
     "other": "Auth DB"
   },
   "advanced.mongo.validate": {
-    "other": "Test connection"
+    "other": "Test connessione"
   },
   "license.stepLabel": {
     "other": "Licenza Enterprise"
@@ -117,7 +123,7 @@
     "other": "Applica Installazione"
   },
   "apply.title": {
-    "other": "Please be patient while Pydio Cells is being installed..."
+    "other": "Si prega di essere pazienti mentre Pydio Cells è in fase di installazione..."
   },
   "apply.success": {
     "other": "L'installazione è avvenuta con successo e i servizi sono in fase di avvio, il programma di installazione ricaricherà la pagina quando i servizi sono stati avviati."
@@ -134,11 +140,20 @@
   "form.dbConnectionType.label": {
     "other": "Tipo di Connessione"
   },
-  "form.dbConnectionType.tcp": {
-    "other": "TCP"
+  "form.dbConnectionType.mysql_tcp": {
+    "other": "MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket": {
-    "other": "Socket"
+  "form.dbConnectionType.mysql_socket": {
+    "other": "MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp": {
+    "other": "PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket": {
+    "other": "PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite": {
+    "other": "SQLite (dev purpose only)"
   },
   "form.dbConnectionType.manual": {
     "other": "Manuale"
@@ -179,6 +194,18 @@
   "form.dbSocketFile.legend": {
     "other": "Inserire la posizione del file socket da usare per la connessione"
   },
+  "form.dbSocketFileSQLite.label": {
+    "other": "Database Path"
+  },
+  "form.dbSocketFileSQLite.legend": {
+    "other": "Enter the location of the SQLite database"
+  },
+  "form.dbSqliteFile.label": {
+    "other": "File Path"
+  },
+  "form.dbSqliteFile.legend": {
+    "other": "Enter the location of the file to use as database"
+  },
   "form.dbManualDSN.label": {
     "other": "DSN"
   },
@@ -218,6 +245,9 @@
   "form.dsFolder.legend": {
     "other": "Usa un percorso assoluto sul server"
   },
+  "form.dsType.Label": {
+    "other": "Storage Type"
+  },
   "form.dsType.FS": {
     "other": "FS locale (memorizza tutti i dati su questo server)"
   },
@@ -225,7 +255,7 @@
     "other": "Amazon S3 / S3 compatibile (memorizza all'interno dei bucket S3)"
   },
   "form.dsS3Custom.label": {
-    "other": "Endpoint di archiviazione compatibile S3"
+    "other": "URL, append ?minio=true if Minio."
   },
   "form.dsS3Custom.legend": {
     "other": "Lascia vuoto per Amazon"

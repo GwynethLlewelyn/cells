@@ -22,38 +22,28 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"github.com/spf13/pflag"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/config/migrations"
-	"github.com/pydio/cells/v4/common/config/revisions"
-	"github.com/pydio/cells/v4/common/crypto"
-	"github.com/pydio/cells/v4/common/log"
-	cw "github.com/pydio/cells/v4/common/log/context-wrapper"
-	log2 "github.com/pydio/cells/v4/common/proto/log"
-	"github.com/pydio/cells/v4/common/runtime"
-
-	// Implicit available config types
-	_ "github.com/pydio/cells/v4/common/config/etcd"
-	_ "github.com/pydio/cells/v4/common/config/service"
-	_ "github.com/pydio/cells/v4/common/config/vault"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	log2 "github.com/pydio/cells/v5/common/proto/log"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	cw "github.com/pydio/cells/v5/common/telemetry/log/context-wrapper"
+	"github.com/pydio/cells/v5/common/telemetry/otel"
 )
 
 var (
-	ctx          context.Context
+	_ctx         context.Context
 	cancel       context.CancelFunc
 	cellsViper   *viper.Viper
 	infoCommands = []string{"version", "completion", "doc", "help", "--help", "bash", "zsh", os.Args[0]}
@@ -116,6 +106,8 @@ LOGS LEVEL
 }
 
 func init() {
+	runtime.RegisterEnvVariable("CELLS_FLAGS_FILE", "", "Pass all command flags via a viper configuration file")
+
 	initEnvPrefixes()
 	initViperRuntime()
 
@@ -127,8 +119,10 @@ func init() {
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	ctx, cancel = context.WithCancel(context.Background())
-	if err := RootCmd.ExecuteContext(ctx); err != nil {
+
+	StartCmd.Long += runtime.DocRegisteredEnvVariables("CELLS_SQL_DEFAULT_CONN", "CELLS_SQL_LONG_CONN", "CELLS_CACHES_HARD_LIMIT", "CELLS_UPDATE_HTTP_PROXY") + "\n\n"
+	_ctx, cancel = context.WithCancel(context.Background())
+	if err := RootCmd.ExecuteContext(_ctx); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -192,75 +186,17 @@ func skipCoreInit() bool {
 	return false
 }
 
-func initConfig(ctx context.Context, debounceVersions bool) (new bool, keyring crypto.Keyring, er error) {
-
-	if skipCoreInit() {
-		return
-	}
-
-	// Keyring store
-	keyringStore, err := config.OpenStore(ctx, runtime.KeyringURL())
+// initManagerContext starts an empty manager with Root context in the "cmd" namespace
+func initManagerContext(ctx context.Context) (context.Context, error) {
+	mgr, err := manager.NewManager(runtime.MultiContextManager().RootContext(ctx), runtime.NsCmd)
 	if err != nil {
-		return false, nil, fmt.Errorf("could not init keyring store %v", err)
+		return nil, err
 	}
-	// Keyring start and creation of the master password
-	keyring = crypto.NewConfigKeyring(keyringStore, crypto.WithAutoCreate(true, func(s string) {
-		fmt.Println(promptui.IconWarn + " [Keyring] " + s)
-	}))
-	password, err := keyring.Get(common.ServiceGrpcNamespace_+common.ServiceUserKey, common.KeyringMasterKey)
-	if err != nil {
-		return false, nil, fmt.Errorf("could not get master password %v", err)
+	if err = mgr.Bootstrap(""); err != nil {
+		return nil, err
 	}
-	runtime.SetVaultMasterKey(password)
+	return mgr.Context(), nil
 
-	mainConfig, err := config.OpenStore(ctx, runtime.ConfigURL())
-	if err != nil {
-		return false, nil, err
-	}
-
-	// Init RevisionsStore if config is config.RevisionsProvider
-	if revProvider, ok := mainConfig.(config.RevisionsProvider); ok {
-		var rOpt []config.RevisionsStoreOption
-		if debounceVersions {
-			rOpt = append(rOpt, config.WithDebounce(2*time.Second))
-		}
-		var versionsStore revisions.Store
-		mainConfig, versionsStore = revProvider.AsRevisionsStore(rOpt...)
-		config.RegisterRevisionsStore(versionsStore)
-	}
-
-	// Wrap config with vaultConfig if set
-	vaultConfig, err := config.OpenStore(ctx, runtime.VaultURL())
-	if err != nil {
-		return false, nil, err
-	}
-	config.RegisterVault(vaultConfig)
-	mainConfig = config.NewVault(vaultConfig, mainConfig)
-
-	// Additional Proxy
-	mainConfig = config.Proxy(mainConfig)
-
-	// Register default now
-	config.Register(mainConfig)
-
-	if config.Get("version").String() == "" && config.Get("defaults/database").String() == "" {
-		new = true
-		var data interface{}
-		if err := json.Unmarshal([]byte(config.SampleConfig), &data); err == nil {
-			if err := config.Get().Set(data); err == nil {
-				config.Save(common.PydioSystemUsername, "Initialize with sample config")
-			}
-		}
-	}
-
-	// Need to do something for the versions
-	if save, err := migrations.UpgradeConfigsIfRequired(config.Get(), common.Version()); err == nil && save {
-		if err := config.Save(common.PydioSystemUsername, "Configs upgrades applied"); err != nil {
-			return false, nil, fmt.Errorf("could not save config migrations %v", err)
-		}
-	}
-
-	return
 }
 
 func initLogLevel() {
@@ -270,31 +206,18 @@ func initLogLevel() {
 	}
 
 	// Init log level
-	logLevel := runtime.LogLevel()
-	logJson := runtime.LogJSON()
+	stdoutLevel := runtime.LogLevel()
+	common.LogJSON = runtime.LogJSON()
 	common.LogToFile = runtime.LogToFile()
 
-	// Backward compatibility
-	if os.Getenv("PYDIO_LOGS_LEVEL") != "" {
-		logLevel = os.Getenv("PYDIO_LOGS_LEVEL")
-	}
-	if logLevel == "production" {
-		logLevel = "info"
-		logJson = true
-		common.LogToFile = true
+	// Making sure the log level is passed in forks
+	_ = os.Setenv("CELLS_LOG", stdoutLevel)
+	_ = os.Setenv("CELLS_LOG_TO_FILE", strconv.FormatBool(common.LogToFile))
+	if common.LogJSON {
+		_ = os.Setenv("CELLS_LOG_JSON", "true")
 	}
 
-	// Making sure the log level is passed everywhere (fork processes for example)
-	os.Setenv("CELLS_LOG", logLevel)
-	os.Setenv("CELLS_LOG_TO_FILE", strconv.FormatBool(common.LogToFile))
-
-	if logJson {
-		os.Setenv("CELLS_LOG_JSON", "true")
-		common.LogConfig = common.LogConfigProduction
-	} else {
-		common.LogConfig = common.LogConfigConsole
-	}
-	switch logLevel {
+	switch stdoutLevel {
 	case "info":
 		common.LogLevel = zap.InfoLevel
 	case "warn":
@@ -305,22 +228,28 @@ func initLogLevel() {
 		common.LogLevel = zap.ErrorLevel
 	}
 
-	log.Init(runtime.ApplicationWorkingDir(runtime.ApplicationDirLogs), cw.RichContext)
+	ll := []log.LoggerConfig{
+		log.DefaultStdoutLogger(stdoutLevel, common.LogJSON),
+	}
 
-	// Using it once
-	log.Logger(context.Background())
+	if common.LogToFile {
+		baseDir := runtime.ApplicationWorkingDir(runtime.ApplicationDirLogs)
+		ll = append(ll, log.DefaultJsonLogger(baseDir, ""))
+	}
+	log.Init(otel.Service{}, ll, cw.RichContext)
+	log.Logger(runtime.AsCoreContext(_ctx))
 }
 
 func initLogLevelListener(ctx context.Context) {
-	_, er := broker.Subscribe(ctx, common.TopicLogLevelEvent, func(message broker.Message) error {
+	_, er := broker.Subscribe(ctx, common.TopicLogLevelEvent, func(_ context.Context, message broker.Message) error {
 		event := &log2.LogLevelEvent{}
-		if _, e := message.Unmarshal(event); e == nil {
+		if _, e := message.Unmarshal(ctx, event); e == nil {
 			log.SetDynamicDebugLevels(event.GetResetInfo(), event.GetLevelDebug(), event.GetServices()...)
 		} else {
 			return e
 		}
 		return nil
-	})
+	}, broker.WithCounterName("root_logger"))
 	if er != nil {
 		fmt.Println("Cannot subscribe to broker for TopicLogLevelEvent", er.Error())
 	}

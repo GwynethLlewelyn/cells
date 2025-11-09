@@ -2,19 +2,18 @@ package main
 
 import (
 	"fmt"
-	"strings"
 
 	"google.golang.org/protobuf/compiler/protogen"
 )
 
 const (
+	timePackage    = protogen.GoImportPath("time")
 	fmtPackage     = protogen.GoImportPath("fmt")
+	errorsPackage  = protogen.GoImportPath("errors")
 	contextPackage = protogen.GoImportPath("context")
 	ioPackage      = protogen.GoImportPath("io")
 	grpcPackage    = protogen.GoImportPath("google.golang.org/grpc")
-	statusPackage  = protogen.GoImportPath("google.golang.org/grpc/status")
-	codesPackage   = protogen.GoImportPath("google.golang.org/grpc/codes")
-	stubsPackage   = protogen.GoImportPath("github.com/pydio/cells/v4/common/server/stubs")
+	stubsPackage   = protogen.GoImportPath("github.com/pydio/cells/v5/common/server/stubs")
 )
 
 // generateFile generates a _grpc.pb.go file containing gRPC service definitions.
@@ -61,7 +60,7 @@ func generateFileContent(gen *protogen.Plugin, file *protogen.File, g *protogen.
 	g.P("// This is a compile-time assertion to ensure that this generated file")
 	g.P("// is compatible with the grpc package it is being compiled against.")
 	g.P("// Requires gRPC-Go v1.32.0 or later.")
-	g.P("const _ = ", grpcPackage.Ident("SupportPackageIsVersion7")) // When changing, update version number above.
+	g.P("const _ = ", grpcPackage.Ident("SupportPackageIsVersion7"))
 	g.P()
 	for _, service := range file.Services {
 		genService(gen, file, g, service)
@@ -93,10 +92,9 @@ func genService(gen *protogen.Plugin, file *protogen.File, g *protogen.Generated
 		g.P("} else {")
 		g.P("e = er")
 		g.P("}")
-
 	}
 	g.P("default:")
-	g.P("e = fmt.Errorf(method + \" not implemented\")")
+	g.P("e = ", errorsPackage.Ident("New"), "(method + \" not implemented\")")
 	g.P("}")
 	g.P("return e")
 	g.P("}")
@@ -115,17 +113,21 @@ func genService(gen *protogen.Plugin, file *protogen.File, g *protogen.Generated
 			g.P("case ", "\"/", service.Desc.FullName(), "/", method.GoName, "\":")
 			g.P("st := &", stubServer, "_", method.GoName, "Streamer{}")
 			g.P("st.Init(ctx, func(i interface{}) error {")
+			g.P("var e error")
+			g.P("go func() {")
 			g.P("defer func() {")
 			g.P("close(st.RespChan)")
 			g.P("}()")
-			g.P("return s.", server, ".", method.GoName, "(i.(*", method.Desc.Input().Name(), "), st)")
-			//g.P("return nil")
+			g.P("e = s.", server, ".", method.GoName, "(i.(*", method.Desc.Input().Name(), "), st)")
+			g.P("}()")
+			g.P("<-", timePackage.Ident("After"), "(100 * ", timePackage.Ident("Millisecond"), ")")
+			g.P("return e")
 			g.P("})")
 			g.P("return st, nil")
 		}
 	}
 	g.P("}")
-	g.P("return nil, fmt.Errorf(method + \"  not implemented\")")
+	g.P("return nil, ", errorsPackage.Ident("New"), "(method + \"  not implemented\")")
 	g.P("}")
 
 	for _, method := range service.Methods {
@@ -137,7 +139,7 @@ func genService(gen *protogen.Plugin, file *protogen.File, g *protogen.Generated
 			g.P("func (s *", stubServer, "_", method.GoName, "Streamer) Recv() (*", method.Input.Desc.Name(), ", error) {")
 			g.P("if req, o := <-s.ReqChan; o {")
 			g.P("return req.(*", method.Input.Desc.Name(), "), nil")
-			g.P("}else{")
+			g.P("} else {")
 			g.P("return nil, ", ioPackage.Ident("EOF"))
 			g.P("}")
 			g.P("}")
@@ -148,12 +150,10 @@ func genService(gen *protogen.Plugin, file *protogen.File, g *protogen.Generated
 			g.P("}")
 
 			if !method.Desc.IsStreamingServer() {
-				// Add SendAndClose method
-				g.P("func (s *", stubServer, "_", method.GoName, "Streamer) SendAndClose(*", method.Output.Desc.Name(), ") error{")
+				g.P("func (s *", stubServer, "_", method.GoName, "Streamer) SendAndClose(*", method.Output.Desc.Name(), ") error {")
 				g.P("return nil")
 				g.P("}")
 			}
-
 		} else if method.Desc.IsStreamingServer() {
 			g.P("type ", stubServer, "_", method.GoName, "Streamer struct {")
 			g.P(stubsPackage.Ident("ClientServerStreamerCore"))
@@ -165,67 +165,4 @@ func genService(gen *protogen.Plugin, file *protogen.File, g *protogen.Generated
 			g.P("}")
 		}
 	}
-
-	/*
-		for _, method := range service.Methods {
-			g.Annotate(multiServer+"."+method.GoName, method.Location)
-
-			g.P(method.Comments.Leading)
-			g.P("func (m ", multiServer, ") ", serverSignature(g, method), " {")
-			if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				g.P("for _, mm := range m {")
-				g.P("if mm.Name() == ", serviceContextPackage.Ident("GetServiceName"), "(ctx) {")
-				g.P("return mm.", method.GoName, "(ctx, r)")
-				g.P("}")
-				g.P("}")
-				g.P("return nil, ", statusPackage.Ident("Errorf"), "(", codesPackage.Ident("Unimplemented"), ", \"method ", method.GoName, " not implemented\")")
-
-			} else if !method.Desc.IsStreamingClient() {
-				g.P("for _, mm := range m {")
-				g.P("if mm.Name() == ", serviceContextPackage.Ident("GetServiceName"), "(s.Context()) {")
-				g.P("return mm.", method.GoName, "(r, s)")
-				g.P("}")
-				g.P("}")
-				g.P("return ", statusPackage.Ident("Errorf"), "(", codesPackage.Ident("Unimplemented"), ", \"method ", method.GoName, " not implemented\")")
-			} else {
-				g.P("for _, mm := range m {")
-				g.P("if mm.Name() == ", serviceContextPackage.Ident("GetServiceName"), "(s.Context()) {")
-				g.P("return mm.", method.GoName, "(s)")
-				g.P("}")
-				g.P("}")
-				g.P("return ", statusPackage.Ident("Errorf"), "(", codesPackage.Ident("Unimplemented"), ", \"method ", method.GoName, " not implemented\")")
-			}
-			g.P("}")
-		}
-
-		g.P("func (m ", multiServer, ") mustEmbedUnimplemented", server, "() {}")
-
-		g.P("func Register", multiServer, "(s grpc.ServiceRegistrar, srv ", namedServer, ") {")
-		g.P("addr := ", fmtPackage.Ident("Sprintf"), "(\"%p\", s)")
-		g.P("m, ok := multi", server, "s[addr]")
-		g.P("if !ok {")
-		g.P("m = ", multiServer, "{}")
-		g.P("multi", server, "s[addr] = m")
-		g.P("Register", server, "(s, m)")
-		g.P("}")
-		g.P("m = append(m, srv)")
-		g.P("}")
-
-	*/
-}
-
-func serverSignature(g *protogen.GeneratedFile, method *protogen.Method) string {
-	var reqArgs []string
-	ret := "error"
-	if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-		reqArgs = append(reqArgs, "ctx "+g.QualifiedGoIdent(contextPackage.Ident("Context")))
-		ret = "(*" + g.QualifiedGoIdent(method.Output.GoIdent) + ", error)"
-	}
-	if !method.Desc.IsStreamingClient() {
-		reqArgs = append(reqArgs, "r *"+g.QualifiedGoIdent(method.Input.GoIdent))
-	}
-	if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-		reqArgs = append(reqArgs, "s "+method.Parent.GoName+"_"+method.GoName+"Server")
-	}
-	return method.GoName + "(" + strings.Join(reqArgs, ", ") + ") " + ret
 }

@@ -24,10 +24,12 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/registry/util"
-	"github.com/pydio/cells/v4/common/server"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"golang.org/x/exp/maps"
+
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/server"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 type Server struct {
@@ -59,7 +61,7 @@ func New(ctx context.Context) server.Server {
 	return server.NewServer(ctx, &Server{
 		id:   "generic-" + uuid.New(),
 		name: "generic-" + uuid.New(),
-		meta: server.InitPeerMeta(),
+		meta: make(map[string]string),
 
 		cancel: cancel,
 	})
@@ -106,6 +108,10 @@ func (s *Server) Metadata() map[string]string {
 	return s.meta // map[string]string{}
 }
 
+func (s *Server) SetMetadata(meta map[string]string) {
+	s.meta = meta
+}
+
 func (s *Server) Endpoints() []string {
 	return []string{}
 }
@@ -118,4 +124,13 @@ func (s *Server) As(i interface{}) bool {
 
 	*p = s
 	return true
+}
+
+func (s *Server) Clone() interface{} {
+	clone := &Server{}
+	clone.id = s.id
+	clone.name = s.name
+	clone.meta = maps.Clone(s.meta)
+
+	return clone
 }

@@ -27,28 +27,33 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/config/revisions"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/config/revisions"
+	"github.com/pydio/cells/v5/common/errors"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/kv/etcd"
 )
 
-// AsRevisionsStore implements RevisionsProvider interface
-func (m *etcd) AsRevisionsStore(...config.RevisionsStoreOption) (config.Store, revisions.Store) {
-	r := &revs{
-		etcd: m,
-	}
-	return r, r
+type revs struct {
+	*etcd.Store
+	cli    *clientv3.Client
+	prefix string
 }
 
-type revs struct {
-	*etcd
+// AsRevisionsStore implements RevisionsProvider interface
+func (m *revs) As(out any) bool {
+	if v, ok := out.(*revisions.Store); ok {
+		*v = m
+		return true
+	}
+
+	return false
 }
 
 func (r *revs) Put(version *revisions.Version) error {
 	if er := r.Val("revision").Set(version); er != nil {
 		return er
 	}
-	return r.etcd.Save("", "")
+	return r.Store.Save("", "")
 }
 
 func (r *revs) unmarshallVersion(id int64, data []byte) (*revisions.Version, error) {
@@ -58,7 +63,7 @@ func (r *revs) unmarshallVersion(id int64, data []byte) (*revisions.Version, err
 	}
 	rev, ok := raw["revision"]
 	if !ok {
-		return nil, fmt.Errorf("cannot find 'revision' key in data")
+		return nil, errors.New("cannot find 'revision' key in data")
 	}
 
 	rm, _ := json.Marshal(rev)
@@ -109,7 +114,7 @@ func (r *revs) List(offset uint64, limit uint64) ([]*revisions.Version, error) {
 
 func (r *revs) Retrieve(id uint64) (*revisions.Version, error) {
 
-	resp, err := r.cli.Get(context.Background(), r.prefix, clientv3.WithLease(r.leaseID), clientv3.WithPrefix(), clientv3.WithRev(int64(id)))
+	resp, err := r.cli.Get(context.Background(), r.prefix, clientv3.WithPrefix(), clientv3.WithRev(int64(id)))
 	if err != nil {
 		return nil, err
 	}
@@ -117,15 +122,11 @@ func (r *revs) Retrieve(id uint64) (*revisions.Version, error) {
 	for _, kv := range resp.Kvs {
 		return r.unmarshallVersion(kv.Version, kv.Value)
 	}
-	return nil, fmt.Errorf("version not found")
+	return nil, errors.New("version not found")
 
 }
 
 func (r *revs) Save(ctxUser string, ctxMessage string) error {
-	if r.withKeys {
-		return nil
-	}
-
 	// Just update the revision key before saving
 	if er := r.Val("revision").Set(&revisions.Version{
 		Date: time.Now(),
@@ -135,5 +136,5 @@ func (r *revs) Save(ctxUser string, ctxMessage string) error {
 		return er
 	}
 
-	return r.etcd.Save(ctxUser, ctxMessage)
+	return r.Store.Save(ctxUser, ctxMessage)
 }

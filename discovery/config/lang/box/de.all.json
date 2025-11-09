@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Freie Bedingung"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "JSON Path"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Request Hostname"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Anfrage Host"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Anfrage Port"
   },
   "contextMetaField.RequestMethod": {
     "other": "Request Methode"
@@ -240,7 +249,7 @@
     "other": "Path Prefix"
   },
   "treeQuery.Paths": {
-    "other": "Absolute Paths"
+    "other": "Absolute Pfade"
   },
   "treeQuery.Type": {
     "other": "Typ"
@@ -257,6 +266,9 @@
   "treeQuery.UUIDs": {
     "other": "Knoten UUIDs"
   },
+  "treeQuery.ETag": {
+    "other": "ETag"
+  },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Hat irgendeinen Wert"
   },
@@ -270,10 +282,10 @@
     "other": "Verbunden seit"
   },
   "userSingleQuery.FullPath": {
-    "other": "Full Path"
+    "other": "Vollständiger Pfad"
   },
   "userSingleQuery.GroupPath": {
-    "other": "Group Path"
+    "other": "Gruppenpfad"
   },
   "userSingleQuery.HasProfile": {
     "other": "Hat Profil"
@@ -363,7 +375,7 @@
     "other": "Öffentlicher Link"
   },
   "workspaceSingleQuery.scope.ROOM": {
-    "other": "Zelle"
+    "other": "Cell"
   },
   "workspaceSingleQuery.slug": {
     "other": "Slug"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Geplanter Auslöser"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Ausgelöst per Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Webhook API Slug"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Run Parameter Name"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Run Parameter Wert"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Manuell Trigger"

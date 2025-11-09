@@ -20,11 +20,13 @@ type VaultCipher struct {
 }
 
 func (e VaultCipher) Encrypt(b []byte) (string, error) {
+
 	sealed, err := Seal(e.key, b)
 	if err != nil {
 		return "", err
 	}
-	return base64.StdEncoding.EncodeToString(sealed), nil
+	ret := base64.StdEncoding.EncodeToString(sealed)
+	return ret, nil
 }
 func (e VaultCipher) Decrypt(s string) ([]byte, error) {
 	if s == "" {

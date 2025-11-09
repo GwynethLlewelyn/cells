@@ -143,6 +143,9 @@
   "Mail.Config.From.Description": {
     "other": "Indirizzo predefinito per l'invio di email. Suggeriamo di usare un indirizzo email per il supporto e non un indirizzo che non accetta risposte."
   },
+  "Mail.Config.FixOutlookDisplay": {
+    "other": "Correzione client di Outlook (disattivazione CSS inlining)"
+  },
   "Mail.Config.Queue.Label": {
     "other": "Tipo di coda"
   },
@@ -199,6 +202,12 @@
   },
   "Mail.Config.Smtp.Password.Description": {
     "other": "Password necessaria per connettersi al server SMTP"
+  },
+  "Mail.Config.Smtp.Security.Label": {
+    "other": "Sicurezza della Connessione"
+  },
+  "Mail.Config.Smtp.Security.Description": {
+    "other": "Protocollo usato per garantire la sicurezza della connessione. Pulisci non è supportato, se necessario utilizza invece un Sendmail personalizzato."
   },
   "Mail.Config.Smtp.SkipVerify.Label": {
     "other": "Certificato autofirmato"

@@ -23,11 +23,10 @@ package uuid
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 func WithDatasource() nodes.Option {
@@ -55,9 +54,9 @@ func (v *DataSourceHandler) Adapt(c nodes.Handler, options nodes.RouterOptions) 
 
 func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
-	branchInfo, ok := nodes.GetBranchInfo(ctx, identifier)
-	if !ok {
-		return ctx, node, nodes.ErrBranchInfoMissing(identifier)
+	branchInfo, er := nodes.GetBranchInfo(ctx, identifier)
+	if er != nil {
+		return ctx, node, er
 	}
 	if branchInfo.Client != nil {
 		// DS is already set by a previous middleware, ignore.
@@ -70,7 +69,7 @@ func (v *DataSourceHandler) updateInputBranch(ctx context.Context, node *tree.No
 		// Ignore this step
 		return ctx, node, nil
 	}
-	source, e := v.ClientsPool.GetDataSourceInfo(dsName)
+	source, e := nodes.GetSourcesPool(ctx).GetDataSourceInfo(dsName)
 	if e != nil {
 		return ctx, node, e
 	}

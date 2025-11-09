@@ -22,16 +22,16 @@ package virtual
 
 import (
 	"context"
-	"io"
 	"strings"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func WithBrowser() nodes.Option {
@@ -59,7 +59,7 @@ func NewVirtualNodesBrowser() *BrowserHandler {
 // ReadNode creates a fake node if admin is reading info about a virtual node
 func (v *BrowserHandler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, opts ...grpc.CallOption) (*tree.ReadNodeResponse, error) {
 
-	if virtual, exists := abstract.GetVirtualNodesManager(v.RuntimeCtx).ByPath(in.Node.Path); exists {
+	if virtual, exists := abstract.GetVirtualProvider().ByPath(ctx, in.Node.Path); exists {
 		log.Logger(ctx).Debug("Virtual Node Browser, Found", zap.Any("found", virtual))
 		return &tree.ReadNodeResponse{Node: virtual}, nil
 	}
@@ -70,8 +70,8 @@ func (v *BrowserHandler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest,
 // ListNodes Append virtual nodes to the datasources list if admin is listing the root of the tree
 func (v *BrowserHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequest, opts ...grpc.CallOption) (streamer tree.NodeProvider_ListNodesClient, e error) {
 
-	vManager := abstract.GetVirtualNodesManager(v.RuntimeCtx)
-	if virtual, exists := vManager.ByPath(in.Node.Path); exists {
+	vManager := abstract.GetVirtualProvider()
+	if virtual, exists := vManager.ByPath(ctx, in.Node.Path); exists {
 		log.Logger(ctx).Debug("Virtual Node Browser, Found, send no children", zap.Any("found", virtual))
 		s := nodes.NewWrappingStreamer(ctx)
 		defer s.CloseSend()
@@ -88,13 +88,13 @@ func (v *BrowserHandler) ListNodes(ctx context.Context, in *tree.ListNodesReques
 	}
 	s := nodes.NewWrappingStreamer(ctx)
 	go func() {
-		vManager.Load(true)
+		_, _, _ = vManager.Load(ctx, true)
 		defer s.CloseSend()
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
-				if err != io.EOF && err != io.ErrUnexpectedEOF {
-					s.SendError(err)
+				if !errors.IsStreamFinished(err) {
+					_ = s.SendError(err)
 				}
 				break
 			}
@@ -103,7 +103,7 @@ func (v *BrowserHandler) ListNodes(ctx context.Context, in *tree.ListNodesReques
 			}
 			s.Send(resp)
 		}
-		for _, n := range vManager.ListNodes() {
+		for _, n := range vManager.ListNodes(ctx) {
 			s.Send(&tree.ListNodesResponse{Node: n})
 		}
 	}()

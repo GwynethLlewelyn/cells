@@ -21,15 +21,15 @@
 package util
 
 import (
-	"fmt"
 	"time"
 
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/errors"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
-func NewIntervalStatusWatcher(item registry.Item, interval time.Duration, callback func() map[string]interface{}) registry.StatusWatcher {
+func NewIntervalStatusWatcher(item registry.Item, interval time.Duration, callback func() (registry.Item, bool)) registry.StatusWatcher {
 
 	s := &statusWatcher{
 		item:     item,
@@ -44,10 +44,54 @@ type statusWatcher struct {
 	item     registry.Item
 	ticker   *time.Ticker
 	exit     chan bool
-	callback func() map[string]interface{}
+	callback func() (registry.Item, bool)
 }
 
 func (s *statusWatcher) Next() (registry.Item, error) {
+	for {
+		select {
+		case <-s.ticker.C:
+			item, changed := s.callback()
+			if !changed {
+				continue
+			}
+
+			return item, nil
+		case <-s.exit:
+			return nil, errors.New("watcher stopped")
+		}
+	}
+}
+
+func (s *statusWatcher) Stop() {
+	defer s.ticker.Stop()
+	select {
+	case <-s.exit:
+		return
+	default:
+		close(s.exit)
+	}
+}
+
+func NewIntervalStatsWatcher(item registry.Item, interval time.Duration, callback func() map[string]interface{}) registry.StatusWatcher {
+
+	s := &statsWatcher{
+		item:     item,
+		exit:     make(chan bool),
+		ticker:   time.NewTicker(interval),
+		callback: callback,
+	}
+	return s
+}
+
+type statsWatcher struct {
+	item     registry.Item
+	ticker   *time.Ticker
+	exit     chan bool
+	callback func() map[string]interface{}
+}
+
+func (s *statsWatcher) Next() (registry.Item, error) {
 	for {
 		select {
 		case <-s.ticker.C:
@@ -60,12 +104,12 @@ func (s *statusWatcher) Next() (registry.Item, error) {
 			}
 			return ToGeneric(gen, &pb.Generic{Type: pb.ItemType_STATS}), nil
 		case <-s.exit:
-			return nil, fmt.Errorf("watcher stopped")
+			return nil, errors.New("watcher stopped")
 		}
 	}
 }
 
-func (s *statusWatcher) Stop() {
+func (s *statsWatcher) Stop() {
 	defer s.ticker.Stop()
 	select {
 	case <-s.exit:

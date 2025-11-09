@@ -24,32 +24,31 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"golang.org/x/net/context"
 
-	activity "github.com/pydio/cells/v4/broker/activity"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	activity2 "github.com/pydio/cells/v4/common/proto/activity"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
+	"github.com/pydio/cells/v5/broker/activity"
+	"github.com/pydio/cells/v5/common"
+	activity2 "github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type MetaProvider struct {
 	tree.UnimplementedNodeProviderStreamerServer
-	RuntimeCtx context.Context
-	dao        activity.DAO
-}
-
-func (m *MetaProvider) Name() string {
-	return Name
 }
 
 func (m *MetaProvider) ReadNodeStream(streamer tree.NodeProviderStreamer_ReadNodeStreamServer) error {
 
 	ctx := streamer.Context()
+	dao, err := manager.Resolve[activity.DAO](ctx)
+	if err != nil {
+		return err
+	}
+
 	// Extract current user Id from X-Pydio-User key
 	var userId string
-	if u, o := metadata.CanonicalMeta(ctx, common.PydioContextUserKey); o {
+	if u, o := propagator.CanonicalMeta(ctx, common.PydioContextUserKey); o {
 		userId = u
 	}
 
@@ -63,13 +62,18 @@ func (m *MetaProvider) ReadNodeStream(streamer tree.NodeProviderStreamer_ReadNod
 		}
 		node := request.Node
 		if userId != "" { // No user found, just skip
-			if subs, err := m.dao.ListSubscriptions(nil, activity2.OwnerType_NODE, []string{node.Uuid}); err == nil {
+			if subs, err := dao.ListSubscriptions(nil, activity2.OwnerType_NODE, []string{node.Uuid}); err == nil {
+				var ss []*activity2.Subscription
 				for _, sub := range subs {
 					if sub.UserId == userId && len(sub.Events) > 0 {
+						ss = append(ss, sub)
 						events := strings.Join(sub.Events, ",")
 						log.Logger(ctx).Debug("ReadNodeStream - Adding meta", zap.String("user_subscriptions", events))
-						node.MustSetMeta(common.MetaFlagUserSubscriptions, events)
+						node.MustSetMeta(common.MetaFlagUserSubscriptionsJoined, events)
 					}
+				}
+				if len(ss) > 0 {
+					node.MustSetMeta(common.MetaFlagUserSubscriptions, ss)
 				}
 			} else {
 				log.Logger(ctx).Error("cannot list subscriptions for "+userId, node.Zap(), zap.Error(err))

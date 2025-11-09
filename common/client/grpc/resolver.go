@@ -26,13 +26,12 @@ import (
 	"regexp"
 	"sort"
 
-	"google.golang.org/grpc/attributes"
 	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/serviceconfig"
 
-	"github.com/pydio/cells/v4/common/client"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/client"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 var (
@@ -66,11 +65,23 @@ func NewBuilder(reg registry.Registry, oo ...client.BalancerOption) resolver.Bui
 
 func (b *cellsBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
 	// host, port, name, err := parseTarget(fmt.Sprintf("%s/%s", target.Authority, target.Endpoint))
-	_, _, name, err := parseTarget(fmt.Sprintf("%s/%s", target.Authority, target.Endpoint))
+
+	_, _, name, err := parseTarget(fmt.Sprintf("%s", target.Endpoint()))
 	if err != nil {
 		return nil, err
 	}
-	parseRes := cc.ParseServiceConfig(`{"loadBalancingPolicy": "` + b.balancerName + `"}`)
+	parseRes := cc.ParseServiceConfig(`
+		{
+			"loadBalancingConfig": [{
+				"grpclb": {
+					"child_policy": [{
+						"pick_first": {}
+					}]
+				}
+			}]
+		}	            
+	`)
+	//parseRes := cc.ParseServiceConfig(`{"loadBalancingPolicy": "` + b.balancerName + `"}`)
 	if parseRes.Err != nil {
 		return nil, parseRes.Err
 	}
@@ -82,40 +93,51 @@ func (b *cellsBuilder) Build(target resolver.Target, cc resolver.ClientConn, opt
 		disableServiceConfig: opts.DisableServiceConfig,
 	}
 
-	rc, err := client.NewResolverCallback(b.reg)
-	if err != nil {
-		return nil, err
+	if err := cr.cc.UpdateState(resolver.State{
+		Addresses: []resolver.Address{
+			{
+				Addr: target.URL.Host,
+			},
+		},
+		ServiceConfig: cr.serviceConfig,
+	}); err != nil {
+
 	}
 
-	rc.Add(func(m map[string]*client.ServerAttributes) error {
-		var addresses []resolver.Address
-
-		for _, mm := range m {
-			if mm.Name != "grpc" {
-				continue
-			}
-			for _, addr := range mm.Addresses {
-				addresses = append(addresses, resolver.Address{
-					Addr:               addr,
-					Attributes:         attributes.New("services", comparableSlice(mm.Services)),
-					BalancerAttributes: mm.BalancerAttributes,
-				})
-			}
-		}
-
-		if len(addresses) == 0 {
-			return nil
-		}
-
-		if err := cr.cc.UpdateState(resolver.State{
-			Addresses:     addresses,
-			ServiceConfig: cr.serviceConfig,
-		}); err != nil {
-			return err
-		}
-
-		return nil
-	})
+	//rc, err := client.NewResolverCallback(b.reg)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//
+	//rc.Add(func(m map[string]*client.ServerAttributes) error {
+	//	var addresses []resolver.Address
+	//
+	//	for _, mm := range m {
+	//		if mm.Name != "grpc" {
+	//			continue
+	//		}
+	//		for _, addr := range mm.Addresses {
+	//			addresses = append(addresses, resolver.Address{
+	//				Addr:               addr,
+	//				Attributes:         attributes.New("services", comparableSlice(mm.Services)),
+	//				BalancerAttributes: mm.BalancerAttributes,
+	//			})
+	//		}
+	//	}
+	//
+	//	if len(addresses) == 0 {
+	//		return nil
+	//	}
+	//
+	//	if err := cr.cc.UpdateState(resolver.State{
+	//		Addresses:     addresses,
+	//		ServiceConfig: cr.serviceConfig,
+	//	}); err != nil {
+	//		return err
+	//	}
+	//
+	//	return nil
+	//})
 
 	return cr, nil
 }

@@ -23,21 +23,34 @@ package jobs
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
 )
 
 func (m *UsersSelector) MultipleSelection() bool {
 	return m.Collect
 }
 
+func (m *UsersSelector) SelectorID() string {
+	return "UsersSelector"
+}
+
+func (m *UsersSelector) SelectorLabel() string {
+	if m.Label != "" {
+		return m.Label
+	}
+	return m.SelectorID()
+}
+
+func (m *UsersSelector) ApplyClearInput(msg *ActionMessage) *ActionMessage {
+	return msg.WithUser(nil)
+}
+
 // Select performs a query on the User Service to load a list of users. The more generic IdmSelector should be used instead.
-func (m *UsersSelector) Select(ctx context.Context, input ActionMessage, objects chan interface{}, done chan bool) error {
+func (m *UsersSelector) Select(ctx context.Context, input *ActionMessage, objects chan interface{}, done chan bool) error {
 
 	defer func() {
 		done <- true
@@ -64,12 +77,11 @@ func (m *UsersSelector) Select(ctx context.Context, input ActionMessage, objects
 	if query == nil {
 		return nil
 	}
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(connexionResolver(ctx, common.ServiceUser))
 	s, e := userClient.SearchUser(ctx, &idm.SearchUserRequest{Query: query})
 	if e != nil {
 		return e
 	}
-	defer s.CloseSend()
 	for {
 		resp, e := s.Recv()
 		if e != nil {
@@ -85,6 +97,6 @@ func (m *UsersSelector) Select(ctx context.Context, input ActionMessage, objects
 }
 
 // Filter is not implemented. Use IdmSelector object instead
-func (n *UsersSelector) Filter(ctx context.Context, input ActionMessage) (ActionMessage, bool) {
+func (n *UsersSelector) Filter(ctx context.Context, input *ActionMessage) (*ActionMessage, bool) {
 	return input, true
 }

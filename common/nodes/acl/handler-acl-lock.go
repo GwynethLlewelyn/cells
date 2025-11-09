@@ -24,12 +24,12 @@ import (
 	"context"
 	"io"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 func WithLock() nodes.Option {
@@ -45,7 +45,6 @@ type LockFilter struct {
 
 func (a *LockFilter) Adapt(h nodes.Handler, options nodes.RouterOptions) nodes.Handler {
 	a.Next = h
-	a.ClientsPool = options.Pool
 	return a
 }
 
@@ -68,15 +67,15 @@ func (a *LockFilter) Adapt(h nodes.Handler, options nodes.RouterOptions) nodes.H
 // }
 
 // PutObject check locks before allowing Put operation.
-func (a *LockFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
-	branchInfo, ok := nodes.GetBranchInfo(ctx, "in")
-	if !ok {
+func (a *LockFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
+	branchInfo, er := nodes.GetBranchInfo(ctx, "in")
+	if er != nil {
 		return a.Next.PutObject(ctx, node, reader, requestData)
 	}
 
 	accessList, err := permissions.AccessListForLockedNodes(ctx, a.virtualResolver)
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 
 	nn := []*tree.Node{node}
@@ -85,15 +84,15 @@ func (a *LockFilter) PutObject(ctx context.Context, node *tree.Node, reader io.R
 	}
 
 	if accessList.IsLocked(ctx, nn...) {
-		return 0, errors.New("parent.locked", "Node is currently locked", 423)
+		return models.ObjectInfo{}, errors.WithStack(errors.StatusLocked)
 	}
 
 	return a.Next.PutObject(ctx, node, reader, requestData)
 }
 
 func (a *LockFilter) MultipartCreate(ctx context.Context, node *tree.Node, requestData *models.MultipartRequestData) (string, error) {
-	branchInfo, ok := nodes.GetBranchInfo(ctx, "in")
-	if !ok {
+	branchInfo, er := nodes.GetBranchInfo(ctx, "in")
+	if er != nil {
 		return a.Next.MultipartCreate(ctx, node, requestData)
 	}
 
@@ -108,7 +107,7 @@ func (a *LockFilter) MultipartCreate(ctx context.Context, node *tree.Node, reque
 	}
 
 	if accessList.IsLocked(ctx, nn...) {
-		return "", errors.New("parent.locked", "Node is currently locked", 423)
+		return "", errors.WithStack(errors.StatusLocked) // serviceerrors.New("parent.locked", "Node is currently locked", 423)
 	}
 
 	return a.Next.MultipartCreate(ctx, node, requestData)
@@ -139,19 +138,19 @@ func (a *LockFilter) WrappedCanApply(srcCtx context.Context, targetCtx context.C
 	}
 
 	// First load ancestors or grab them from BranchInfo
-	_, parents, err := nodes.AncestorsListFromContext(ctx, node, "in", a.ClientsPool, false)
+	_, parents, err := nodes.AncestorsListFromContext(ctx, node, "in", false)
 	if err != nil {
 		return err
 	}
 
 	nn := append([]*tree.Node{node}, parents...)
 	if accessList.IsLocked(ctx, nn...) {
-		return errors.New("parent.locked", "Node is currently locked", 423)
+		return errors.WithStack(errors.StatusLocked)
 	}
 
 	return a.Next.WrappedCanApply(srcCtx, targetCtx, operation)
 }
 
 func (a *LockFilter) virtualResolver(ctx context.Context, node *tree.Node) (*tree.Node, bool) {
-	return abstract.GetVirtualNodesManager(a.RuntimeCtx).GetResolver(false)(ctx, node)
+	return abstract.GetVirtualProvider().GetResolver(false)(ctx, node)
 }

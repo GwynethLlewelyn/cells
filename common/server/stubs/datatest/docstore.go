@@ -22,23 +22,16 @@ package datatest
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/dao/test"
-	"os"
-	"path/filepath"
-
-	"github.com/pydio/cells/v4/common"
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/proto/docstore"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	docstore2 "github.com/pydio/cells/v4/data/docstore"
-	srv "github.com/pydio/cells/v4/data/docstore/grpc"
+	"github.com/pydio/cells/v5/common"
+	proto "github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/server/stubs/inject"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	srv "github.com/pydio/cells/v5/data/docstore/grpc"
 )
-
-func newPath(tmpName string) string {
-	return filepath.Join(os.TempDir(), tmpName)
-}
 
 func defaults() map[string]string {
 
@@ -49,27 +42,20 @@ func defaults() map[string]string {
 
 }
 
-func NewDocStoreService() (grpc.ClientConnInterface, error) {
+func NewDocStoreService(ctx context.Context, svc service.Service) (grpc.ClientConnInterface, error) {
 
-	pBolt := newPath("docstore" + uuid.New() + ".db")
-	d, _, e := test.OnFileTestDAO("boltdb", pBolt, "", "docstore-test1", false, docstore2.NewDAO)
-	if e != nil {
-		return nil, e
-	}
+	serv := &proto.DocStoreStub{}
+	serv.DocStoreServer = &srv.Handler{}
+	mock := &inject.SvcInjectorMock{ClientConnInterface: serv, Svc: svc}
 
-	h := &srv.Handler{
-		DAO: d.(*docstore2.BleveServer),
-	}
-	serv := &docstore.DocStoreStub{}
-	serv.DocStoreServer = h
-
+	ctx = propagator.With(ctx, service.ContextKey, svc)
 	for id, json := range defaults() {
-		_, er := serv.DocStoreServer.PutDocument(context.Background(), &docstore.PutDocumentRequest{
+		_, er := serv.DocStoreServer.PutDocument(ctx, &proto.PutDocumentRequest{
 			StoreID:    common.DocStoreIdVirtualNodes,
 			DocumentID: id,
-			Document: &docstore.Document{
+			Document: &proto.Document{
 				ID:    id,
-				Type:  docstore.DocumentType_JSON,
+				Type:  proto.DocumentType_JSON,
 				Owner: common.PydioSystemUsername,
 				Data:  json,
 			},
@@ -78,5 +64,5 @@ func NewDocStoreService() (grpc.ClientConnInterface, error) {
 			return nil, er
 		}
 	}
-	return serv, nil
+	return mock, nil
 }

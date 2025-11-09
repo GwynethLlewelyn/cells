@@ -21,23 +21,22 @@
 package util
 
 import (
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/merger"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"golang.org/x/exp/maps"
+
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/merger"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 func CreateAddress(addr string, meta map[string]string) registry.Generic {
 	return ToGeneric(&pb.Item{Id: uuid.New(), Name: addr, Metadata: meta}, &pb.Generic{Type: pb.ItemType_ADDRESS})
 }
 
-func CreateEndpoint(name string, meta map[string]string) registry.Generic {
-	return ToGeneric(&pb.Item{Id: uuid.New(), Name: name, Metadata: meta}, &pb.Generic{Type: pb.ItemType_ENDPOINT})
-}
-
 func ToProtoGeneric(e registry.Generic) *pb.Generic {
 	if dd, ok := e.(*generic); ok {
-		return dd.e
+		return dd.E
 	}
 	return &pb.Generic{
 		Type: e.Type(),
@@ -45,16 +44,16 @@ func ToProtoGeneric(e registry.Generic) *pb.Generic {
 }
 
 func ToGeneric(i *pb.Item, e *pb.Generic) registry.Generic {
-	return &generic{i: i, e: e}
+	return &generic{I: i, E: e}
 }
 
 type generic struct {
-	i *pb.Item
-	e *pb.Generic
+	I *pb.Item
+	E *pb.Generic
 }
 
 func (d *generic) Type() pb.ItemType {
-	return d.e.Type
+	return d.E.Type
 }
 
 func (d *generic) Equals(differ merger.Differ) bool {
@@ -81,15 +80,15 @@ func (d *generic) Merge(differ merger.Differ, m map[string]string) (merger.Diffe
 }
 
 func (d *generic) Name() string {
-	return d.i.Name
+	return d.I.Name
 }
 
 func (d *generic) ID() string {
-	return d.i.Id
+	return d.I.Id
 }
 
 func (d *generic) Metadata() map[string]string {
-	return d.i.Metadata
+	return maps.Clone(d.I.Metadata)
 }
 
 func (d *generic) As(i interface{}) bool {
@@ -98,4 +97,13 @@ func (d *generic) As(i interface{}) bool {
 		return true
 	}
 	return false
+}
+
+func (d *generic) Clone() interface{} {
+	clone := &generic{}
+
+	clone.I = std.DeepClone(d.I)
+	clone.E = std.DeepClone(d.E)
+
+	return clone
 }

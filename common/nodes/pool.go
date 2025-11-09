@@ -30,15 +30,25 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	clientgrpc "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/object"
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common"
+	clientgrpc "github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/object"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/watch"
+)
+
+var (
+	poolPool   *openurl.Pool[SourcesPool]
+	poolOnce   sync.Once
+	poolOpener = NewPool
 )
 
 type sourceAlias struct {
@@ -81,25 +91,85 @@ type ClientsPool struct {
 	treeClientWrite tree.NodeReceiverClient
 
 	regWatcher  registry.Watcher
-	confWatcher configx.Receiver
+	confWatcher watch.Receiver
 
 	reload chan bool
 }
 
-func NewPool(ctx context.Context, reg registry.Registry) *ClientsPool {
+// SetSourcesPoolOpener replaces the internal standard opener, used for testing
+func SetSourcesPoolOpener(o func(ctx context.Context) *openurl.Pool[SourcesPool]) {
+	poolOpener = o
+}
+
+// GetSourcesPool lazily resolves a SourcesPool for a given context
+func GetSourcesPool(ctx context.Context) SourcesPool {
+	poolOnce.Do(func() {
+		poolPool = poolOpener(ctx)
+	})
+	p, e := poolPool.Get(ctx)
+	if e != nil {
+		panic(e)
+	}
+	p.Once()
+	return p
+}
+
+// NewPool provides a simple memory-based contextualized pool
+func NewPool(ctx context.Context) *openurl.Pool[SourcesPool] {
+	return openurl.MustMemPool[SourcesPool](ctx, func(ctx context.Context, url string) SourcesPool {
+		return openPool(ctx)
+	})
+}
+
+// NewTestPool creates a pool of empty stubs, eventually forcing to return always the same preset
+func NewTestPool(ctx context.Context, presetSource ...SourcesPool) *openurl.Pool[SourcesPool] {
+	return openurl.MustMemPool[SourcesPool](ctx, func(ctx context.Context, url string) SourcesPool {
+		if len(presetSource) > 0 {
+			return presetSource[0]
+		}
+		return &ClientsPool{
+			ctx:     ctx,
+			sources: make(map[string]LoadedSource),
+			aliases: make(map[string]sourceAlias),
+			reload:  make(chan bool),
+		}
+	})
+}
+
+// NewTestPoolWithDataSources will provide a list of LoadedSource with preset mock data
+func NewTestPoolWithDataSources(ctx context.Context, sc StorageClient, dss ...string) *openurl.Pool[SourcesPool] {
+	return openurl.MustMemPool[SourcesPool](ctx, func(ctx context.Context, url string) SourcesPool {
+		cp := &ClientsPool{
+			ctx:     ctx,
+			sources: make(map[string]LoadedSource),
+			aliases: make(map[string]sourceAlias),
+			reload:  make(chan bool),
+		}
+		for _, ds := range dss {
+			cp.sources[ds] = LoadedSource{
+				DataSource: &object.DataSource{Name: ds, ObjectsBucket: ds},
+				Client:     sc,
+			}
+		}
+		return cp
+	})
+
+}
+
+func openPool(ctx context.Context) *ClientsPool {
+	var reg registry.Registry
+	if !propagator.Get(ctx, registry.ContextKey, &reg) {
+		fmt.Println("openPool will panic, missing manager in context")
+		panic("cannot instantiate client pool (missing manager in context)")
+	}
+
 	pool := &ClientsPool{
-		ctx:     ctx,
+		ctx:     propagator.ForkedBackgroundWithMeta(ctx),
 		sources: make(map[string]LoadedSource),
 		aliases: make(map[string]sourceAlias),
 		reload:  make(chan bool),
 		reg:     reg,
 	}
-	/*
-		go pool.LoadDataSources()
-		go pool.reloadDebounced()
-		go pool.watchRegistry(reg)
-		go pool.watchConfigChanges()
-	*/
 	return pool
 }
 
@@ -112,19 +182,6 @@ func (p *ClientsPool) Once() {
 			go p.watchConfigChanges()
 		}
 	})
-}
-
-// NewTestPool creates a client Pool and initialises it by calling the registry.
-func NewTestPool(ctx context.Context) *ClientsPool {
-
-	pool := &ClientsPool{
-		ctx:     ctx,
-		sources: make(map[string]LoadedSource),
-		aliases: make(map[string]sourceAlias),
-		reload:  make(chan bool),
-	}
-	return pool
-
 }
 
 // Close stops the underlying watcher if defined.
@@ -142,7 +199,7 @@ func (p *ClientsPool) GetTreeClient() tree.NodeProviderClient {
 	if p.treeClient != nil {
 		return p.treeClient
 	}
-	return tree.NewNodeProviderClient(clientgrpc.GetClientConnFromCtx(p.ctx, common.ServiceGrpcNamespace_+common.ServiceTree))
+	return tree.NewNodeProviderClient(clientgrpc.ResolveConn(p.ctx, common.ServiceTreeGRPC))
 }
 
 // GetTreeClientWrite returns the internal NodeReceiverClient pointing to the TreeService.
@@ -150,15 +207,20 @@ func (p *ClientsPool) GetTreeClientWrite() tree.NodeReceiverClient {
 	if p.treeClientWrite != nil {
 		return p.treeClientWrite
 	}
-	return tree.NewNodeReceiverClient(clientgrpc.GetClientConnFromCtx(p.ctx, common.ServiceGrpcNamespace_+common.ServiceTree))
+	return tree.NewNodeReceiverClient(clientgrpc.ResolveConn(p.ctx, common.ServiceTreeGRPC))
 }
 
 // GetDataSourceInfo tries to find information about a DataSource, eventually retrying as DataSource
 // could be currently starting and not yet registered in the ClientsPool.
 func (p *ClientsPool) GetDataSourceInfo(dsName string, retries ...int) (LoadedSource, error) {
 
+	if dsName == "" {
+		log.Logger(context.Background()).Error("Entered GetDataSourceInfo with an empty dsName", zap.Stack("stack"))
+		return LoadedSource{}, errors.New("empty dsName")
+	}
+
 	if dsName == "default" {
-		dsName = config.Get("defaults", "datasource").Default("default").String()
+		dsName = config.Get(p.ctx, "defaults", "datasource").Default("default").String()
 	}
 
 	p.RLock()
@@ -191,24 +253,24 @@ func (p *ClientsPool) GetDataSourceInfo(dsName string, retries ...int) (LoadedSo
 		if len(retries) > 0 {
 			retry = retries[0]
 		}
-		delay := (retry + 1) * 2
-
-		log.Logger(context.Background()).Warn(fmt.Sprintf("[ClientsPool] cannot find datasource, retrying in %ds...", delay), zap.String("ds", dsName), zap.Any("retries", retry))
-
-		<-time.After(time.Duration(delay) * time.Second)
+		delay := (retry) * 2
+		if retry > 0 {
+			log.Logger(p.ctx).Warn(fmt.Sprintf("[ClientsPool] cannot find datasource, retrying in %ds...", delay), zap.String("ds", dsName), zap.Any("retries", retry))
+			<-time.After(time.Duration(delay) * time.Second)
+		}
 		p.LoadDataSources()
 		return p.GetDataSourceInfo(dsName, retry+1)
 
 	} else {
 
-		e := fmt.Errorf("Could not find DataSource " + dsName)
+		e := errors.New("Could not find DataSource " + dsName)
 		var keys []string
 		p.RLock()
 		for k := range p.sources {
 			keys = append(keys, k)
 		}
 		p.RUnlock()
-		log.Logger(context.Background()).Error(e.Error(), zap.Strings("currentSources", keys))
+		log.Logger(p.ctx).Error(e.Error(), zap.Strings("currentSources", keys))
 		return LoadedSource{}, e
 
 	}
@@ -234,20 +296,27 @@ func (p *ClientsPool) LoadDataSources() {
 		return
 	}
 
-	sources := config.Get("services", common.ServiceGrpcNamespace_+common.ServiceDataSync, "sources").StringArray()
+	sources := config.Get(p.ctx, "services", common.ServiceGrpcNamespace_+common.ServiceDataSync, "sources").StringArray()
 	sources = config.SourceNamesFiltered(sources)
 
 	for _, source := range sources {
-		endpointClient := object.NewDataSourceEndpointClient(clientgrpc.GetClientConnFromCtx(p.ctx, common.ServiceGrpcNamespace_+common.ServiceDataSync_+source))
+		if sif, er := config.GetSourceInfoByName(p.ctx, source); er != nil || sif.Disabled {
+			continue
+		}
+		endpointClient := object.NewDataSourceEndpointClient(clientgrpc.ResolveConn(p.ctx, common.ServiceDataSyncGRPC_+source))
 		to, ca := context.WithTimeout(p.ctx, 20*time.Second)
 		response, err := endpointClient.GetDataSourceConfig(to, &object.GetDataSourceConfigRequest{})
 		if err == nil && response.DataSource != nil {
 			log.Logger(p.ctx).Debug("Creating client for datasource " + source)
 			if e := p.CreateClientsForDataSource(source, response.DataSource); e != nil {
-				log.Logger(context.Background()).Warn("Cannot create clients for datasource "+source, zap.Error(e))
+				log.Logger(p.ctx).Warn("Cannot create clients for datasource "+source, zap.Error(e))
 			}
 		} else {
-			log.Logger(p.ctx).Debug("no answer from endpoint, maybe not ready yet? "+common.ServiceGrpcNamespace_+common.ServiceDataSync_+source, zap.Any("r", response), zap.Error(err))
+			if !errors.Is(err, errors.StatusServiceUnavailable) {
+				log.Logger(p.ctx).Warn("service " + common.ServiceDataSyncGRPC_ + source + " not available yet...")
+			} else {
+				log.Logger(p.ctx).Error("no answer from endpoint, maybe not ready yet? "+common.ServiceDataSyncGRPC_+source, zap.Any("r", response), zap.Error(err))
+			}
 		}
 		ca()
 	}
@@ -264,7 +333,7 @@ func (p *ClientsPool) LoadDataSources() {
 }
 
 func (p *ClientsPool) registerAlternativeClient(namespace string) error {
-	dataSource, bucket, err := GetGenericStoreClientConfig(namespace)
+	dataSource, bucket, err := GetGenericStoreClientConfig(p.ctx, namespace)
 	if err != nil {
 		return err
 	}
@@ -285,37 +354,13 @@ func (p *ClientsPool) watchRegistry(reg registry.Registry) error {
 	}
 	p.regWatcher = w
 
-	//prefix := common.ServiceGrpcNamespace_ + common.ServiceDataSync_
-
 	for {
 		_, err := w.Next()
 		if err != nil {
 			return err
 		}
 
-		p.reload <- true
-		/*
-			var hasSync bool
-			for _, item := range r.Items() {
-				var s registry.Service
-				if !item.As(&s) {
-					continue
-				}
-				if !strings.HasPrefix(s.Name(), prefix) {
-					continue
-				}
-				hasSync = true
-				dsName := strings.TrimPrefix(s.Name(), prefix)
-				p.Lock()
-				if _, ok := p.sources[dsName]; ok && r.Action() == pb.ActionType_DELETE {
-					delete(p.sources, dsName)
-				}
-				p.Unlock()
-			}
-			if hasSync {
-				p.reload <- true
-			}
-		*/
+		go func() { p.reload <- true }()
 	}
 
 }
@@ -340,7 +385,7 @@ func (p *ClientsPool) reloadDebounced() {
 
 func (p *ClientsPool) watchConfigChanges() {
 	for {
-		watcher, err := config.Watch(configx.WithPath("services", common.ServiceGrpcNamespace_+common.ServiceDataSync, "sources"))
+		watcher, err := config.Watch(p.ctx, watch.WithPath("services", common.ServiceGrpcNamespace_+common.ServiceDataSync, "sources"))
 		if err != nil {
 			// Cool-off period
 			time.Sleep(1 * time.Second)
@@ -368,11 +413,11 @@ func (p *ClientsPool) watchConfigChanges() {
 
 func (p *ClientsPool) CreateClientsForDataSource(dataSourceName string, dataSource *object.DataSource) error {
 
-	log.Logger(context.Background()).Debug("Adding dataSource", zap.String("dsname", dataSourceName))
+	log.Logger(p.ctx).Debug("Adding dataSource", zap.String("dsname", dataSourceName))
 	loaded := LoadedSource{
 		DataSource: dataSource,
 	}
-	client, err := NewStorageClient(dataSource.ClientConfig())
+	client, err := NewStorageClient(dataSource.ClientConfig(p.ctx, config.GetSecret))
 	if err != nil {
 		return err
 	}
@@ -387,10 +432,6 @@ func (p *ClientsPool) CreateClientsForDataSource(dataSourceName string, dataSour
 
 func MakeFakeClientsPool(tc tree.NodeProviderClient, tw tree.NodeReceiverClient) *ClientsPool {
 	IsUnitTestEnv = true
-	c := NewTestPool(context.TODO())
-
-	c.treeClient = tc
-	c.treeClientWrite = tw
 
 	mockDatasource := &object.DataSource{
 		Name:          "datasource",
@@ -409,8 +450,16 @@ func MakeFakeClientsPool(tc tree.NodeProviderClient, tw tree.NodeReceiverClient)
 	_ = cfg.Val("type").Set("mock")
 	client, _ := NewStorageClient(cfg)
 	loaded.Client = client
-	c.sources = map[string]LoadedSource{
-		"datasource": loaded,
+
+	return &ClientsPool{
+		ctx: context.TODO(),
+		sources: map[string]LoadedSource{
+			"datasource": loaded,
+		},
+		aliases:         make(map[string]sourceAlias),
+		reload:          make(chan bool),
+		treeClient:      tc,
+		treeClientWrite: tw,
 	}
-	return c
+
 }

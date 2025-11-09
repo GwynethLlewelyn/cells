@@ -6,7 +6,7 @@
     "other": "欢迎使用 Pydio Cells安装向导"
   },
   "welcome.legend": {
-    "other": "这将在当前服务器上安装所有服务。请在开始前同意以下许可条款"
+    "other": "将在当前服务器上安装所有服务。请在开始前同意以下许可条款"
   },
   "welcome.agreed": {
     "other": "我同意"
@@ -22,6 +22,12 @@
   },
   "database.legend.bold": {
     "other": "请确保您的数据库正在运行 MySQL 版本 5.6 或更高版本"
+  },
+  "database.legend1": {
+    "other": "Pydio requires at least one SQL storage for configuration and data indexation."
+  },
+  "database.legend2": {
+    "other": "Supported databases are MySQL/MariaDB or PostgreSQL or SQLite."
   },
   "database.installDetected": {
     "other": "似乎在这个数据库中已经安装了Cells。请确认继续或 "
@@ -63,31 +69,31 @@
     "other": "启动时会创建存储用户个人数据和资料库数据的默认数据源。您可以稍后创建其他数据源。"
   },
   "advanced.mongo.title": {
-    "other": "Configure a MongoDB Connection"
+    "other": "配置 MongoDB 连接"
   },
   "advanced.mongo.legend": {
-    "other": "This is better for scalability, and required for clustering deployment. If you do not have a Mongo DB ready, this can be done later."
+    "other": "这对可扩展性更好，同时是集群部署的必要条件。如果您还没有Mongo DB准备就绪，可以稍后配置。"
   },
   "advanced.mongo.host": {
-    "other": "Server host"
+    "other": "服务器主机"
   },
   "advanced.mongo.port": {
-    "other": "Server port"
+    "other": "服务器端口"
   },
   "advanced.mongo.db": {
-    "other": "Database Name"
+    "other": "数据库名"
   },
   "advanced.mongo.username": {
-    "other": "Username"
+    "other": "用户名"
   },
   "advanced.mongo.password": {
-    "other": "Password"
+    "other": "密码"
   },
   "advanced.mongo.authSource": {
-    "other": "Auth DB"
+    "other": "认证数据库"
   },
   "advanced.mongo.validate": {
-    "other": "Test connection"
+    "other": "测试连接"
   },
   "license.stepLabel": {
     "other": "企业版许可证"
@@ -117,7 +123,7 @@
     "other": "开始安装"
   },
   "apply.title": {
-    "other": "Please be patient while Pydio Cells is being installed..."
+    "other": "请耐心等待Pydio Cells安装完毕..."
   },
   "apply.success": {
     "other": "安装已成功，服务正在启动，安装程序将在启动服务后重新加载页面。"
@@ -134,11 +140,20 @@
   "form.dbConnectionType.label": {
     "other": "连接类型"
   },
-  "form.dbConnectionType.tcp": {
-    "other": "TCP"
+  "form.dbConnectionType.mysql_tcp": {
+    "other": "MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket": {
-    "other": "Socket"
+  "form.dbConnectionType.mysql_socket": {
+    "other": "MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp": {
+    "other": "PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket": {
+    "other": "PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite": {
+    "other": "SQLite (dev purpose only)"
   },
   "form.dbConnectionType.manual": {
     "other": "手动"
@@ -179,6 +194,18 @@
   "form.dbSocketFile.legend": {
     "other": "输入要连接的Socket文件的位置"
   },
+  "form.dbSocketFileSQLite.label": {
+    "other": "Database Path"
+  },
+  "form.dbSocketFileSQLite.legend": {
+    "other": "Enter the location of the SQLite database"
+  },
+  "form.dbSqliteFile.label": {
+    "other": "File Path"
+  },
+  "form.dbSqliteFile.legend": {
+    "other": "Enter the location of the file to use as database"
+  },
   "form.dbManualDSN.label": {
     "other": "DSN"
   },
@@ -218,17 +245,20 @@
   "form.dsFolder.legend": {
     "other": "使用服务器上的绝对路径"
   },
+  "form.dsType.Label": {
+    "other": "存储类型"
+  },
   "form.dsType.FS": {
     "other": "本地文件系统 (所有数据存储的此服务器上)"
   },
   "form.dsType.S3": {
-    "other": "Amazon S3 / S3 兼容(S3 buckets)"
+    "other": "Amazon S3 / S3 兼容(存储到 S3 桶中)"
   },
   "form.dsS3Custom.label": {
-    "other": "S3兼容存储端点"
+    "other": "URL, 用 Minio 时加上 ?minio=true。"
   },
   "form.dsS3Custom.legend": {
-    "other": "留空为Amazon"
+    "other": "使用 Amazon 则留空"
   },
   "form.dsS3CustomRegion.label": {
     "other": "S3 自定义区域"

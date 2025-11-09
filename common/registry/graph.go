@@ -28,11 +28,13 @@ import (
 	"strings"
 	"sync"
 
-	pb "github.com/pydio/cells/v4/common/proto/registry"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 type graphRegistry struct {
-	r RawRegistry
+	id string
+	r  RawRegistry
 
 	ww map[string]StatusWatcher
 	wl sync.Mutex
@@ -40,6 +42,7 @@ type graphRegistry struct {
 
 func GraphRegistry(r RawRegistry) Registry {
 	return &graphRegistry{
+		id: uuid.New(),
 		r:  r,
 		ww: make(map[string]StatusWatcher),
 	}
@@ -51,6 +54,14 @@ func (r *graphRegistry) Start(i Item) error {
 
 func (r *graphRegistry) Stop(i Item) error {
 	return r.r.Stop(i)
+}
+
+func (r *graphRegistry) Close() error {
+	return r.r.Close()
+}
+
+func (r *graphRegistry) Done() <-chan struct{} {
+	return r.r.Done()
 }
 
 // Register wraps internal registry.Register call and create Edges and Watches based on RegisterOptions
@@ -97,17 +108,41 @@ func (r *graphRegistry) Deregister(i Item, option ...RegisterOption) error {
 	if er := r.r.Deregister(i, option...); er != nil {
 		return er
 	}
-	_, err := r.clearEdges(i, option...)
+	edges, err := r.clearEdges(i, option...)
+
+	for _, edge := range edges {
+		// Removing other edge if it was a dependence to the item
+		if edge.Vertices()[1] == i.ID() {
+			if item, _ := r.r.Get(edge.Vertices()[0],
+				WithType(pb.ItemType_ADDRESS),
+				WithType(pb.ItemType_ENDPOINT),
+				WithType(pb.ItemType_DAO),
+				WithType(pb.ItemType_GENERIC),
+				WithType(pb.ItemType_TAG),
+				WithType(pb.ItemType_SERVER),
+				WithType(pb.ItemType_SERVICE),
+				WithType(pb.ItemType_PROCESS),
+				WithType(pb.ItemType_STATS),
+			); item != nil {
+				if err := r.r.Deregister(item); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return err
 }
 
 func (r *graphRegistry) RegisterEdge(item1, item2, edgeLabel string, metadata map[string]string, oo ...RegisterOption) (Edge, error) {
+
 	// Make id unique for an item1+item2 pair
 	pair := []string{item1, item2}
 	sort.Strings(pair)
 	h := md5.New()
+	h.Write([]byte(edgeLabel))
 	h.Write([]byte(strings.Join(pair, "-")))
 	id := hex.EncodeToString(h.Sum(nil))
+
 	e := &edge{
 		id:       id,
 		name:     edgeLabel,
@@ -120,27 +155,50 @@ func (r *graphRegistry) RegisterEdge(item1, item2, edgeLabel string, metadata ma
 	return e, r.r.Register(e, oo...)
 }
 
-func (r *graphRegistry) ListAdjacentItems(sourceItem Item, targetOptions ...Option) (items []Item) {
-	ee, _ := r.List(WithType(pb.ItemType_EDGE))
+func (r *graphRegistry) ListAdjacentItems(opts ...AdjacentItemOption) (items []Item) {
+
+	opt := &AdjacentItemOptions{}
+	for _, o := range opts {
+		o(opt)
+	}
+
+	if len(opt.edgeItems) == 0 {
+		opt.edgeItems, _ = r.List(append(opt.edgeOptions, WithType(pb.ItemType_EDGE))...)
+	}
+
+	if len(opt.sourceItems) == 0 {
+		opt.sourceItems, _ = r.List(opt.sourceOptions...)
+	}
+
+	if len(opt.targetItems) == 0 {
+		opt.targetItems, _ = r.List(opt.targetOptions...)
+	}
+
 	var ids []string
-	for _, e := range ee {
+	for _, e := range opt.edgeItems {
 		edg, ok := e.(Edge)
 		if !ok {
 			continue
 		}
-		vv := edg.Vertices()
-		if vv[0] == sourceItem.ID() {
-			ids = append(ids, vv[1])
-		} else if vv[1] == sourceItem.ID() {
-			ids = append(ids, vv[0])
+
+		for _, sourceItem := range opt.sourceItems {
+			vv := edg.Vertices()
+			if vv[0] == sourceItem.ID() {
+				ids = append(ids, vv[1])
+			} else if vv[1] == sourceItem.ID() {
+				ids = append(ids, vv[0])
+			}
 		}
 	}
 	if len(ids) == 0 {
 		return
 	}
-	allItems, _ := r.List(targetOptions...)
 	for _, id := range ids {
-		for _, i := range allItems {
+		for _, i := range opt.targetItems {
+			if i == nil {
+				// fmt.Println("This is nil ? ", i)
+				continue
+			}
 			if i.ID() == id {
 				items = append(items, i)
 				break
@@ -227,6 +285,10 @@ func (r *graphRegistry) List(opts ...Option) ([]Item, error) {
 
 func (r *graphRegistry) Watch(option ...Option) (Watcher, error) {
 	return r.r.Watch(option...)
+}
+
+func (r *graphRegistry) NewLocker(name string) sync.Locker {
+	return r.r.NewLocker(name)
 }
 
 func (r *graphRegistry) As(i interface{}) bool {

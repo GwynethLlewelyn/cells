@@ -21,13 +21,13 @@
 package config
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"os"
 	"sync"
-
-	"github.com/pydio/cells/v4/common/utils/configx"
 )
 
 var (
@@ -77,33 +77,33 @@ func ResetTlsConfigs() {
 }
 
 // GetTLSServerConfig returns the configuration ssl for a server handler
-func GetTLSServerConfig(t string) *tls.Config {
+func GetTLSServerConfig(ctx context.Context, t string) *tls.Config {
 	tlsServerMutex.Lock()
 	defer tlsServerMutex.Unlock()
 	if _, ok := tlsServerConfig[t]; !ok {
-		getTLSServerConfig(t)
+		getTLSServerConfig(ctx, t)
 	}
 	return tlsServerConfig[t]
 }
 
 // GetTLSClientConfig returns the configuration ssl for a server handler.
-func GetTLSClientConfig(t string) *tls.Config {
+func GetTLSClientConfig(ctx context.Context, t string) *tls.Config {
 
 	tlsClientMutex.Lock()
 	defer tlsClientMutex.Unlock()
 	if _, ok := tlsClientConfig[t]; !ok {
-		getTLSClientConfig(t)
+		getTLSClientConfig(ctx, t)
 	}
 	return tlsClientConfig[t]
 
 }
 
-func getTLSServerConfig(t string) {
-	ssl := Get(configx.FormatPath("cert", t, "ssl")).Default(false).Bool()
-	selfSigned := Get(configx.FormatPath("cert", t, "self")).Default(false).Bool()
-	certFile := Get(configx.FormatPath("cert", t, "certFile")).String()
-	keyFile := Get(configx.FormatPath("cert", t, "keyFile")).String()
-	caUrl := Get(configx.FormatPath("cert", t, "caUrl")).String()
+func getTLSServerConfig(ctx context.Context, t string) {
+	ssl := Get(ctx, std.FormatPath("cert", t, "ssl")).Default(false).Bool()
+	selfSigned := Get(ctx, std.FormatPath("cert", t, "self")).Default(false).Bool()
+	certFile := Get(ctx, std.FormatPath("cert", t, "certFile")).String()
+	keyFile := Get(ctx, std.FormatPath("cert", t, "keyFile")).String()
+	caUrl := Get(ctx, std.FormatPath("cert", t, "caUrl")).String()
 
 	if !ssl {
 		return
@@ -158,10 +158,10 @@ func getTLSServerConfig(t string) {
 
 }
 
-func getTLSClientConfig(t string) {
-	ssl := Get(configx.FormatPath("cert", t, "ssl")).Default(false).Bool()
-	selfSigned := Get(configx.FormatPath("cert", t, "self")).Default(false).Bool()
-	certFile := Get(configx.FormatPath("cert", t, "certFile")).String()
+func getTLSClientConfig(ctx context.Context, t string) {
+	ssl := Get(ctx, std.FormatPath("cert", t, "ssl")).Default(false).Bool()
+	selfSigned := Get(ctx, std.FormatPath("cert", t, "self")).Default(false).Bool()
+	certFile := Get(ctx, std.FormatPath("cert", t, "certFile")).String()
 
 	if !ssl {
 		return
@@ -182,7 +182,7 @@ func getTLSClientConfig(t string) {
 	if cp, err = x509.SystemCertPool(); err != nil {
 		cp = x509.NewCertPool()
 	}
-	if b, err := ioutil.ReadFile(certFile); err == nil {
+	if b, err := os.ReadFile(certFile); err == nil {
 		// If no specific CAs, try to load them from within the certFile
 		cp.AppendCertsFromPEM(b)
 	}

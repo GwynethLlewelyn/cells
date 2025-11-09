@@ -27,9 +27,9 @@ import (
 	"github.com/spf13/pflag"
 	"gocloud.dev/pubsub"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/runtime"
 )
 
 const (
@@ -37,6 +37,7 @@ const (
 )
 
 func addRootFlags(flags *pflag.FlagSet) {
+	flags.String(runtime.KeyCluster, "default", "Name of the cluster for the node")
 	flags.String(runtime.KeyConfig, runtime.DefaultKeyConfig, "Configuration storage URL. Supported schemes: "+strings.Join(config.DefaultURLMux().Schemes(), "|"))
 	flags.String(runtime.KeyVault, runtime.DefaultKeyVault, "Vault location, automatically detected from config url, unless an URL is provided (same schemes as config)")
 	flags.String(runtime.KeyKeyring, runtime.DefaultKeyKeyring, "Keyring URL. Can be switched to vault://host:port/secretPath?key=storeKey")
@@ -66,21 +67,13 @@ func addRegistryFlags(flags *pflag.FlagSet, hideAll ...bool) {
 	}
 }
 
-// addCacheFlags registers necessary flags to connect to the cache (defaults to in-memory)
-func addCacheFlags(flags *pflag.FlagSet) {
-	flags.String(runtime.KeyCache, runtime.DefaultKeyCache, "Sharded Cache")
-	flags.String(runtime.KeyShortCache, runtime.DefaultKeyShortCache, "Short cache")
-
-	flags.MarkHidden(runtime.KeyCache)
-	flags.MarkHidden(runtime.KeyShortCache)
-}
-
 // addExternalCmdRegistryFlags registers necessary flags to connect to the registry with defaults :8001
 func addExternalCmdRegistryFlags(flags *pflag.FlagSet, hideAll ...bool) {
 	discoveryAddress := "grpc://:" + runtime.DefaultDiscoveryPort
 	flags.String(runtime.KeyDiscovery, discoveryAddress, "Registry and pub/sub")
 	flags.String(runtime.KeyRegistry, discoveryAddress, "Registry used to contact services")
 	flags.String(runtime.KeyBroker, discoveryAddress, "Pub/sub service for events between services")
+	flags.String(runtime.KeyAdvertiseAddress, "127.0.0.1", "Default advertise address")
 
 	if len(hideAll) > 0 && hideAll[0] && os.Getenv(EnvDisplayHiddenFlags) == "" {
 		_ = flags.MarkHidden(runtime.KeyDiscovery)
@@ -91,9 +84,9 @@ func addExternalCmdRegistryFlags(flags *pflag.FlagSet, hideAll ...bool) {
 
 func addSiteOverrideFlags(flags *pflag.FlagSet, hideLegacy ...bool) {
 	// Dynamic site override and their legacy version below
-	flags.String(runtime.KeySiteBind, "", "[Site] The 'site_' flags suite overrides config-defined sites. Bind is the site binding address (IP|DOMAIN:PORT), see other flags for TLS configurations.")
-	flags.String(runtime.KeySiteExternal, "", "[Site] External full URL (http[s]://IP|DOMAIN[:PORT]) exposed to the outside")
-	flags.Bool(runtime.KeySiteNoTLS, false, "[Site] Use plain HTTP")
+	flags.String(runtime.KeySiteBind, "", "[Site] The 'site_' flags suite overrides config-defined sites. Bind is the site binding address IP|DOMAIN:PORT (default 0.0.0.0:"+runtime.DefaultBindingSitePort+")")
+	flags.String(runtime.KeySiteExternal, "", "[Site] External full URL http[s]://IP|DOMAIN[:PORT] exposed to the outside")
+	flags.Bool(runtime.KeySiteNoTLS, false, "[Site] Use plain HTTP (default false, use self-signed)")
 	flags.String(runtime.KeySiteTlsCertFile, "", "[Site] Path to custom TLS certificate file")
 	flags.String(runtime.KeySiteTlsKeyFile, "", "[Site] Path to custom TLS key file")
 	flags.String(runtime.KeySiteLetsEncryptEmail, "", "[Site] Set email to enable Let's Encrypt automatic TLS configuration")

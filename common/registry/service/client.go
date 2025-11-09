@@ -23,19 +23,21 @@ package service
 import (
 	"context"
 	"net/url"
+	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/registry/util"
-
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	cgrpc "github.com/pydio/cells/v4/common/client/grpc"
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
+	"github.com/pydio/cells/v5/common"
+	cgrpc "github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
 )
 
-var scheme = "grpc"
+var schemes = []string{"grpc", "xds"}
 
 type URLOpener struct {
 	grpc.ClientConnInterface
@@ -43,39 +45,13 @@ type URLOpener struct {
 
 func init() {
 	o := &URLOpener{}
-	registry.DefaultURLMux().Register(scheme, o)
+	for _, scheme := range schemes {
+		registry.DefaultURLMux().Register(scheme, o)
+	}
 }
 
 func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (registry.Registry, error) {
-	// We use WithBlock, shall we timeout and retry here ?
-	var conn grpc.ClientConnInterface
-
-	address := u.Hostname()
-	if port := u.Port(); port != "" {
-		address = address + ":" + port
-	}
-	var cli *grpc.ClientConn
-	var err error
-	if u.Query().Get("timeout") != "" {
-		if d, e := time.ParseDuration(u.Query().Get("timeout")); e != nil {
-			return nil, e
-		} else {
-			ct, _ := context.WithTimeout(ctx, d)
-			cli, err = grpc.DialContext(ct, u.Hostname()+":"+u.Port(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-		}
-	} else {
-		cli, err = grpc.Dial(u.Hostname()+":"+u.Port(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	conn = cgrpc.NewClientConn("pydio.grpc.registry", cgrpc.WithClientConn(cli))
-
-	if err != nil {
-		return nil, err
-	}
+	conn := cgrpc.ResolveConn(ctx, common.ServiceRegistryGRPC)
 
 	return NewRegistry(WithConn(conn))
 }
@@ -86,11 +62,10 @@ type serviceRegistry struct {
 	address []string
 	// client to call registry
 	client pb.RegistryClient
-
-	// events
-	hasStream bool
-	// listeners
-	listeners []chan registry.Result
+	// session client
+	sessionClient pb.Registry_SessionClient
+	// health client to registry
+	donec chan struct{}
 }
 
 func (s *serviceRegistry) callOpts() []grpc.CallOption {
@@ -107,7 +82,6 @@ func (s *serviceRegistry) callOpts() []grpc.CallOption {
 	}
 
 	// add retries
-	// TODO : charles' GUTS feeling :-)
 	// opts = append(opts, client.WithRetries(10))
 
 	return opts
@@ -127,10 +101,16 @@ func (s *serviceRegistry) Init(opts ...Option) error {
 	if c, ok := s.opts.Context.Value(connKey{}).(*grpc.ClientConn); ok {
 		conn = c
 	} else {
-		conn, _ = grpc.Dial(":8000")
+		return errors.New("should have a grpc connection")
 	}
 
 	s.client = pb.NewRegistryClient(conn)
+	sessionClient, err := s.client.Session(s.opts.Context, s.callOpts()...)
+	if err != nil {
+		return err
+	}
+
+	s.sessionClient = sessionClient
 
 	return nil
 }
@@ -139,9 +119,16 @@ func (s *serviceRegistry) Options() Options {
 	return s.opts
 }
 
+func (s *serviceRegistry) Close() error {
+	return nil
+}
+
+func (s *serviceRegistry) Done() <-chan struct{} {
+	return s.donec
+}
+
 func (s *serviceRegistry) Start(item registry.Item) error {
-	_, err := s.client.Start(s.opts.Context, util.ToProtoItem(item), s.callOpts()...)
-	if err != nil {
+	if _, err := s.client.Start(s.opts.Context, util.ToProtoItem(item)); err != nil {
 		return err
 	}
 
@@ -149,25 +136,38 @@ func (s *serviceRegistry) Start(item registry.Item) error {
 }
 
 func (s *serviceRegistry) Stop(item registry.Item) error {
-	_, err := s.client.Stop(s.opts.Context, util.ToProtoItem(item), s.callOpts()...)
+	if _, err := s.client.Stop(s.opts.Context, util.ToProtoItem(item)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *serviceRegistry) lazyClient() error {
+	sessionClient, err := s.client.Session(s.opts.Context, s.callOpts()...)
 	if err != nil {
 		return err
 	}
+
+	s.sessionClient = sessionClient
 
 	return nil
 }
 
 func (s *serviceRegistry) Register(item registry.Item, option ...registry.RegisterOption) error {
-	var opts = &registry.RegisterOptions{}
-	for _, o := range option {
-		o(opts)
+	if s.sessionClient == nil {
+		if err := s.lazyClient(); err != nil {
+			return err
+		}
 	}
-	callOpts := s.callOpts()
-	if opts.FailFast {
-		callOpts = append(callOpts, grpc.WaitForReady(false))
+
+	if err := s.sessionClient.Send(&pb.SessionRequest{
+		Type: pb.SessionRequestType_REGISTER,
+		Item: util.ToProtoItem(item),
+	}); err != nil {
+		return err
 	}
-	_, err := s.client.Register(s.opts.Context, util.ToProtoItem(item), callOpts...)
-	if err != nil {
+
+	if _, err := s.sessionClient.Recv(); err != nil {
 		return err
 	}
 
@@ -175,18 +175,23 @@ func (s *serviceRegistry) Register(item registry.Item, option ...registry.Regist
 }
 
 func (s *serviceRegistry) Deregister(item registry.Item, option ...registry.RegisterOption) error {
-	var opts = &registry.RegisterOptions{}
-	for _, o := range option {
-		o(opts)
+	if s.sessionClient == nil {
+		if err := s.lazyClient(); err != nil {
+			return err
+		}
 	}
-	callOpts := s.callOpts()
-	if opts.FailFast {
-		callOpts = append(callOpts, grpc.WaitForReady(false))
-	}
-	_, err := s.client.Deregister(s.opts.Context, util.ToProtoItem(item), callOpts...)
-	if err != nil {
+
+	if err := s.sessionClient.Send(&pb.SessionRequest{
+		Type: pb.SessionRequestType_DEREGISTER,
+		Item: util.ToProtoItem(item),
+	}); err != nil {
 		return err
 	}
+
+	if _, err := s.sessionClient.Recv(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -202,6 +207,7 @@ func (s *serviceRegistry) Get(id string, opts ...registry.Option) (registry.Item
 			Types: options.Types,
 		},
 	}, s.callOpts()...)
+
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +227,7 @@ func (s *serviceRegistry) List(opts ...registry.Option) ([]registry.Item, error)
 	rsp, err := s.client.List(s.opts.Context, &pb.ListRequest{
 		Options: &pb.Options{
 			Types: options.Types,
+			Ids:   options.IDs,
 			Names: options.Names,
 		},
 	}, cOpts...)
@@ -253,32 +260,71 @@ func (s *serviceRegistry) Watch(opts ...registry.Option) (registry.Watcher, erro
 		o(&options)
 	}
 
-	if !s.hasStream {
-		// This is a first watch, setup a stream - opts are empty
-		stream, err := s.client.Watch(context.Background(), &pb.WatchRequest{
-			Options: &pb.Options{
-				Types: []pb.ItemType{pb.ItemType_SERVER, pb.ItemType_SERVICE, pb.ItemType_ADDRESS, pb.ItemType_ENDPOINT, pb.ItemType_EDGE},
-			},
-		}, s.callOpts()...)
-		if err != nil {
-			return nil, err
-		}
-		s.hasStream = true
-		return newStreamWatcher(stream), nil
+	// This is a first watch, setup a stream - opts are empty
+	stream, err := s.client.Watch(s.opts.Context, &pb.WatchRequest{
+		Options: &pb.Options{
+			Actions: options.Actions,
+			Ids:     options.IDs,
+			Names:   options.Names,
+			Types:   options.Types,
+		},
+	}, s.callOpts()...)
+	if err != nil {
+		return nil, err
+	}
 
-	} else {
-		events := make(chan registry.Result)
-		s.listeners = append(s.listeners, events)
-		closeFunc := func() {
-			var newL []chan registry.Result
-			for _, l := range s.listeners {
-				if l != events {
-					newL = append(newL, l)
-				}
-			}
-			s.listeners = newL
+	return newStreamWatcher(stream, options), nil
+}
+
+func (s *serviceRegistry) NewLocker(prefix string) sync.Locker {
+	stream, _ := s.client.NewLocker(s.opts.Context)
+
+	return &serviceRegistryLock{
+		prefix: prefix,
+		stream: stream,
+	}
+}
+
+type serviceRegistryLock struct {
+	prefix string
+	stream pb.Registry_NewLockerClient
+}
+
+func (s *serviceRegistryLock) Lock() {
+	if s.stream != nil {
+		s.stream.Send(&pb.NewLockerRequest{
+			Prefix: s.prefix,
+			Type:   pb.LockType_Lock,
+		})
+
+		resp, err := s.stream.Recv()
+		if err != nil {
+			return
 		}
-		return newChanWatcher(s.opts.Context, events, closeFunc, options), nil
+
+		if resp.GetType() == pb.LockType_Lock {
+			return
+		}
+	}
+}
+
+func (s *serviceRegistryLock) Unlock() {
+	if s.stream != nil {
+		s.stream.SendMsg(&pb.NewLockerRequest{
+			Prefix: s.prefix,
+			Type:   pb.LockType_Unlock,
+		})
+
+		resp, err := s.stream.Recv()
+		if err != nil {
+			return
+		}
+
+		if resp.GetType() == pb.LockType_Lock {
+			return
+		}
+
+		s.stream.CloseSend()
 	}
 }
 
@@ -297,15 +343,10 @@ func NewRegistry(opts ...Option) (registry.Registry, error) {
 		o(&options)
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-
-	ctx = options.Context
+	ctx := options.Context
 	if ctx == nil {
 		ctx = context.TODO()
 	}
-
-	ctx, cancel = context.WithCancel(ctx)
 
 	options.Context = ctx
 
@@ -313,33 +354,38 @@ func NewRegistry(opts ...Option) (registry.Registry, error) {
 	var conn grpc.ClientConnInterface
 	conn, ok := options.Context.Value(connKey{}).(grpc.ClientConnInterface)
 	if !ok {
-		conn, _ = grpc.Dial(":8000")
+		return nil, errors.New("should have a grpc connection")
 	}
+
+	donec := make(chan struct{})
+
+	go func() {
+		defer close(donec)
+
+		cli := healthpb.NewHealthClient(conn)
+
+		w, err := cli.Watch(options.Context, &healthpb.HealthCheckRequest{Service: common.ServiceGrpcNamespace_ + common.ServiceRegistry})
+		if err != nil {
+			return
+		}
+
+		for {
+			_, err := w.Recv()
+			if err != nil {
+				return
+			}
+
+			// Status unknown, continue
+		}
+	}()
+
+	cli := pb.NewRegistryClient(conn)
 
 	r := &serviceRegistry{
 		opts:   options,
-		client: pb.NewRegistryClient(conn),
+		client: cli,
+		donec:  donec,
 	}
-
-	// Check the stream has a connection to the registry
-	watcher, err := r.Watch(registry.WithAction(pb.ActionType_ANY))
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	go func() {
-		for {
-			res, err := watcher.Next()
-			if err != nil {
-				cancel()
-				return
-			}
-			// Dispatch to listeners
-			for _, l := range r.listeners {
-				l <- registry.NewResult(res.Action(), res.Items())
-			}
-		}
-	}()
 
 	return registry.GraphRegistry(r), nil
 }

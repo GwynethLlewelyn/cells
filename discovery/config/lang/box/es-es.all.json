@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Condición Libre"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "JSON Path"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -135,7 +138,7 @@
     "other": "Fecha después"
   },
   "contextMetaCondition.PathGlobCondition": {
-    "other": "Glob Matcher"
+    "other": "Comparador de Glob"
   },
   "contextMetaCondition.BooleanCondition": {
     "other": "Valor Booleano"
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Solicitar Hostname"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Host de solicitud"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Puerto de solicitud"
   },
   "contextMetaField.RequestMethod": {
     "other": "Solicitar Método"
@@ -256,6 +265,9 @@
   },
   "treeQuery.UUIDs": {
     "other": "UUIDs del nodo"
+  },
+  "treeQuery.ETag": {
+    "other": "ETag"
   },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Tiene un valor cualquiera"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Desecadenador Programado"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Activado por Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Webhook Api Slug"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Nombre del parámetro de ejecución"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Valor del parámetro de ejecución"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Desencadenador Manual"

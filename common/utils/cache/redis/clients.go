@@ -21,29 +21,51 @@
 package redis
 
 import (
+	"context"
+	"crypto/tls"
 	"net/url"
+	"time"
 
-	"github.com/go-redis/redis/v8"
+	redis "github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
+
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
 var (
 	clients = make(map[string]*redis.Client)
 )
 
-func NewClient(u *url.URL) *redis.Client {
-	str := u.User.String() + "@" + u.Host
+func NewClient(ctx context.Context, u *url.URL, tc *tls.Config) (*redis.Client, error) {
+	str := u.Redacted()
 	cli, ok := clients[str]
 	if ok {
-		return cli
+		return cli, nil
 	}
 
 	pwd, _ := u.User.Password()
-	cli = redis.NewClient(&redis.Options{
+	oo := &redis.Options{
 		Addr:     u.Host,
 		Username: u.User.Username(),
 		Password: pwd,
-	})
+	}
+	if tc != nil {
+		oo.TLSConfig = tc
+	}
+	cli = redis.NewClient(oo)
+
+	if err := std.Retry(ctx, func() error {
+		if err := cli.Ping(ctx).Err(); err != nil {
+			log.Logger(ctx).Warn("[redis] connection unavailable, retrying in 10s...", zap.Error(err))
+			return err
+		}
+
+		return nil
+	}, 10*time.Second, 10*time.Minute); err != nil {
+		return nil, err
+	}
 
 	clients[str] = cli
-	return cli
+	return cli, nil
 }

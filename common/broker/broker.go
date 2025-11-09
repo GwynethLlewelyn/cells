@@ -24,20 +24,28 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os"
-	"runtime/debug"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
-	"time"
 
 	"gocloud.dev/pubsub"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/service/errors"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/middleware"
+	"github.com/pydio/cells/v5/common/telemetry/metrics"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
+type brokerKey struct{}
+
 var (
-	std = NewBroker("mem://")
+	std           = NewBroker("mem://")
+	topicReplacer = strings.NewReplacer("-", "_", ".", "_")
+	ContextKey    = brokerKey{}
 )
 
 func Register(b Broker) {
@@ -56,43 +64,59 @@ type Broker interface {
 
 type UnSubscriber func() error
 
-type SubscriberHandler func(Message) error
+type SubscriberHandler func(ctx context.Context, msg Message) error
 
 // NewBroker wraps a standard broker but prevents it from disconnecting while there still is a service running
 func NewBroker(s string, opts ...Option) Broker {
+
+	opts = append(opts,
+		WithChainSubscriberInterceptor(
+			TimeoutSubscriberInterceptor(),
+			HeaderInjectorInterceptor(),
+			ContextInjectorInterceptor(),
+		),
+	)
+
 	options := newOptions(opts...)
-	u, _ := url.Parse(s)
-	scheme := u.Scheme
-	if scheme == "nats" && u.Host != "" {
-		// Replace nats://:port by env + nats://
-		_ = os.Setenv("NATS_SERVER_URL", u.Host)
-		s = "nats://"
+	u, err := url.Parse(s)
+	if err != nil {
+		panic(err)
 	}
+	scheme := u.Scheme
 
 	br := &broker{
 		publishOpener: func(ctx context.Context, topic string) (*pubsub.Topic, error) {
-			return pubsub.OpenTopic(ctx, s+"/"+topic)
+			namespace := u.Query().Get("namespace")
+			uu := &url.URL{User: u.User, Scheme: u.Scheme, Host: u.Host, Path: namespace + "/" + strings.TrimPrefix(topic, "/"), RawQuery: u.RawQuery}
+			return pubsub.OpenTopic(ctx, uu.String())
 		},
-		subscribeOpener: func(topic string, oo ...SubscribeOption) (*pubsub.Subscription, error) {
+		subscribeOpener: func(ctx context.Context, topic string, oo ...SubscribeOption) (*pubsub.Subscription, error) {
 			// Handle queue for grpc vs. nats vs memory
-			op := &SubscribeOptions{Context: options.Context}
+			op := &SubscribeOptions{Context: ctx}
 			for _, o := range oo {
 				o(op)
 			}
-			ctx := op.Context
+
+			q, _ := url.ParseQuery(u.RawQuery)
 			if op.Queue != "" {
 				switch scheme {
-				case "nats", "grpc":
-					topic += "?queue=" + op.Queue
+				case "nats", "grpc", "xds":
+					q.Add("queue", op.Queue)
 				default:
 				}
 			}
 
-			return pubsub.OpenSubscription(ctx, s+"/"+topic)
+			namespace := u.Query().Get("namespace")
+
+			uu := &url.URL{User: u.User, Scheme: u.Scheme, Host: u.Host, Path: namespace + "/" + strings.TrimPrefix(topic, "/"), RawQuery: q.Encode()}
+			return pubsub.OpenSubscription(ctx, uu.String())
 		},
 		publishers: make(map[string]*pubsub.Topic),
 		Options:    options,
 	}
+
+	chainPublisherInterceptors(br)
+	chainSubscriberInterceptors(br)
 
 	if options.Context != nil {
 		go func() {
@@ -111,21 +135,26 @@ func PublishRaw(ctx context.Context, topic string, body []byte, header map[strin
 
 // Publish sends a message to standard broker. For the moment, forward message to client.Publish
 func Publish(ctx context.Context, topic string, message proto.Message, opts ...PublishOption) error {
+	metrics.Helper().Counter("pub_"+topicReplacer.Replace(topic), "Total number of messages sent on a given topic").Inc(1)
 	return std.Publish(ctx, topic, message, opts...)
 }
 
 // MustPublish publishes a message ignoring the error
 func MustPublish(ctx context.Context, topic string, message proto.Message, opts ...PublishOption) {
-	err := Publish(ctx, topic, message)
+	err := Publish(ctx, topic, message, opts...)
 	if err != nil {
 		fmt.Printf("[Message Publication Error] Topic: %s, Error: %v\n", topic, err)
 	}
 }
 
 func SubscribeCancellable(ctx context.Context, topic string, handler SubscriberHandler, opts ...SubscribeOption) error {
-	unsub, e := std.Subscribe(ctx, topic, handler, opts...)
+	if _, file, line, ok := runtime.Caller(1); ok {
+		opts = append(opts, WithCallee(file, line))
+	}
+	// Go through Subscribe to parse MessageQueue option
+	unsub, e := Subscribe(ctx, topic, handler, opts...)
 	if e != nil {
-		if errors.IsContextCanceled(e) {
+		if errors.Is(e, context.Canceled) {
 			return nil
 		}
 		return e
@@ -138,8 +167,59 @@ func SubscribeCancellable(ctx context.Context, topic string, handler SubscriberH
 	return nil
 }
 
-func Subscribe(ctx context.Context, topic string, handler SubscriberHandler, opts ...SubscribeOption) (UnSubscriber, error) {
-	return std.Subscribe(ctx, topic, handler, opts...)
+func Subscribe(root context.Context, topic string, handler SubscriberHandler, opts ...SubscribeOption) (UnSubscriber, error) {
+	so := parseSubscribeOptions(topic, opts...)
+	if so.CalleeFile == "" {
+		if _, file, line, ok := runtime.Caller(1); ok {
+			opts = append(opts, WithCallee(file, line))
+			so.CalleeFile = file
+			so.CalleeLine = line
+		}
+	}
+	root = context.WithValue(root, "CalleeFile", so.CalleeFile)
+	root = context.WithValue(root, "CalleeLine", strconv.Itoa(so.CalleeLine))
+	root = context.WithValue(root, "CalleeTopic", topic)
+
+	// Wrap Handler for counters
+	id := "sub_" + topicReplacer.Replace(topic)
+	c := metrics.TaggedHelper(map[string]string{"subscriber": so.CounterName}).Counter(id)
+	wh := func(ctx context.Context, m Message) error {
+		c.Inc(1)
+		return so.HandleError(ctx, handler(ctx, m))
+	}
+
+	// Wrap handler in Queue
+	if len(so.AsyncQueuePool) > 0 {
+		openerID := uuid.New()
+		qH := func(ctx context.Context, m Message) error {
+			openReso := map[string]interface{}{
+				OpenerIDKey: openerID,
+				OpenerFuncKey: OpenWrapper(func(q AsyncQueue) (AsyncQueue, error) {
+					err := q.Consume(func(ctx context.Context, mm ...Message) {
+						for _, mess := range mm {
+							_ = so.HandleError(ctx, wh(ctx, mess))
+						}
+					})
+					return q, err
+				}),
+			}
+			var q AsyncQueue
+			var er error
+			for _, po := range so.AsyncQueuePool {
+				if q, er = po.AsyncQueuePool.Get(ctx, openReso, po.Resolution); er == nil {
+					break
+				}
+			}
+			if er != nil {
+				return er
+			}
+			return q.PushRaw(ctx, m)
+		}
+		// Replace original handler
+		return std.Subscribe(root, topic, qH, opts...)
+	}
+
+	return std.Subscribe(root, topic, wh, opts...)
 }
 
 type broker struct {
@@ -151,15 +231,16 @@ type broker struct {
 }
 
 type TopicOpener func(context.Context, string) (*pubsub.Topic, error)
-type SubscribeOpener func(string, ...SubscribeOption) (*pubsub.Subscription, error)
 
-func (b *broker) openTopic(topic string) (*pubsub.Topic, error) {
+type SubscribeOpener func(context.Context, string, ...SubscribeOption) (*pubsub.Subscription, error)
+
+func (b *broker) openTopic(ctx context.Context, topic string) (*pubsub.Topic, error) {
 	b.Lock()
 	defer b.Unlock()
 	publisher, ok := b.publishers[topic]
 	if !ok {
 		var err error
-		publisher, err = b.publishOpener(b.Options.Context, topic)
+		publisher, err = b.publishOpener(ctx, topic)
 		if err != nil {
 			return nil, err
 		}
@@ -179,9 +260,9 @@ func (b *broker) closeTopics(c context.Context) {
 }
 
 func (b *broker) PublishRaw(ctx context.Context, topic string, body []byte, header map[string]string, opts ...PublishOption) error {
-	publisher, err := b.openTopic(topic)
-	if err != nil {
-		return err
+	publisher, er := b.openTopic(ctx, topic)
+	if er != nil {
+		return er
 	}
 
 	if err := publisher.Send(ctx, &pubsub.Message{
@@ -202,21 +283,27 @@ func (b *broker) Publish(ctx context.Context, topic string, message proto.Messag
 	}
 
 	header := make(map[string]string)
-	if hh, ok := metadata.FromContextRead(ctx); ok {
+	if hh, ok := propagator.FromContextRead(ctx); ok {
 		for k, v := range hh {
 			header[k] = v
 		}
 	}
+	gc := middleware.ApplyGRPCOutgoingContextModifiers(ctx)
+	if md, ok := metadata.FromOutgoingContext(gc); ok {
+		for k, v := range md {
+			header[k] = strings.Join(v, "")
+		}
+	}
 
-	publisher, err := b.openTopic(topic)
+	publisher, err := b.openTopic(ctx, topic)
 	if err != nil {
 		return err
 	}
 
-	if err := publisher.Send(ctx, &pubsub.Message{
+	if er := publisher.Send(ctx, &pubsub.Message{
 		Body:     body,
 		Metadata: header,
-	}); err != nil {
+	}); er != nil {
 		return err
 	}
 
@@ -224,58 +311,49 @@ func (b *broker) Publish(ctx context.Context, topic string, message proto.Messag
 }
 
 func (b *broker) Subscribe(ctx context.Context, topic string, handler SubscriberHandler, opts ...SubscribeOption) (UnSubscriber, error) {
-	so := &SubscribeOptions{
-		Context: b.Options.Context,
-	}
-	for _, o := range opts {
-		o(so)
+	so := parseSubscribeOptions(topic, opts...)
+	if so.CalleeFile == "" {
+		if _, file, line, ok := runtime.Caller(1); ok {
+			so.CalleeFile = file
+			so.CalleeLine = line
+		}
 	}
 
 	// Making sure topic is opened
-	_, err := b.openTopic(topic)
+	_, err := b.openTopic(ctx, topic)
 	if err != nil {
 		return nil, err
 	}
 
-	sub, err := b.subscribeOpener(topic, opts...)
+	sub, err := b.subscribeOpener(ctx, topic, opts...)
 	if err != nil {
 		return nil, err
-	}
-
-	dd := debug.Stack()
-	wH := func(m Message) error {
-		d := make(chan bool, 1)
-		defer close(d)
-		go func() {
-			select {
-			case <-d:
-				break
-			case <-time.After(20 * time.Second):
-				fmt.Println(os.Getpid(), "A Handler has not returned after 20s !", topic, string(dd), " - This subscription will be blocked!")
-			}
-		}()
-		return handler(m)
 	}
 
 	go func() {
 		for {
-			msg, err := sub.Receive(ctx)
-			if err != nil {
+			msg, er := sub.Receive(ctx)
+			if er != nil {
 				break
 			}
-
-			msg.Ack()
-
-			if err := wH(&message{
-				header: msg.Metadata,
-				body:   msg.Body,
-			}); err != nil {
-				if so.ErrorHandler != nil {
-					so.ErrorHandler(err)
-				} else {
-					fmt.Println("Cannot handle, no error handler set", topic, err.Error(), msg.Metadata, string(msg.Body))
-				}
+			metaCopy := make(map[string]string, len(msg.Metadata))
+			for k, v := range msg.Metadata {
+				metaCopy[k] = v
 			}
+			msg.Ack()
+			var subErr error
+			if b.Options.subscriberInt != nil {
+				subErr = b.Options.subscriberInt(ctx, &message{
+					header: metaCopy,
+					body:   msg.Body,
+				}, handler)
+			} else {
+				subErr = handler(ctx, &message{
+					header: metaCopy,
+					body:   msg.Body,
+				})
+			}
+			_ = so.HandleError(ctx, subErr)
 		}
 	}()
 

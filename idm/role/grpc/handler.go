@@ -27,58 +27,92 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/idm/role"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	pbservice "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/idm/role"
 )
 
 var (
-	defaultPolicies = []*service.ResourcePolicy{
-		{Subject: "profile:standard", Action: service.ResourcePolicyAction_READ, Effect: service.ResourcePolicy_allow},
-		{Subject: "profile:admin", Action: service.ResourcePolicyAction_WRITE, Effect: service.ResourcePolicy_allow},
+	rootPolicies = []*pbservice.ResourcePolicy{
+		{
+			Action:  pbservice.ResourcePolicyAction_READ,
+			Subject: "*",
+			Effect:  pbservice.ResourcePolicy_allow,
+		},
+		{
+			Action:  pbservice.ResourcePolicyAction_WRITE,
+			Subject: permissions.PolicySubjectProfilePrefix + common.PydioProfileAdmin,
+			Effect:  pbservice.ResourcePolicy_allow,
+		},
+	}
+	defaultPolicies = []*pbservice.ResourcePolicy{
+		{
+			Action:  pbservice.ResourcePolicyAction_READ,
+			Subject: permissions.PolicySubjectProfilePrefix + common.PydioProfileStandard,
+			Effect:  pbservice.ResourcePolicy_allow,
+		},
+		{
+			Action:  pbservice.ResourcePolicyAction_WRITE,
+			Subject: permissions.PolicySubjectProfilePrefix + common.PydioProfileAdmin,
+			Effect:  pbservice.ResourcePolicy_allow,
+		},
+	}
+	externalPolicies = []*pbservice.ResourcePolicy{
+		{
+			Action:  pbservice.ResourcePolicyAction_READ,
+			Subject: "*",
+			Effect:  pbservice.ResourcePolicy_allow,
+		},
+		{
+			Action:  pbservice.ResourcePolicyAction_WRITE,
+			Subject: permissions.PolicySubjectProfilePrefix + common.PydioProfileStandard,
+			Effect:  pbservice.ResourcePolicy_allow,
+		},
 	}
 )
 
 // Handler definition
 type Handler struct {
 	idm.UnimplementedRoleServiceServer
-	dao role.DAO
+
+	service.Service
 }
 
-func NewHandler(ctx context.Context, dao role.DAO) idm.NamedRoleServiceServer {
-	return &Handler{dao: dao}
-}
-
-func (h *Handler) Name() string {
-	return ServiceName
+func NewHandler() idm.RoleServiceServer {
+	return &Handler{}
 }
 
 // CreateRole adds a role and its policies in database
 func (h *Handler) CreateRole(ctx context.Context, req *idm.CreateRoleRequest) (*idm.CreateRoleResponse, error) {
+	dao, err := manager.Resolve[role.DAO](ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	resp := &idm.CreateRoleResponse{}
 
 	if req.Role.Uuid != "" && strings.Contains(req.Role.Uuid, ",") {
-		return nil, errors.BadRequest("forbidden.characters", "commas are not allowed in role uuid")
+		return nil, errors.WithMessage(errors.InvalidParameters, "commas are not allowed in role uuid")
 	}
 
-	r, update, err := h.dao.Add(req.Role)
+	r, update, err := dao.Add(ctx, req.Role)
 	if err != nil {
 		return nil, err
 	}
 	resp.Role = r
-	if len(r.Policies) == 0 {
-		r.Policies = defaultPolicies
-	} /* else {
-		for i, pol := range r.Policies {
-			fmt.Printf("%d. %s - action: %s\n", i, pol.Subject, pol.Action)
-		}
-	} */
-	err = h.dao.AddPolicies(update, r.Uuid, r.Policies)
-	if err != nil {
+	insertPols := r.Policies
+	if len(insertPols) == 0 {
+		insertPols = defaultPolicies
+	}
+
+	if r.Policies, err = dao.AddPolicies(ctx, update, r.Uuid, insertPols); err != nil {
 		return nil, err
 	}
 
@@ -121,16 +155,22 @@ func (h *Handler) CreateRole(ctx context.Context, req *idm.CreateRoleRequest) (*
 // DeleteRole from database
 func (h *Handler) DeleteRole(ctx context.Context, req *idm.DeleteRoleRequest) (*idm.DeleteRoleResponse, error) {
 
-	if req.Query == nil {
-		return nil, errors.BadRequest(common.ServiceRole, "cannot send a DeleteRole request with an empty query")
-	}
-
-	var roles []*idm.Role
-	if err := h.dao.Search(req.Query, &roles); err != nil {
+	dao, err := manager.Resolve[role.DAO](ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	numRows, err := h.dao.Delete(req.Query)
+	if req.Query == nil {
+		return nil, errors.WithMessage(errors.InvalidParameters, "cannot send a DeleteRole request with an empty query")
+	}
+
+	var roles []*idm.Role
+	req.Query = pbservice.PrepareResourcePolicyQuery(req.Query, pbservice.ResourcePolicyAction_READ)
+	if err = dao.Search(ctx, req.Query, &roles); err != nil {
+		return nil, err
+	}
+
+	numRows, err := dao.Delete(ctx, req.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -140,12 +180,12 @@ func (h *Handler) DeleteRole(ctx context.Context, req *idm.DeleteRoleRequest) (*
 
 	for _, r := range roles {
 		// Errors a ignored until now. Should we stop and return an error or better handle the error?
-		err2 := h.dao.DeletePoliciesForResource(r.Uuid)
+		err2 := dao.DeletePoliciesForResource(ctx, r.Uuid)
 		if err2 != nil {
 			log.Logger(ctx).Error("could not delete policies for removed role "+r.Label, zap.Error(err2))
 			continue
 		}
-		err2 = h.dao.DeletePoliciesBySubject(fmt.Sprintf("role:%s", r.Uuid))
+		err2 = dao.DeletePoliciesBySubject(ctx, permissions.PolicySubjectRolePrefix+r.Uuid)
 		if err2 != nil {
 			log.Logger(ctx).Error("could not delete policies by subject for removed role "+r.Label, zap.Error(err2))
 			continue
@@ -170,11 +210,23 @@ func (h *Handler) SearchRole(request *idm.SearchRoleRequest, response idm.RoleSe
 
 	var roles []*idm.Role
 
-	if err := h.dao.Search(request.Query, &roles); err != nil {
+	ctx := response.Context()
+
+	dao, err := manager.Resolve[role.DAO](ctx)
+	if err != nil {
+		return err
+	}
+
+	request.Query = pbservice.PrepareResourcePolicyQuery(request.Query, pbservice.ResourcePolicyAction_READ)
+	if err := dao.Search(ctx, request.Query, &roles); err != nil {
 		return err
 	}
 
 	for _, r := range roles {
+		r.Policies, err = dao.GetPoliciesForResource(ctx, r.GetUuid())
+		if err != nil {
+			return err
+		}
 		if e := response.Send(&idm.SearchRoleResponse{Role: r}); e != nil {
 			return e
 		}
@@ -185,8 +237,13 @@ func (h *Handler) SearchRole(request *idm.SearchRoleRequest, response idm.RoleSe
 
 // CountRole in database
 func (h *Handler) CountRole(ctx context.Context, request *idm.SearchRoleRequest) (*idm.CountRoleResponse, error) {
+	dao, err := manager.Resolve[role.DAO](ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	count, err := h.dao.Count(request.Query)
+	request.Query = pbservice.PrepareResourcePolicyQuery(request.Query, pbservice.ResourcePolicyAction_READ)
+	count, err := dao.Count(ctx, request.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +253,12 @@ func (h *Handler) CountRole(ctx context.Context, request *idm.SearchRoleRequest)
 
 // StreamRole from database
 func (h *Handler) StreamRole(streamer idm.RoleService_StreamRoleServer) error {
+	ctx := streamer.Context()
+
+	dao, err := manager.Resolve[role.DAO](ctx)
+	if err != nil {
+		return err
+	}
 
 	for {
 		incoming, err := streamer.Recv()
@@ -204,11 +267,16 @@ func (h *Handler) StreamRole(streamer idm.RoleService_StreamRoleServer) error {
 		}
 
 		var roles []*idm.Role
-		if err := h.dao.Search(incoming.Query, &roles); err != nil {
+		incoming.Query = pbservice.PrepareResourcePolicyQuery(incoming.Query, pbservice.ResourcePolicyAction_READ)
+		if err = dao.Search(ctx, incoming.Query, &roles); err != nil {
 			return err
 		}
 
 		for _, r := range roles {
+			r.Policies, err = dao.GetPoliciesForResource(ctx, r.GetUuid())
+			if err != nil {
+				return err
+			}
 			if e := streamer.Send(&idm.SearchRoleResponse{Role: r}); e != nil {
 				return e
 			}

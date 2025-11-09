@@ -24,11 +24,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
+	"github.com/pydio/cells/v5/common"
 )
+
+var defaultRx *regexp.Regexp
+
+func init() {
+	defaultRx = regexp.MustCompile(`(application|binary)/octet-stream`)
+}
 
 // PutRequestData passes content-specific information during uploads
 type PutRequestData struct {
@@ -36,6 +43,7 @@ type PutRequestData struct {
 	Md5Sum            []byte
 	Sha256Sum         []byte
 	Metadata          map[string]string
+	CheckedMetadata   map[string]interface{}
 	MultipartUploadID string
 	MultipartPartID   int
 }
@@ -59,14 +67,15 @@ type ReadMeta map[string]string
 
 // PutMeta represents options specified by user for PutObject call
 type PutMeta struct {
-	UserMetadata            map[string]string
-	Progress                io.Reader
-	ContentType             string
-	ContentEncoding         string
-	ContentDisposition      string
-	ContentLanguage         string
-	CacheControl            string
-	NumThreads              uint
+	UserMetadata       map[string]string
+	Progress           io.Reader
+	ContentType        string
+	ContentEncoding    string
+	ContentDisposition string
+	ContentLanguage    string
+	CacheControl       string
+	NumThreads         uint
+	// Valid values are STANDARD | REDUCED_REDUNDANCY | STANDARD_IA | ONEZONE_IA | INTELLIGENT_TIERING | GLACIER | DEEP_ARCHIVE | OUTPOSTS | GLACIER_IR
 	StorageClass            string
 	WebsiteRedirectLocation string
 }
@@ -104,7 +113,15 @@ func (o ReadMeta) SetRange(start, end int64) error {
 // ContentTypeUnknown checks if cType is empty or generic "application/octet-stream"
 func (p *PutRequestData) ContentTypeUnknown() bool {
 	cType := p.MetaContentType()
-	return cType == "" || cType == "application/octet-stream"
+	return cType == "" || defaultRx.MatchString(cType)
+}
+
+// InputResourceUuid reads metadata for a provided UUID for node creation
+func (p *PutRequestData) InputResourceUuid() string {
+	if p.Metadata == nil {
+		return ""
+	}
+	return p.Metadata[common.XAmzMetaPrefix+common.InputResourceUUID]
 }
 
 // GetRequestData passes optional Range instructions for reading file data
@@ -121,9 +138,26 @@ type CopyRequestData struct {
 	Progress     io.Reader
 }
 
+func (c *CopyRequestData) IsMove() bool {
+	if c.Metadata != nil {
+		if d, ok := c.Metadata[common.XAmzMetaDirective]; ok && d == "COPY" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *CopyRequestData) SetMeta(key, value string) {
+	if c.Metadata == nil {
+		c.Metadata = map[string]string{}
+	}
+	c.Metadata[key] = value
+}
+
 // MultipartRequestData is a metadata container for Multipart List Requests
 type MultipartRequestData struct {
-	Metadata map[string]string
+	Metadata        map[string]string
+	CheckedMetadata map[string]interface{}
 
 	ListKeyMarker      string
 	ListUploadIDMarker string

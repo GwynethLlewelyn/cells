@@ -23,31 +23,29 @@ package versions
 import (
 	"context"
 	"fmt"
-	"path"
 
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/data/versions/lang"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/data/versions/lang"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
-type VersionAction struct {
-	common.RuntimeHolder
-}
+type VersionAction struct{}
 
 func (c *VersionAction) GetDescription(lang ...string) actions.ActionDescription {
 	return actions.ActionDescription{
@@ -63,7 +61,7 @@ func (c *VersionAction) GetDescription(lang ...string) actions.ActionDescription
 	}
 }
 
-func (c *VersionAction) GetParametersForm() *forms.Form {
+func (c *VersionAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 
@@ -72,9 +70,9 @@ var (
 	router            nodes.Client
 )
 
-func getRouter(runtime context.Context) nodes.Client {
+func getRouter() nodes.Client {
 	if router == nil {
-		router = compose.PathClient(runtime, nodes.AsAdmin())
+		router = compose.PathClient(nodes.AsAdmin())
 	}
 	return router
 }
@@ -85,12 +83,12 @@ func (c *VersionAction) GetName() string {
 }
 
 // Init sets this VersionAction parameters.
-func (c *VersionAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *VersionAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	return nil
 }
 
 // Run processes the actual action code
-func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil // Ignore
@@ -100,20 +98,26 @@ func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChann
 	if node.Etag == common.NodeFlagEtagTemporary || tree.IgnoreNodeForOutput(ctx, node) {
 		return input.WithIgnore(), nil // Ignore
 	}
-	T := lang.Bundle().GetTranslationFunc(i18n.GetDefaultLanguage(config.Get()))
+	T := lang.Bundle().T(languages.GetDefaultLanguage(ctx))
 	policy := PolicyForNode(ctx, node)
 	if policy == nil {
 		return input.WithIgnore(), nil
 	}
 
 	// TODO: find clients from pool so that they are considered the same by the CopyObject request
-	source, e := DataSourceForPolicy(c.GetRuntimeContext(), policy) //getRouter().GetClientsPool().GetDataSourceInfo(common.PydioVersionsNamespace)
+	source, e := DataSourceForPolicy(ctx, policy)
 	if e != nil {
 		return input.WithError(e), e
 	}
 
-	versionClient := tree.NewNodeVersionerClient(grpc.GetClientConnFromCtx(c.GetRuntimeContext(), common.ServiceVersions))
-	request := &tree.CreateVersionRequest{Node: node}
+	userName := claim.UserNameFromContext(ctx)
+	user, err := permissions.SearchUniqueUser(ctx, userName, "")
+	if err != nil {
+		return input.WithError(err), err
+	}
+	userId := user.GetUuid()
+	versionClient := tree.NewNodeVersionerClient(grpc.ResolveConn(ctx, common.ServiceVersionsGRPC))
+	request := &tree.CreateVersionRequest{Node: node, OwnerName: userName, OwnerUuid: userId}
 	if input.Event != nil {
 		ce := &tree.NodeChangeEvent{}
 		if err := anypb.UnmarshalTo(input.Event, ce, proto.UnmarshalOptions{}); err == nil {
@@ -124,7 +128,7 @@ func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChann
 	if err != nil {
 		return input.WithError(err), err
 	}
-	if (resp.Version == nil || resp.Version == &tree.ChangeLog{}) {
+	if resp.Ignored {
 		// No version returned, means content did not change, do not update
 		return input.WithIgnore(), nil
 	}
@@ -133,21 +137,23 @@ func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChann
 	branchInfo := nodes.BranchInfo{LoadedSource: source}
 	ctx = nodes.WithBranchInfo(ctx, "to", branchInfo)
 
-	sourceNode := node.Clone()
-
-	vPath := node.Uuid + "__" + resp.Version.Uuid
-	targetNode := &tree.Node{
-		Uuid: vPath,
-		Path: path.Join(source.Name, vPath),
-		MetaStore: map[string]string{
-			common.MetaNamespaceDatasourceName: `"` + source.Name + `"`,
-			common.MetaNamespaceDatasourcePath: `"` + vPath + `"`,
-		},
+	handler := getRouter()
+	// Reload node, do not rely on incoming event if something has changed
+	rr, re := handler.ReadNode(ctx, &tree.ReadNodeRequest{Node: node.Clone()})
+	if re != nil {
+		return input.WithError(re), re
+	}
+	sourceNode := rr.GetNode()
+	targetNode := resp.Version.GetLocation()
+	if targetNode == nil {
+		er := errors.WithMessage(errors.NodeNotFound, "no content revision location found")
+		log.TasksLogger(ctx).Error("version.GetLocation is empty", zap.Any("version", resp.Version))
+		return input.WithError(er), er
 	}
 
-	written, err := getRouter(c.GetRuntimeContext()).CopyObject(ctx, sourceNode, targetNode, &models.CopyRequestData{})
+	objectInfo, err := handler.CopyObject(ctx, sourceNode, targetNode, &models.CopyRequestData{})
 	if err != nil {
-		err = errors.Wrap(err, fmt.Sprintf("Copying %s -> %s", sourceNode.GetPath(), targetNode.GetUuid()))
+		err = errors.WithMessage(err, fmt.Sprintf("Copying %s -> %s", sourceNode.GetPath(), targetNode.GetUuid()))
 		return input.WithError(err), err
 	}
 
@@ -155,10 +161,17 @@ func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChann
 	log.TasksLogger(ctx).Info(T("Job.Version.StatusFile", resp.Version))
 	output.AppendOutput(&jobs.ActionOutput{Success: true})
 
-	if written > 0 {
+	if objectInfo.Size > 0 {
 		storedVersion := resp.Version
-		storedVersion.Location = targetNode
-		response, err2 := versionClient.StoreVersion(ctx, &tree.StoreVersionRequest{Node: node, Version: storedVersion})
+		storedVersion.Location = targetNode.Clone()
+		if h := node.GetStringMeta(common.MetaNamespaceHash); h != "" {
+			storedVersion.ContentHash = h
+			storedVersion.Location.MustSetMeta(common.MetaNamespaceHash, h)
+		}
+		response, err2 := versionClient.StoreVersion(ctx, &tree.StoreVersionRequest{
+			Node:    node,
+			Version: storedVersion,
+		})
 		if err2 != nil {
 			return input.WithError(err2), err2
 		}
@@ -166,7 +179,7 @@ func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChann
 		output.AppendOutput(&jobs.ActionOutput{Success: true})
 		ctx = nodes.WithBranchInfo(ctx, "in", branchInfo)
 		for _, version := range response.PruneVersions {
-			_, errDel := getRouter(c.GetRuntimeContext()).DeleteNode(ctx, &tree.DeleteNodeRequest{Node: version.GetLocation()})
+			_, errDel := handler.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: version.GetLocation()})
 			if errDel != nil {
 				return input.WithError(errDel), errDel
 			}
@@ -177,7 +190,7 @@ func (c *VersionAction) Run(ctx context.Context, channels *actions.RunnableChann
 		}
 	}
 
-	log.Logger(ctx).Debug("[VERSIONING] End", zap.Error(err), zap.Int64("written", written))
+	log.Logger(ctx).Debug("[VERSIONING] End", zap.Error(err), zap.Int64("written", objectInfo.Size))
 
 	return output, nil
 }

@@ -24,30 +24,25 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
+	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/scheduler/actions"
-	"github.com/pydio/cells/v4/scheduler/actions/tools"
-	"github.com/pydio/cells/v4/scheduler/lang"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/scheduler/actions"
+	"github.com/pydio/cells/v5/scheduler/actions/tools"
+	"github.com/pydio/cells/v5/scheduler/lang"
 )
 
 var (
@@ -66,7 +61,7 @@ func (c *CopyMoveAction) GetDescription(_ ...string) actions.ActionDescription {
 	return actions.ActionDescription{
 		ID:                copyMoveActionName,
 		Label:             "Copy/Move",
-		Icon:              "folder-move",
+		Icon:              "file-move",
 		Category:          actions.ActionCategoryTree,
 		Description:       "Recursively copy or move files or folders passed in input",
 		InputDescription:  "Single-selection of a file or a folder to process",
@@ -76,7 +71,7 @@ func (c *CopyMoveAction) GetDescription(_ ...string) actions.ActionDescription {
 	}
 }
 
-func (c *CopyMoveAction) GetParametersForm() *forms.Form {
+func (c *CopyMoveAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -134,15 +129,15 @@ func (c *CopyMoveAction) ProvidesProgress() bool {
 }
 
 // Init passes parameters to the action
-func (c *CopyMoveAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *CopyMoveAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	if action.Parameters == nil {
-		return errors.InternalServerError(common.ServiceJobs, "Could not find parameters for CopyMove action")
+		return errors.WithMessage(errors.InvalidParameters, "Could not find parameters for CopyMove action")
 	}
 	var tOk bool
 	c.targetPlaceholder, tOk = action.Parameters["target"]
 	if !tOk {
-		return errors.InternalServerError(common.ServiceJobs, "Could not find parameters for CopyMove action")
+		return errors.WithMessage(errors.InvalidParameters, "Could not find parameters for CopyMove action")
 	}
 	if actionType, ok := action.Parameters["type"]; ok && actionType == "move" {
 		c.move = true
@@ -160,13 +155,13 @@ func (c *CopyMoveAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (c *CopyMoveAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *CopyMoveAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil // Ignore
 	}
 	sourceNode := input.Nodes[0]
-	T := lang.Bundle().GetTranslationFunc(i18n.UserLanguageFromContext(ctx, config.Get(), true))
+	T := lang.Bundle().T(languages.UserLanguageFromContext(ctx, true))
 
 	targetNode := &tree.Node{
 		Path: jobs.EvaluateFieldStr(ctx, input, c.targetPlaceholder),
@@ -185,92 +180,92 @@ func (c *CopyMoveAction) Run(ctx context.Context, channels *actions.RunnableChan
 	}
 	ctx = c2
 
-	// Handle already existing
-	c.suffixPathIfNecessary(ctx, cli, targetNode)
-
 	readR, readE := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: sourceNode})
 	if readE != nil {
-		log.Logger(ctx).Error("Read Source", zap.Error(readE))
+		log.Logger(ctx).Error("Read Source", sourceNode.Zap("source"), zap.Error(readE))
 		return input.WithError(readE), readE
 	}
 	sourceNode = readR.Node
-	output := input
+
+	// Handle already existing - Feed with parent folder children locks
+	var childrenLocks []string
+	if parentResp, er := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: path.Dir(targetNode.Path)}}); er == nil && !nodes.IsUnitTestEnv {
+		if cl, err := permissions.GetChildrenLocks(ctx, parentResp.GetNode()); err != nil {
+			return input.WithError(err), nil
+		} else {
+			childrenLocks = append(childrenLocks, cl...)
+		}
+	}
+	if er := nodes.SuffixPathIfNecessary(ctx, cli, targetNode, !sourceNode.IsLeaf(), childrenLocks...); er != nil {
+		return input.WithError(er), er
+	}
+
+	output := input.Clone()
 
 	if e := nodes.CopyMoveNodes(ctx, cli, sourceNode, targetNode, c.move, true, channels.StatusMsg, channels.Progress, T); e != nil {
 		output = output.WithError(e)
 		return output, e
 	}
 
-	if c.move {
+	if c.move && path.Dir(sourceNode.GetPath()) == path.Dir(targetNode.GetPath()) {
+		log.TasksLogger(ctx).Info(fmt.Sprintf("Successfully renamed %s to %s", sourceNode.GetPath(), targetNode.GetPath()))
+		log.Auditer(ctx).Info(
+			fmt.Sprintf("Renamed [%s] to [%s]", sourceNode.GetPath(), targetNode.GetPath()),
+			log.GetAuditId(common.AuditNodeUpdatePath),
+			sourceNode.Zap("source"),
+			targetNode.Zap("target"),
+		)
+	} else if c.move {
 		log.TasksLogger(ctx).Info(fmt.Sprintf("Successfully moved %s to %s", sourceNode.GetPath(), targetNode.GetPath()))
+		log.Auditer(ctx).Info(
+			fmt.Sprintf("Moved [%s] to [%s]", sourceNode.GetPath(), targetNode.GetPath()),
+			log.GetAuditId(common.AuditNodeUpdatePath),
+			sourceNode.Zap("source"),
+			targetNode.Zap("target"),
+		)
 	} else {
 		log.TasksLogger(ctx).Info(fmt.Sprintf("Successfully copied %s to %s", sourceNode.GetPath(), targetNode.GetPath()))
+		log.Auditer(ctx).Info(
+			fmt.Sprintf("Copied [%s] to [%s]", sourceNode.GetPath(), targetNode.GetPath()),
+			log.GetAuditId(common.AuditNodeCreate),
+			sourceNode.Zap("source"),
+			targetNode.Zap("target"),
+			sourceNode.ZapSize(),
+		)
 	}
-	output = output.WithNode(targetNode)
+	// Reload targetNode now
+	if nodes.IsUnitTestEnv {
+		output = output.WithNode(targetNode)
+	} else {
+		var isFlat bool
+		if router, ok := cli.(nodes.Client); ok {
+			if b, err := router.BranchInfoForNode(ctx, sourceNode); err == nil {
+				isFlat = b.FlatStorage
+			} else {
+				return input.WithError(err), err
+			}
+		}
+		updateMovedNode := func() error {
+			if r2, er := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: targetNode}); er != nil {
+				return er
+			} else {
+				output = output.WithNode(r2.GetNode())
+			}
+			return nil
+		}
+		var err error
+		if !isFlat {
+			err = std.Retry(ctx, updateMovedNode, 1*time.Second, 10*time.Second)
+		} else {
+			err = updateMovedNode()
+		}
+		if err != nil {
+			return input.WithError(err), err
+		}
+	}
 	output.AppendOutput(&jobs.ActionOutput{
 		Success: true,
 	})
 	return output, nil
 
-}
-
-func (c *CopyMoveAction) suffixPathIfNecessary(ctx context.Context, cli nodes.Handler, targetNode *tree.Node) {
-	// Look for registered child locks : children that are currently in creation
-	pNode := &tree.Node{Path: path.Dir(targetNode.Path)}
-	compares := make(map[string]struct{})
-
-	if r, e := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: pNode}); e == nil && !nodes.IsUnitTestEnv {
-		pNode = r.GetNode()
-		aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(c.GetRuntimeContext(), common.ServiceAcl))
-		q, _ := anypb.New(&idm.ACLSingleQuery{
-			Actions: []*idm.ACLAction{{Name: permissions.AclChildLock.Name + ":*"}},
-			NodeIDs: []string{pNode.GetUuid()},
-		})
-		if st, e := aclClient.SearchACL(ctx, &idm.SearchACLRequest{Query: &service.Query{SubQueries: []*anypb.Any{q}}}); e == nil {
-			defer st.CloseSend()
-			for {
-				r, er := st.Recv()
-				if er != nil {
-					break
-				}
-				aName := r.GetACL().GetAction().GetName()
-				aName = strings.TrimPrefix(aName, permissions.AclChildLock.Name+":")
-				log.Logger(ctx).Info("-- SuffixPath : adding value from ChildLock " + aName)
-				compares[strings.ToLower(aName)] = struct{}{}
-			}
-		}
-	}
-
-	//t := time.Now()
-	searchNode := pNode.Clone()
-	ext := path.Ext(targetNode.Path)
-	noExt := strings.TrimSuffix(targetNode.Path, ext)
-	noExtBaseQuoted := regexp.QuoteMeta(path.Base(noExt))
-
-	// List basenames with regexp "(?i)^(toto-[[:digit:]]*|toto).txt$" to look for same name or same base-DIGIT.ext (case-insensitive)
-	searchNode.MustSetMeta(tree.MetaFilterForceGrep, "(?i)^("+noExtBaseQuoted+"\\-[[:digit:]]*|"+noExtBaseQuoted+")"+ext+"$")
-	listReq := &tree.ListNodesRequest{Node: searchNode, Recursive: false}
-	cli.ListNodesWithCallback(ctx, listReq, func(ctx context.Context, node *tree.Node, err error) error {
-		if node.Path == searchNode.Path {
-			return nil
-		}
-		basename := strings.ToLower(path.Base(node.Path))
-		compares[basename] = struct{}{}
-		return nil
-	}, true)
-	//fmt.Println("TOOK", time.Now().Sub(t), compares)
-	exists := func(node *tree.Node) bool {
-		_, ok := compares[strings.ToLower(path.Base(node.Path))]
-		return ok
-	}
-	i := 1
-	for {
-		if exists(targetNode) {
-			targetNode.Path = fmt.Sprintf("%s-%d%s", noExt, i, ext)
-			targetNode.MustSetMeta(common.MetaNamespaceNodeName, path.Base(targetNode.Path))
-			i++
-		} else {
-			break
-		}
-	}
 }

@@ -31,14 +31,13 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/service/errors"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -46,7 +45,6 @@ var (
 )
 
 type RpcAction struct {
-	common.RuntimeHolder
 	ServiceName string
 	MethodName  string
 	JsonRequest string
@@ -59,7 +57,7 @@ func (c *RpcAction) GetDescription(lang ...string) actions.ActionDescription {
 		ID:              rpcActionName,
 		Label:           "gRPC Request",
 		Category:        actions.ActionCategoryCmd,
-		Icon:            "code-braces",
+		Icon:            "code-braces-box",
 		Description:     "Perform a valid JSON-encoded call to any micro-service",
 		SummaryTemplate: "",
 		HasForm:         true,
@@ -67,7 +65,7 @@ func (c *RpcAction) GetDescription(lang ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (c *RpcAction) GetParametersForm() *forms.Form {
+func (c *RpcAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -117,11 +115,11 @@ func (c *RpcAction) GetName() string {
 }
 
 // Init passes parameters
-func (c *RpcAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *RpcAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	c.ServiceName = action.Parameters["service"]
 	c.MethodName = action.Parameters["method"]
 	if c.ServiceName == "" || c.MethodName == "" {
-		return errors.BadRequest(common.ServiceJobs, "Missing parameters for RPC Action")
+		return errors.WithMessage(errors.InvalidParameters, "Missing parameters for RPC Action")
 	}
 	if jsonParams, o := action.Parameters["request"]; o {
 		c.JsonRequest = jsonParams
@@ -135,7 +133,7 @@ func (c *RpcAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run perform actual action code
-func (c *RpcAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *RpcAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	var jsonParams interface{}
 	if e := json.Unmarshal([]byte(jobs.EvaluateFieldStr(ctx, input, c.JsonRequest)), &jsonParams); e != nil {
@@ -187,11 +185,11 @@ func (c *RpcAction) Run(ctx context.Context, channels *actions.RunnableChannels,
 
 	}
 	if methodDescriptor == nil {
-		er := fmt.Errorf("cannot find corresponding service/method for " + methodName)
+		er := fmt.Errorf("cannot find corresponding service/method for %s", methodName)
 		return input.WithError(er), er
 	}
 	if methodDescriptor.IsStreamingClient() {
-		er := fmt.Errorf("StreamingClient is not supported in this action")
+		er := fmt.Errorf("StreamingClient is not supported in this action %s", c.GetName())
 		return input.WithError(er), er
 	}
 
@@ -205,8 +203,8 @@ func (c *RpcAction) Run(ctx context.Context, channels *actions.RunnableChannels,
 		return input.WithError(e), e
 	}
 
-	output := input
-	conn := grpc.GetClientConnFromCtx(c.GetRuntimeContext(), serviceName)
+	output := input.Clone()
+	conn := grpc.ResolveConn(ctx, serviceName)
 	if methodDescriptor.IsStreamingServer() {
 
 		cStream, e := conn.NewStream(ctx, &grpc2.StreamDesc{ServerStreams: true}, methodSendName, grpc2.WaitForReady(false))
@@ -227,8 +225,11 @@ func (c *RpcAction) Run(ctx context.Context, channels *actions.RunnableChannels,
 				marshaledResponses = append(marshaledResponses, string(marshaled))
 			}
 		}()
-		cStream.SendMsg(request)
-		cStream.CloseSend()
+		er := cStream.SendMsg(request)
+		if er != nil {
+			log.TasksLogger(ctx).Error("Failed calling SendMsg "+er.Error(), zap.String("serviceName", serviceName), zap.String("methodName", methodSendName), zap.Any("request", request))
+		}
+		_ = cStream.CloseSend()
 		<-done
 		jsonData := []byte("[" + strings.Join(marshaledResponses, ",") + "]")
 		output.AppendOutput(&jobs.ActionOutput{

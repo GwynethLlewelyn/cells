@@ -32,16 +32,16 @@ import (
 	"github.com/gobwas/glob"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/sync/model"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 // TreeNode builds a Merkle Tree but with N children and the ability
 // to compute the COLLECTION Nodes hashes to detect changes in branches more rapidly
 type TreeNode struct {
-	tree.Node
+	tree.N
 	sync.Mutex
 	children     map[string]*TreeNode
 	childrenKeys []string
@@ -64,24 +64,21 @@ type TreeNode struct {
 // When it comes across a LEAF without Etag value, it asks the source to recompute it in a
 // parallel fashion with throttling (max 15 at the same time).  At the end of the operation,
 // the tree should be fully loaded with all LEAF etags (but not COLL etags).
-func TreeNodeFromSource(source model.PathSyncSource, root string, ignores []glob.Glob, includeMetas []glob.Glob, status ...chan model.Status) (*TreeNode, error) {
+func TreeNodeFromSource(ctx context.Context, source model.PathSyncSource, root string, ignores []glob.Glob, includeMetas []glob.Glob, status ...chan model.Status) (*TreeNode, error) {
 	var statusChan chan model.Status
 	if len(status) > 0 {
 		statusChan = status[0]
 	}
-	rootNode := NewTreeNode(&tree.Node{Path: "/", Etag: "-1"})
+	rootNode := NewTreeNode(tree.LightNode(tree.NodeType_COLLECTION, "", "/", "-1", 0, 0, 0))
 	dirs := map[string]*TreeNode{".": rootNode}
 	crtRoot := rootNode
 	// Create branch for root
 	if len(strings.Trim(root, "/")) > 0 {
 		for _, part := range strings.Split(strings.Trim(root, "/"), "/") {
-			f := NewTreeNode(&tree.Node{
-				Path: path.Join(strings.TrimLeft(crtRoot.Path, "/"), part),
-				Etag: "-1",
-				Type: tree.NodeType_COLLECTION,
-			})
+			node := tree.LightNode(tree.NodeType_COLLECTION, "", path.Join(strings.TrimLeft(crtRoot.GetPath(), "/"), part), "-1", 0, 0, 0)
+			f := NewTreeNode(node)
 			crtRoot.AddChild(f)
-			dirs[f.Path] = f
+			dirs[f.GetPath()] = f
 			crtRoot = f
 		}
 	}
@@ -89,8 +86,12 @@ func TreeNodeFromSource(source model.PathSyncSource, root string, ignores []glob
 	throttle := make(chan struct{}, 15)
 	checksumProvider, isCsProvider := source.(model.ChecksumProvider)
 	uri := source.GetEndpointInfo().URI
+	ignoreMatcher := model.IgnoreMatcher(ignores...)
 
-	err := source.Walk(func(p string, node *tree.Node, err error) {
+	err := source.Walk(ctx, func(p string, node tree.N, err error) error {
+		if cancelled := ctx.Err(); cancelled != nil {
+			return cancelled
+		}
 		if statusChan != nil {
 			defer func() {
 				s := model.NewProcessingStatus(fmt.Sprintf("Indexing node %s", p)).SetEndpoint(uri).SetProgress(1, true).SetNode(node)
@@ -100,15 +101,15 @@ func TreeNodeFromSource(source model.PathSyncSource, root string, ignores []glob
 				statusChan <- s
 			}()
 		}
-		if model.IsIgnoredFile(p, ignores...) || len(p) == 0 || p == "/" {
-			return
+		if len(p) == 0 || p == "/" || ignoreMatcher(p) {
+			return nil
 		}
-		//log.Logger(context.Background()).Info("Walking Node", node.Zap(), zap.String("endpoint", source.GetEndpointInfo().URI))
+		//log.Logger(context.Background()).Info("Walking N", node.Zap(), zap.String("endpoint", source.GetEndpointInfo().URI))
 		t := NewTreeNode(node)
 		parent, ok := dirs[t.ParentPath()]
 		if !ok {
-			log.Logger(context.Background()).Error("Cannot find parent path for node, this is not normal - skipping node!", node.ZapPath())
-			return
+			log.Logger(ctx).Error("Cannot find parent path for node, this is not normal - skipping node!", node.ZapPath())
+			return nil
 		}
 		if model.NodeRequiresChecksum(node) && isCsProvider {
 			wg.Add(1)
@@ -121,8 +122,8 @@ func TreeNodeFromSource(source model.PathSyncSource, root string, ignores []glob
 				if statusChan != nil {
 					statusChan <- model.NewProcessingStatus(fmt.Sprintf("Computing hash for %s", p)).SetEndpoint(uri).SetNode(node)
 				}
-				if e := checksumProvider.ComputeChecksum(node); e != nil {
-					log.Logger(context.Background()).Error("Cannot compute checksum for "+node.Path, zap.Error(e))
+				if e := checksumProvider.ComputeChecksum(ctx, node); e != nil {
+					log.Logger(ctx).Error("Skipping checksum on error for "+node.GetPath(), zap.Error(e))
 					if statusChan != nil {
 						statusChan <- model.NewProcessingStatus(fmt.Sprintf("Could not compute hash for %s", p)).SetEndpoint(uri).SetNode(node).SetError(e)
 					}
@@ -138,6 +139,7 @@ func TreeNodeFromSource(source model.PathSyncSource, root string, ignores []glob
 			}
 			addMetadataAsChildNodes(t, includeMetas)
 		}
+		return nil
 	}, root, true)
 	wg.Wait()
 
@@ -145,15 +147,15 @@ func TreeNodeFromSource(source model.PathSyncSource, root string, ignores []glob
 }
 
 func NewTree() *TreeNode {
-	return NewTreeNode(&tree.Node{Path: "", Etag: "-1"})
+	return NewTreeNode(tree.LightNode(tree.NodeType_UNKNOWN, "", "", "-1", 0, 0, 0))
 }
 
-// NewTreeNode creates a new node from a tree.Node. Can be a root, a COLL or a LEAF.
-func NewTreeNode(n *tree.Node) *TreeNode {
+// NewTreeNode creates a new node from a tree.N. Can be a root, a COLL or a LEAF.
+func NewTreeNode(n tree.N) *TreeNode {
 	tN := &TreeNode{
+		N:        n,
 		children: make(map[string]*TreeNode),
 	}
-	tN.Node = *n
 	return tN
 }
 
@@ -165,9 +167,9 @@ func (t *TreeNode) GetCursor() *ChildrenCursor {
 	}
 }
 
-// Enqueue recursively appends al tree.Node and the children's tree.Node to a slice
-func (t *TreeNode) Enqueue(nodes []*tree.Node) []*tree.Node {
-	nodes = append(nodes, &t.Node)
+// Enqueue recursively appends al tree.N and the children's tree.N to a slice
+func (t *TreeNode) Enqueue(nodes []tree.N) []tree.N {
+	nodes = append(nodes, t.N)
 	if !t.IsLeaf() {
 		for _, c := range t.SortedChildren() {
 			nodes = c.Enqueue(nodes)
@@ -185,6 +187,7 @@ func (t *TreeNode) SortedChildren() []*TreeNode {
 	t.Lock()
 	defer t.Unlock()
 	sort.Strings(t.childrenKeys)
+	t.sorted = make([]*TreeNode, 0, len(t.childrenKeys))
 	for _, k := range t.childrenKeys {
 		t.sorted = append(t.sorted, t.children[k])
 	}
@@ -205,7 +208,7 @@ func (t *TreeNode) PrintTree() string {
 	if len(ops) > 0 {
 		op = "\t\t ** " + strings.Join(ops, "|")
 	}
-	s := fmt.Sprintf(strings.Repeat("  ", level) + "- " + t.Label() + "\t\t" + t.GetHash() + op + "\n")
+	s := fmt.Sprint(strings.Repeat("  ", level) + "- " + t.Label() + "\t\t" + t.GetHash() + op + "\n")
 	for _, c := range t.SortedChildren() {
 		s += c.PrintTree()
 	}
@@ -227,41 +230,41 @@ func (t *TreeNode) ClearChildren() {
 	t.Lock()
 	t.children = make(map[string]*TreeNode)
 	t.sorted = []*TreeNode{}
-	t.childrenKeys = []string{}
+	t.childrenKeys = make([]string, 0, 100)
 	t.Unlock()
 }
 
 // GetLevel computes the current level of this node (depth)
 func (t *TreeNode) GetLevel() int {
-	return len(strings.Split(strings.Trim(t.Path, "/"), "/"))
+	return len(strings.Split(strings.Trim(t.GetPath(), "/"), "/"))
 }
 
 // ParentPath returns the parent Dir path
 func (t *TreeNode) ParentPath() string {
-	p := strings.Trim(t.Path, "/")
+	p := strings.Trim(t.GetPath(), "/")
 	return path.Dir(p)
 }
 
 // Label returns the basename of the path
 func (t *TreeNode) Label() string {
-	p := strings.Trim(t.Path, "/")
+	p := strings.Trim(t.GetPath(), "/")
 	return path.Base(p)
 }
 
-// GetHash returns the Etag of the node. For leaf it should be available,
+// GetHash returns the Etag of the node. For leaf, it should be available,
 // for Folders if it is not already computed, it will compute an etag from
 // the children recursively, using their name and Etag.
 func (t *TreeNode) GetHash() string {
-	if t.Type == NodeType_METADATA {
-		return t.Etag
+	if t.GetType() == NodeType_METADATA {
+		return t.GetEtag()
 	} else if t.IsLeaf() {
 		// append t.Etag and metadata
 		sorted := t.SortedChildren()
 		if len(sorted) == 0 {
-			return t.Etag
+			return t.GetEtag()
 		} else {
 			h := md5.New()
-			h.Write([]byte(t.Etag))
+			h.Write([]byte(t.GetEtag()))
 			for _, c := range t.SortedChildren() {
 				h.Write([]byte(c.Label() + c.GetHash()))
 			}
@@ -269,15 +272,15 @@ func (t *TreeNode) GetHash() string {
 		}
 	} else {
 		// Now Collections
-		if t.Etag != "-1" && t.Etag != "" {
-			return t.Etag
+		if t.GetEtag() != "-1" && t.GetEtag() != "" {
+			return t.GetEtag()
 		}
 		h := md5.New()
 		for _, c := range t.SortedChildren() {
 			h.Write([]byte(c.Label() + c.GetHash()))
 		}
-		t.Etag = fmt.Sprintf("%x", h.Sum(nil))
-		return t.Etag
+		t.SetEtag(fmt.Sprintf("%x", h.Sum(nil)))
+		return t.GetEtag()
 	}
 }
 
@@ -297,7 +300,7 @@ func (t *TreeNode) createNodeDeep(p string) *TreeNode {
 		if c, o := crtParent.children[childPath]; o {
 			crtParent = c
 		} else {
-			n := NewTreeNode(&tree.Node{Path: childPath})
+			n := NewTreeNode(tree.LightNode(tree.NodeType_UNKNOWN, "", childPath, "", 0, 0, 0))
 			crtParent.AddChild(n)
 			crtParent = n
 		}
@@ -319,11 +322,11 @@ func (t *TreeNode) ChildByPath(p string) *TreeNode {
 	if p == "" {
 		p = "/"
 	}
-	if p == t.Path {
+	if p == t.GetPath() {
 		return t
 	}
 	for _, c := range t.SortedChildren() {
-		if strings.HasPrefix(p, c.Path) {
+		if strings.HasPrefix(p, c.GetPath()) {
 			return c.ChildByPath(p)
 		}
 	}
@@ -349,8 +352,8 @@ func (c *ChildrenCursor) Next() *TreeNode {
 // MarshalJSON serializes specific fields for output to JSON
 func (t *TreeNode) MarshalJSON() ([]byte, error) {
 	data := map[string]interface{}{
-		"Base": path.Base(t.Node.Path),
-		"Node": t.Node,
+		"Base": path.Base(t.GetPath()),
+		"Node": t.N,
 	}
 	if len(t.children) > 0 {
 		data["Children"] = t.SortedChildren()

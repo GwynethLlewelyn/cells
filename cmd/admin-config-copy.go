@@ -21,16 +21,17 @@
 package cmd
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"os"
 	"time"
 
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/config/revisions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/revisions"
 )
 
 var (
@@ -61,6 +62,9 @@ EXAMPLE
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
+		if configCopyFromURL == "" || configCopyToURL == "" {
+			return errors.New("no arguments given")
+		}
 		from, er := config.OpenStore(ctx, configCopyFromURL)
 		if er != nil {
 			return er
@@ -74,12 +78,12 @@ EXAMPLE
 			if revProvider, ok := from.(config.RevisionsProvider); ok {
 				from, versionsFrom = revProvider.AsRevisionsStore()
 			} else {
-				return fmt.Errorf("source config is not a RevisionsProvider")
+				return errors.New("source config is not a RevisionsProvider")
 			}
 			if revProvider, ok := to.(config.RevisionsProvider); ok {
 				to, _ = revProvider.AsRevisionsStore()
 			} else {
-				return fmt.Errorf("target config is not a RevisionsProvider")
+				return errors.New("target config is not a RevisionsProvider")
 			}
 			vv, er := versionsFrom.List(0, math.MaxUint64)
 			if er != nil {
@@ -93,24 +97,26 @@ EXAMPLE
 				if er := to.Save(v.User, v.Log); er != nil {
 					return er
 				}
-				cmd.Println("Copied values for version", v.Id, v.Log)
+				cmd.Println(promptui.IconGood+"Copied values for version", v.Id, v.Log)
 			}
 
 		} else {
 
-			full := from.Get()
-			if er := to.Set(full); er != nil {
-				return er
+			m := from.Val().Map()
+			for k, v := range m {
+				if er := to.Val(k).Set(v); er != nil {
+					return er
+				}
 			}
+
 			if er := to.Save(common.PydioSystemUsername, "Copied config from "+configCopyFromURL); er != nil {
 				return er
 			}
-			cmd.Println("Copied all values")
+			cmd.Println(promptui.IconGood + "\033[1m Copied all values\033[0m")
 		}
 		return nil
 	},
 	PostRun: func(cmd *cobra.Command, args []string) {
-		cmd.Println("Delaying exit to make sure write operations are committed.")
 		<-time.After(1 * time.Second)
 	},
 }

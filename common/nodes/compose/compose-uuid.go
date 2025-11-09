@@ -21,37 +21,33 @@
 package compose
 
 import (
-	"context"
-
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/nodes/core"
-	"github.com/pydio/cells/v4/common/nodes/encryption"
-	"github.com/pydio/cells/v4/common/nodes/events"
-	"github.com/pydio/cells/v4/common/nodes/put"
-	"github.com/pydio/cells/v4/common/nodes/uuid"
-	"github.com/pydio/cells/v4/common/nodes/version"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/nodes/core"
+	"github.com/pydio/cells/v5/common/nodes/encryption"
+	"github.com/pydio/cells/v5/common/nodes/events"
+	"github.com/pydio/cells/v5/common/nodes/put"
+	"github.com/pydio/cells/v5/common/nodes/uuid"
+	"github.com/pydio/cells/v5/common/nodes/version"
 )
 
-func UuidClient(ctx context.Context, oo ...nodes.Option) nodes.Client {
-	oo = append(oo, nodes.WithContext(ctx))
+func UuidClient(oo ...nodes.Option) nodes.Client {
 	return NewClient(uuidComposer(oo...)...)
 }
 
 func uuidComposer(oo ...nodes.Option) []nodes.Option {
 	return append(oo,
-		nodes.WithCore(func(pool nodes.SourcesPool) nodes.Handler {
-			exe := &core.Executor{}
-			exe.SetClientsPool(pool)
-			return exe
-		}),
+		nodes.WithCore(&core.Executor{}),
+		nodes.WithTracer("UuidClient", 2),
 		acl.WithAccessList(),
 		uuid.WithWorkspace(),
 		uuid.WithDatasource(),
 		events.WithAudit(),
 		acl.WithFilter(),
 		//events.WithRead(), why not?
+		put.WithJobsDynamicMiddlewares(),
 		put.WithPutInterceptor(),
+		put.WithHashInterceptor(),
 		acl.WithLock(),
 		put.WithUploadLimiter(),
 		acl.WithContentLockFilter(),
@@ -60,5 +56,6 @@ func uuidComposer(oo ...nodes.Option) []nodes.Option {
 		version.WithVersions(),
 		encryption.WithEncryption(),
 		core.WithFlatInterceptor(),
+		core.WithStructInterceptor(),
 	)
 }

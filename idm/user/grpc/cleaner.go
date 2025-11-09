@@ -23,25 +23,22 @@ package grpc
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/idm/user"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/idm/user"
 )
 
-// RolesCleaner listen for roles deletion and clear the users accordingly
-type RolesCleaner struct {
-	Dao user.DAO
-}
+func HandleClean(ctx context.Context, msg *idm.ChangeEvent) error {
 
-func (c *RolesCleaner) Handle(ctx context.Context, msg *idm.ChangeEvent) error {
+	dao, err := manager.Resolve[user.DAO](ctx)
+	if err != nil {
+		return err
+	}
 
 	if msg.Type == idm.ChangeEventType_DELETE && msg.Role != nil {
-
-		return c.Dao.CleanRole(msg.Role.Uuid)
-
+		return dao.CleanRole(ctx, msg.Role.Uuid)
 	} else if msg.Type == idm.ChangeEventType_LOGIN && msg.User != nil {
-
-		return c.Dao.TouchUser(msg.User.Uuid)
-
+		return dao.TouchUser(ctx, msg.User.Uuid)
 	}
 
 	return nil

@@ -23,6 +23,15 @@
   "Jobs.Default.ArchiveJobs": {
     "other": "Archiviazione automatica dei servizi modificati"
   },
+  "Jobs.Default.CleanUserData": {
+    "other": "Pulisci o trasferisci i dati utente durante la cancellazione"
+  },
+  "Jobs.Default.CleanOrphanFiles": {
+    "other": "Pulire i file orfani dopo 24h"
+  },
+  "Jobs.Default.CleanExpiredACLs": {
+    "other": "Pulire ACL scaduti dopo 10 giorni"
+  },
   "Jobs.User.Compress": {
     "other": "Compressione della selezione..."
   },
@@ -54,7 +63,7 @@
     "other": "Spostamento nel cestino in background..."
   },
   "Jobs.User.ResyncDS": {
-    "other": "Reindicizzazione datasource {{.DsName}}..."
+    "other": "Sincronizzando datasource {{.DsName}}, quindi eseguendo rehash dei nuovi file"
   },
   "Jobs.User.Wget": {
     "other": "Download del file in background..."

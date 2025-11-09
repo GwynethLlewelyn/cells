@@ -21,19 +21,17 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/dustin/go-humanize"
+	humanize "github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/sync"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/sync"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 var (
@@ -60,6 +58,8 @@ EXAMPLES
 
 `,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := cmd.Context()
+
 		if cleanLogsSize == "" {
 			cmd.Println("Please provide a threshold size")
 			cmd.Help()
@@ -74,15 +74,13 @@ EXAMPLES
 			return
 		}
 
-		syncService := "pydio.grpc." + cleanLogsService
+		syncService := common.ServiceGrpcNamespace_ + cleanLogsService
 		byteSize := fmt.Sprintf("%d", b)
 
 		cmd.Printf("Sending resync command to service %s with parameter TRUNCATE/%s\n", syncService, byteSize)
 
-		cli := sync.NewSyncEndpointClient(grpc.GetClientConnFromCtx(ctx, cleanLogsService))
-		c, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		c = metadata.WithUserNameMetadata(c, common.PydioSystemUsername)
+		cli := sync.NewSyncEndpointClient(grpc.ResolveConn(ctx, cleanLogsService, longGrpcCallTimeout()))
+		c := propagator.WithUserNameMetadata(cmd.Context(), common.PydioContextUserKey, common.PydioSystemUsername)
 		resp, err := cli.TriggerResync(c, &sync.ResyncRequest{Path: "TRUNCATE/" + byteSize} /*, client.WithRetries(1)*/)
 		if err != nil {
 			cmd.Println("Truncate Failed: " + err.Error())

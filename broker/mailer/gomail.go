@@ -21,11 +21,10 @@
 package mailer
 
 import (
-	"fmt"
+	gomail "gopkg.in/gomail.v2"
 
-	"gopkg.in/gomail.v2"
-
-	"github.com/pydio/cells/v4/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/mailer"
 )
 
 // NewGomailMessage prepares a new Message to be sent.
@@ -33,7 +32,7 @@ func NewGomailMessage(email *mailer.Mail) (*gomail.Message, error) {
 
 	m := gomail.NewMessage()
 	if email.From == nil || email.From.Address == "" {
-		return nil, fmt.Errorf("cannot create gomail: no FROM address")
+		return nil, errors.New("cannot create gomail: no FROM address")
 	}
 	// FROM
 	m.SetAddressHeader("From", email.From.Address, email.From.Name)
@@ -51,7 +50,7 @@ func NewGomailMessage(email *mailer.Mail) (*gomail.Message, error) {
 		}
 	}
 	if len(to) == 0 {
-		return nil, fmt.Errorf("cannot create gomail: no recipient address")
+		return nil, errors.New("cannot create gomail: no recipient address")
 	}
 	m.SetHeader("To", to...)
 	// CC

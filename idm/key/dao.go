@@ -24,23 +24,17 @@ package key
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/proto/encryption"
-	"github.com/pydio/cells/v4/common/sql"
+	"github.com/pydio/cells/v5/common/proto/encryption"
+	"github.com/pydio/cells/v5/common/service"
 )
+
+var Drivers = service.StorageDrivers{}
 
 // DAO is a protocol for user key storing
 type DAO interface {
-	SaveKey(key *encryption.Key, version ...int) error
-	GetKey(owner string, KeyID string) (*encryption.Key, int, error)
-	ListKeys(owner string) ([]*encryption.Key, error)
-	DeleteKey(owner string, keyID string) error
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{DAO: v}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+	Migrate(ctx context.Context) error
+	SaveKey(ctx context.Context, key *encryption.Key, version ...int) error
+	GetKey(ctx context.Context, owner string, KeyID string) (*encryption.Key, int, error)
+	ListKeys(ctx context.Context, owner string) ([]*encryption.Key, error)
+	DeleteKey(ctx context.Context, owner string, keyID string) error
 }

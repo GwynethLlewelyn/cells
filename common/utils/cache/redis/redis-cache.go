@@ -22,15 +22,19 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
 	redisc "github.com/go-redis/cache/v8"
-	"github.com/go-redis/redis/v8"
+	redis "github.com/go-redis/redis/v8"
 
-	cache "github.com/pydio/cells/v4/common/utils/cache"
-	standard "github.com/pydio/cells/v4/common/utils/std"
+	"github.com/pydio/cells/v5/common/crypto"
+	cache "github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	standard "github.com/pydio/cells/v5/common/utils/std"
 )
 
 var (
@@ -55,10 +59,11 @@ type Options struct {
 
 func init() {
 	o := &URLOpener{}
-	cache.DefaultURLMux().Register(scheme, o)
+	cache_helper.RegisterCachePool(scheme, o)
+	cache_helper.RegisterCachePool(scheme+"+tls", o)
 }
 
-func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (cache.Cache, error) {
+func (o *URLOpener) Open(ctx context.Context, u *url.URL) (cache.Cache, error) {
 	opt := &Options{
 		EvictionTime: time.Minute,
 		CleanWindow:  10 * time.Minute,
@@ -68,6 +73,10 @@ func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (cache.Cache, error
 			return nil, err
 		} else {
 			opt.EvictionTime = i
+			if opt.EvictionTime < time.Second {
+				// Redis does not support TTL shorter than one second
+				opt.EvictionTime = time.Second
+			}
 		}
 	}
 	if v := u.Query().Get("cleanWindow"); v != "" {
@@ -83,7 +92,19 @@ func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (cache.Cache, error
 		namespace = standard.Randkey(16)
 	}
 
-	cli := NewClient(u)
+	var tc *tls.Config
+	if u.Scheme == "redis+tls" {
+		if tlsConfig, er := crypto.TLSConfigFromURL(u); er == nil {
+			tc = tlsConfig
+		} else {
+			return nil, fmt.Errorf("error while loading tls config for redis cache %v", er)
+		}
+	}
+
+	cli, err := NewClient(ctx, u, tc)
+	if err != nil {
+		return nil, err
+	}
 
 	mycache := redisc.New(&redisc.Options{
 		Redis:      cli,
@@ -160,6 +181,10 @@ func (q *redisCache) Reset() error {
 	return nil
 }
 
+func (q *redisCache) Exists(key string) (ok bool) {
+	return q.Cache.Exists(context.TODO(), key)
+}
+
 func (q *redisCache) KeysByPrefix(prefix string) ([]string, error) {
 	var res []string
 	cmd := q.UniversalClient.Keys(context.TODO(), q.namespace+prefix+"*")
@@ -187,6 +212,6 @@ func (q *redisCache) Iterate(it func(key string, val interface{})) error {
 	return nil
 }
 
-func (q *redisCache) Close() error {
+func (q *redisCache) Close(_ context.Context) error {
 	return q.UniversalClient.Close()
 }

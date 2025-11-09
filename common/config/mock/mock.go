@@ -21,10 +21,15 @@
 package mock
 
 import (
-	"fmt"
+	"context"
+	"sync"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/watch"
 )
 
 var json = `{
@@ -406,6 +411,18 @@ type MockStore struct {
 	configx.Values
 }
 
+func (m *MockStore) As(out any) bool {
+	return false
+}
+
+func (m *MockStore) Close(ctx context.Context) error {
+	return nil
+}
+
+func (m *MockStore) Done() <-chan struct{} {
+	return nil
+}
+
 func (m *MockStore) Lock() {
 	// noop
 }
@@ -414,7 +431,15 @@ func (m *MockStore) Unlock() {
 	// noop
 }
 
-func (m *MockStore) Watch(opts ...configx.WatchOption) (configx.Receiver, error) {
+func (m *MockStore) Reset() {}
+
+func (m *MockStore) Flush() {}
+
+func (m *MockStore) NewLocker(name string) sync.Locker {
+	return nil
+}
+
+func (m *MockStore) Watch(opts ...watch.WatchOption) (watch.Receiver, error) {
 	return &Receiver{stop: make(chan struct{}, 1)}, nil
 }
 
@@ -428,20 +453,25 @@ type Receiver struct {
 
 func (r *Receiver) Next() (interface{}, error) {
 	<-r.stop
-	return nil, fmt.Errorf("watcher closed")
+	return nil, errors.New("watcher closed")
 }
 
 func (r *Receiver) Stop() {
 	close(r.stop)
 }
 
-func RegisterMockConfig() error {
+func RegisterMockConfig(ctx context.Context) (context.Context, error) {
 	cfg := configx.New(configx.WithJSON())
 	er := cfg.Set([]byte(json))
 	if er != nil {
-		return er
+		return ctx, er
 	}
 	store := &MockStore{Values: cfg}
-	config.Register(store)
-	return nil
+
+	mockPool, _ := openurl.OpenPool[config.Store](ctx, []string{"mem://"}, func(ctx context.Context, url string) (config.Store, error) {
+		return store, nil
+	})
+
+	ctx = propagator.With(ctx, config.ContextKey, mockPool)
+	return ctx, nil
 }

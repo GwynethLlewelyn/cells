@@ -25,11 +25,12 @@ package actions
 
 import (
 	"context"
+	"io"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 type Concrete func() ConcreteAction
@@ -76,13 +77,16 @@ type ActionDescription struct {
 
 // ConcreteAction is the base interface for pydio actions. All actions must implement this interface.
 type ConcreteAction interface {
-	common.RuntimeProvider
 	// GetName returns a unique identifier
 	GetName() string
 	// Init initialize parameters
-	Init(job *jobs.Job, action *jobs.Action) error
+	Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error
 	// Run performs the actual action code
-	Run(ctx context.Context, channels *RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error)
+	Run(ctx context.Context, channels *RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error)
+}
+
+type IncomingMiddlewareAction interface {
+	HandleIncomingNode(ctx context.Context, input *tree.Node) (context.Context, *tree.Node, map[string]interface{}, error)
 }
 
 // TaskUpdaterDelegateAction Actions that implement this interface can send their status updates to a parent task
@@ -98,7 +102,7 @@ type ProgressProviderAction interface {
 // DescriptionProviderAction has a human-readable label
 type DescriptionProviderAction interface {
 	GetDescription(lang ...string) ActionDescription
-	GetParametersForm() *forms.Form
+	GetParametersForm(ctx context.Context) *forms.Form
 }
 
 // ControllableAction Actions that implement this interface can eventually be stopped and/or paused+resumed
@@ -155,4 +159,35 @@ func (r *RunnableChannels) BlockUntilResume(ctx context.Context, maxPauseTime ..
 		}
 	}()
 	return blocker
+}
+
+// WrapReader wraps a reader (or a readCloser) into an io.ReadCloser and publishes the progress on the channels.Progress
+func (r *RunnableChannels) WrapReader(readerOrCloser io.Reader, targetSize int64) io.ReadCloser {
+	return &progressReadCloser{
+		internal: readerOrCloser,
+		target:   targetSize,
+		pg:       r.Progress,
+	}
+}
+
+// Internal struct to wrap reader and monitor progress
+type progressReadCloser struct {
+	internal io.Reader
+	total    int64
+	target   int64
+	pg       chan float32
+}
+
+func (r *progressReadCloser) Read(p []byte) (n int, err error) {
+	n, err = r.internal.Read(p)
+	r.total += int64(n)
+	r.pg <- float32(float64(r.total) / float64(r.target))
+	return n, err
+}
+
+func (r *progressReadCloser) Close() error {
+	if rc, ok := r.internal.(io.ReadCloser); ok {
+		return rc.Close()
+	}
+	return nil
 }

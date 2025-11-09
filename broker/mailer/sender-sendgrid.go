@@ -24,12 +24,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sendgrid/sendgrid-go"
+	sendgrid "github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/mailer"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 // SendGrid is a passerelle to Sendgrid API. It holds the application API Key.
@@ -42,7 +43,7 @@ func (s *SendGrid) Configure(ctx context.Context, config configx.Values) error {
 	s.ApiKey = config.Val("apiKey").String()
 
 	if s.ApiKey == "" {
-		return fmt.Errorf("cannot send mail via sendgrid without a valid API key")
+		return errors.New("cannot send mail via sendgrid without a valid API key")
 	}
 
 	log.Logger(ctx).Debug("SendGrid Configured")
@@ -55,7 +56,7 @@ func (s *SendGrid) Check(ctx context.Context) error {
 }
 
 // Send performs the real code to the sendgrid API.
-func (s *SendGrid) Send(email *mailer.Mail) error {
+func (s *SendGrid) Send(ctx context.Context, email *mailer.Mail) error {
 
 	from := mail.NewEmail(email.From.Name, email.From.Address)
 	// fmt.Printf("Sendgrid from mail: %s - %s \n", from.Name, from.Address)

@@ -21,7 +21,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -29,9 +28,10 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/idm"
 )
 
 var (
@@ -73,7 +73,7 @@ EXAMPLE
 	),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if userProfileLogin == "" {
-			return fmt.Errorf("Please provide a valid username (login)")
+			return errors.New("Please provide a valid username (login)")
 		}
 
 		if userTargetProfile != "" {
@@ -101,8 +101,8 @@ EXAMPLE
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		client := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUser))
-		users, err := searchUser(context.Background(), client, userProfileLogin)
+		client := idmc.UserServiceClient(ctx)
+		users, err := searchUser(cmd.Context(), client, userProfileLogin)
 		if err != nil {
 			fmt.Printf("Cannot list users for login %s: %s", userProfileLogin, err.Error())
 		}
@@ -112,7 +112,7 @@ EXAMPLE
 				user.Attributes = make(map[string]string, 1)
 			}
 			user.Attributes["profile"] = userTargetProfile
-			if _, err := client.CreateUser(context.Background(), &idm.CreateUserRequest{
+			if _, err := client.CreateUser(cmd.Context(), &idm.CreateUserRequest{
 				User: user,
 			}); err != nil {
 				fmt.Printf("could not update profile for [%s], skipping and continuing.\n Error message: %s", user.Login, err.Error())

@@ -21,11 +21,14 @@
 package config
 
 import (
-	"github.com/pydio/cells/v4/common"
-	configx2 "github.com/pydio/cells/v4/common/utils/configx"
+	"context"
+	"github.com/pydio/cells/v5/common/utils/std"
+
+	"github.com/pydio/cells/v5/common"
+	configx2 "github.com/pydio/cells/v5/common/utils/configx"
 )
 
 // GetUpdatesConfigs gather update configs from correct location
-func GetUpdatesConfigs() configx2.Values {
-	return Get(configx2.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceUpdate))
+func GetUpdatesConfigs(ctx context.Context) configx2.Values {
+	return Get(ctx, std.FormatPath("services", common.ServiceGrpcNamespace_+common.ServiceUpdate))
 }

@@ -24,44 +24,30 @@ package key
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/proto/encryption"
-	"github.com/pydio/cells/v4/common/sql"
+	"github.com/pydio/cells/v5/common/proto/encryption"
+	"github.com/pydio/cells/v5/common/service"
 )
 
+var Drivers service.StorageDrivers
+
 type DAO interface {
-	dao.DAO
+	Migrate(ctx context.Context) error
+	ListEncryptedBlockInfo(ctx context.Context, nodeUuid string) ([]*encryption.RangedBlock, error)
+	SaveEncryptedBlockInfo(ctx context.Context, nodeUuid string, b *encryption.RangedBlock) error
+	GetEncryptedLegacyBlockInfo(ctx context.Context, nodeUuid string) (*encryption.RangedBlock, error)
+	ClearNodeEncryptedPartBlockInfo(ctx context.Context, nodeUuid string, partId int) error
+	ClearNodeEncryptedBlockInfo(ctx context.Context, nodeUuid string) error
 
-	ListEncryptedBlockInfo(nodeUuid string) (QueryResultCursor, error)
-	SaveEncryptedBlockInfo(nodeUuid string, b *RangedBlocks) error
-	GetEncryptedLegacyBlockInfo(nodeUuid string) (*RangedBlocks, error)
-	ClearNodeEncryptedPartBlockInfo(nodeUuid string, partId int) error
-	ClearNodeEncryptedBlockInfo(nodeUuid string) error
+	CopyNode(ctx context.Context, srcUuid, targetUuid string) error
 
-	CopyNode(srcUuid, targetUuid string) error
+	SaveNode(ctx context.Context, node *encryption.Node) error
+	UpgradeNodeVersion(ctx context.Context, nodeUuid string) error
+	GetNode(ctx context.Context, nodeUuid string) (*encryption.Node, error)
+	DeleteNode(ctx context.Context, nodeUuid string) error
 
-	SaveNode(node *encryption.Node) error
-	UpgradeNodeVersion(nodeUuid string) error
-	GetNode(nodeUuid string) (*encryption.Node, error)
-	DeleteNode(nodeUuid string) error
-
-	SaveNodeKey(nodeKey *encryption.NodeKey) error
-	GetNodeKey(node string, user string) (*encryption.NodeKey, error)
-	DeleteNodeKey(nodeKey *encryption.NodeKey) error
-}
-
-type QueryResultCursor interface {
-	Close() error
-	HasNext() bool
-	Next() (interface{}, error)
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{DAO: v}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+	SaveNodeKey(ctx context.Context, nodeKey *encryption.NodeKey) error
+	GetNodeKey(ctx context.Context, node string, user string) (*encryption.NodeKey, error)
+	DeleteNodeKey(ctx context.Context, nodeKey *encryption.NodeKey) error
 }
 
 type RangedBlocks struct {

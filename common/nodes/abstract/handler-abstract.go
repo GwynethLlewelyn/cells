@@ -28,10 +28,10 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type ContextWrapper func(ctx context.Context) (context.Context, error)
@@ -39,16 +39,12 @@ type ContextWrapper func(ctx context.Context) (context.Context, error)
 // Handler provides the simplest implementation of Handler and forwards
 // all calls to the Next handler
 type Handler struct {
-	Next        nodes.Handler
-	ClientsPool nodes.SourcesPool
-	RuntimeCtx  context.Context
-	CtxWrapper  ContextWrapper
+	Next       nodes.Handler
+	CtxWrapper ContextWrapper
 }
 
 func (a *Handler) AdaptOptions(h nodes.Handler, options nodes.RouterOptions) {
 	a.Next = h
-	a.RuntimeCtx = options.Context
-	a.ClientsPool = options.Pool
 }
 
 func (a *Handler) WrapContext(ctx context.Context) (context.Context, error) {
@@ -61,10 +57,6 @@ func (a *Handler) WrapContext(ctx context.Context) (context.Context, error) {
 
 func (a *Handler) SetNextHandler(h nodes.Handler) {
 	a.Next = h
-}
-
-func (a *Handler) SetClientsPool(p nodes.SourcesPool) {
-	a.ClientsPool = p
 }
 
 func (a *Handler) ExecuteWrapped(inputFilter nodes.FilterFunc, outputFilter nodes.FilterFunc, provider nodes.CallbackFunc) error {
@@ -139,18 +131,18 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 	return a.Next.GetObject(ctx, node, requestData)
 }
 
-func (a *Handler) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (a *Handler) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	ctx, err := a.WrapContext(ctx)
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 	return a.Next.PutObject(ctx, node, reader, requestData)
 }
 
-func (a *Handler) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (a *Handler) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 	ctx, err := a.WrapContext(ctx)
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 	return a.Next.CopyObject(ctx, from, to, requestData)
 }

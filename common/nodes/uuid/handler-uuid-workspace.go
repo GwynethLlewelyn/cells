@@ -28,20 +28,24 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/middleware/keys"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 func WithWorkspace() nodes.Option {
 	return func(options *nodes.RouterOptions) {
+		if options.UuidExternalPath {
+			options.Wrappers = append(options.Wrappers, newExternalPathHandler())
+		}
 		options.Wrappers = append(options.Wrappers, newWorkspaceHandler())
 	}
 }
@@ -65,7 +69,7 @@ func newWorkspaceHandler() *WorkspaceHandler {
 
 func (h *WorkspaceHandler) updateInputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 
-	if info, alreadySet := nodes.GetBranchInfo(ctx, identifier); alreadySet && info.Client != nil {
+	if info, er := nodes.GetBranchInfo(ctx, identifier); er == nil && info.Client != nil {
 		return ctx, node, nil
 	}
 
@@ -79,36 +83,17 @@ func (h *WorkspaceHandler) updateInputBranch(ctx context.Context, node *tree.Nod
 
 	accessList, ok := acl.FromContext(ctx)
 	if !ok {
-		return ctx, node, nodes.ErrCannotFindACL()
+		return ctx, node, errors.WithStack(errors.BranchInfoACLMissing)
 	}
+	abstract.VirtualResolveAll(ctx, accessList)
 
-	// Update Access List with resolved virtual nodes
-	virtualManager := abstract.GetVirtualNodesManager(h.RuntimeCtx)
-	for _, vNode := range virtualManager.ListNodes() {
-		if aclNodeMask, has := accessList.GetNodesBitmasks()[vNode.Uuid]; has {
-			if resolvedRoot, err := virtualManager.ResolveInContext(ctx, vNode, false); err == nil {
-				log.Logger(ctx).Debug("Updating Access List with resolved node Uuid", zap.Any("virtual", vNode), zap.Any("resolved", resolvedRoot))
-				accessList.ReplicateBitmask(vNode.Uuid, resolvedRoot.Uuid)
-				for _, roots := range accessList.GetWorkspacesNodes() {
-					for rootId := range roots {
-						if rootId == vNode.Uuid {
-							delete(roots, vNode.Uuid)
-							roots[resolvedRoot.Uuid] = aclNodeMask
-						}
-					}
-				}
-			}
-		}
-	}
-
-	parents, err := nodes.BuildAncestorsList(ctx, h.ClientsPool.GetTreeClient(), node)
+	parents, err := nodes.BuildAncestorsList(ctx, nodes.GetSourcesPool(ctx).GetTreeClient(), node)
 	if err != nil {
 		return ctx, node, err
 	}
 	workspaces, _ := accessList.BelongsToWorkspaces(ctx, parents...)
 	if len(workspaces) == 0 {
-		log.Logger(ctx).Debug("Node des not belong to any accessible workspace!", accessList.Zap())
-		return ctx, node, errors.Forbidden("no.workspaces.found", "Node does not belong to any accessible workspace!")
+		return ctx, node, errors.WithStack(errors.OutOfAccessibleWorkspaces)
 	}
 	// Use first workspace by default
 	branchInfo := nodes.BranchInfo{
@@ -116,10 +101,13 @@ func (h *WorkspaceHandler) updateInputBranch(ctx context.Context, node *tree.Nod
 		Workspace:     proto.Clone(workspaces[0]).(*idm.Workspace),
 	}
 	branchInfo.AncestorsList[node.Path] = parents
-	ctx = metadata.WithAdditionalMetadata(ctx, map[string]string{
-		servicecontext.CtxWorkspaceUuid: branchInfo.Workspace.UUID,
-	})
-	return nodes.WithBranchInfo(ctx, identifier, branchInfo), node, nil
+	if _, ok := propagator.CanonicalMeta(ctx, keys.CtxWorkspaceUuid); !ok {
+		ctx = propagator.WithAdditionalMetadata(ctx, map[string]string{
+			keys.CtxWorkspaceUuid: branchInfo.Workspace.UUID,
+		})
+	}
+	// Parents[0] is always the target node - Replace it now we already know its path!
+	return nodes.WithBranchInfo(ctx, identifier, branchInfo), parents[0].Clone(), nil
 }
 
 func (h *WorkspaceHandler) updateOutputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
@@ -129,7 +117,7 @@ func (h *WorkspaceHandler) updateOutputBranch(ctx context.Context, node *tree.No
 	if accessList, ok = acl.FromContext(ctx); !ok {
 		return ctx, node, nil
 	}
-	if _, ancestors, e := nodes.AncestorsListFromContext(ctx, node, identifier, h.ClientsPool, false); e == nil {
+	if _, ancestors, e := nodes.AncestorsListFromContext(ctx, node, identifier, false); e == nil {
 		out := node.Clone()
 		workspaces, wsRoots := accessList.BelongsToWorkspaces(ctx, ancestors...)
 		log.Logger(ctx).Debug("Belongs to workspaces", zap.Int("ws length", len(workspaces)), zap.Any("wsRoots", wsRoots))
@@ -146,6 +134,15 @@ func (h *WorkspaceHandler) updateOutputBranch(ctx context.Context, node *tree.No
 				log.Logger(ctx).Error("Error while computing relative path to root", zap.Error(e))
 			}
 		}
+		// Add "InsideRecycle" flag by scanning ancestors
+		for _, p := range ancestors {
+			if p.GetUuid() == node.GetUuid() {
+				continue
+			}
+			if p.GetStringMeta(common.MetaNamespaceNodeName) == common.RecycleBinName {
+				out.MustSetMeta(common.MetaNamespaceInsideRecycle, "true")
+			}
+		}
 		return ctx, out, nil
 	}
 
@@ -153,23 +150,28 @@ func (h *WorkspaceHandler) updateOutputBranch(ctx context.Context, node *tree.No
 
 }
 
-func (h *WorkspaceHandler) relativePathToWsRoot(ctx context.Context, ws *idm.Workspace, nodeFullPath string, rootNodeId string) (string, error) {
+func (h *WorkspaceHandler) relativePathToWsRoot(ctx context.Context, ws *idm.Workspace, nodeFullPath string, rootNode *tree.Node) (string, error) {
 
-	if resp, e := h.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: rootNodeId}}); e == nil {
-		rootPath := resp.Node.Path
-		if strings.HasPrefix(nodeFullPath, rootPath) {
-			relPath := strings.TrimPrefix(nodeFullPath, rootPath)
-			if len(ws.RootUUIDs) > 1 {
-				// This workspace has multiple root, prepend the fake root key
-				rootKey := h.MakeRootKey(resp.Node)
-				relPath = path.Join(rootKey, relPath)
-			}
-			return relPath, nil
+	// In case its path is not loaded
+	if rootNode.GetPath() == "" {
+		log.Logger(ctx).Warn("relativePathToWsRoot called with empty root path, reloading", rootNode.Zap())
+		if resp, e := h.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: rootNode.GetUuid()}}); e == nil {
+			rootNode = resp.GetNode()
 		} else {
-			return "", errors.NotFound("RouterUuid", "Cannot subtract paths "+nodeFullPath+" - "+rootPath)
+			return "", e
 		}
+	}
+	rootPath := rootNode.GetPath()
+	if strings.HasPrefix(nodeFullPath, rootPath) {
+		relPath := strings.TrimPrefix(nodeFullPath, rootPath)
+		if len(ws.RootUUIDs) > 1 {
+			// This workspace has multiple root, prepend the fake root key
+			rootKey := h.MakeRootKey(rootNode)
+			relPath = path.Join(rootKey, relPath)
+		}
+		return relPath, nil
 	} else {
-		return "", e
+		return "", errors.WithMessage(errors.NodeNotFound, "Cannot subtract paths "+nodeFullPath+" - "+rootPath)
 	}
 
 }

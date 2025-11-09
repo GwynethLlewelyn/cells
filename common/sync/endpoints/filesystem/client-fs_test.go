@@ -23,7 +23,6 @@ package filesystem
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
 	"fmt"
 	"io"
 	"log"
@@ -32,13 +31,16 @@ import (
 	"testing"
 
 	"github.com/rjeczalik/notify"
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/spf13/afero"
 
-	servicescommon "github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/sync/model"
+	servicescommon "github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/utils/hasher"
+	"github.com/pydio/cells/v5/common/utils/hasher/simd"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func EmptyMockedClient() *FSClient {
@@ -84,9 +86,11 @@ type MockEventInfo struct {
 func (e *MockEventInfo) Event() notify.Event {
 	return e.event
 }
+
 func (e *MockEventInfo) Path() string {
 	return e.path
 }
+
 func (e *MockEventInfo) Sys() interface{} {
 	return e.sys
 }
@@ -99,7 +103,7 @@ func TestLoadNode(t *testing.T) {
 		s, e := c.LoadNode(fsTestCtx, "/test")
 		So(s, ShouldBeNil)
 		So(e, ShouldNotBeNil)
-		So(errors.FromError(e).Code, ShouldEqual, 404)
+		So(errors.Is(e, errors.StatusNotFound), ShouldBeTrue)
 
 	})
 
@@ -110,14 +114,14 @@ func TestLoadNode(t *testing.T) {
 		So(s, ShouldNotBeNil)
 		So(e, ShouldBeNil)
 		f := strings.NewReader("my-content")
-		h := md5.New()
+		h := hasher.NewBlockHash(simd.MD5(), hasher.DefaultBlockSize)
 		if _, err := io.Copy(h, f); err != nil {
 			t.Fail()
 		}
 		testMd5 := fmt.Sprintf("%x", h.Sum(nil))
 
-		So(s.Etag, ShouldEqual, testMd5)
-		So(s.Uuid, ShouldBeEmpty)
+		So(s.GetEtag(), ShouldEqual, testMd5)
+		So(s.GetUuid(), ShouldBeEmpty)
 
 	})
 
@@ -136,7 +140,7 @@ func TestCreateFolderId(t *testing.T) {
 		var exist bool
 		exist, _ = afero.Exists(c.FS, "/folder/"+servicescommon.PydioSyncHiddenFile)
 		So(exist, ShouldBeFalse)
-		s, _ := c.readOrCreateFolderId("/folder")
+		s, _ := c.readOrCreateFolderId(fsTestCtx, "/folder")
 		So(s, ShouldNotBeNil)
 		exist, _ = afero.Exists(c.FS, "/folder/"+servicescommon.PydioSyncHiddenFile)
 		So(exist, ShouldBeTrue)
@@ -150,7 +154,7 @@ func TestCreateFolderId(t *testing.T) {
 		c := EmptyMockedClient()
 		c.FS.Mkdir("/folder", 0777)
 		afero.WriteFile(c.FS, "/folder/"+servicescommon.PydioSyncHiddenFile, []byte("unique-id"), 0777)
-		s, _ := c.readOrCreateFolderId("/folder")
+		s, _ := c.readOrCreateFolderId(fsTestCtx, "/folder")
 		So(s, ShouldEqual, "unique-id")
 
 	})
@@ -188,7 +192,7 @@ func TestCreateNode(t *testing.T) {
 		So(ce, ShouldBeNil)
 
 		s, e := c.LoadNode(fsTestCtx, "/test")
-		So(s.Uuid, ShouldEqual, "uid")
+		So(s.GetUuid(), ShouldEqual, "uid")
 
 		So(s, ShouldNotBeNil)
 		So(e, ShouldBeNil)
@@ -298,7 +302,7 @@ func TestReadNode(t *testing.T) {
 
 		c := EmptyMockedClient()
 		afero.WriteFile(c.FS, "/test", []byte("my-content"), 0777)
-		r, e := c.GetReaderOn("/test")
+		r, e := c.GetReaderOn(context.Background(), "/test")
 		So(r, ShouldNotBeNil)
 		So(e, ShouldBeNil)
 
@@ -332,32 +336,33 @@ func TestWalkFS(t *testing.T) {
 	Convey("Test walking the tree", t, func() {
 
 		c := FilledMockedClient()
-		objects := make(map[string]*tree.Node)
-		walk := func(path string, node *tree.Node, err error) {
+		objects := make(map[string]tree.N)
+		walk := func(path string, node tree.N, err error) error {
 			if err != nil {
-				log.Println("Walk Func Error ", err)
+				return err
 			}
 			if !model.IsIgnoredFile(path) {
 				objects[path] = node
 			}
+			return nil
 		}
 		wg := sync.WaitGroup{}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.Walk(walk, "/", true)
+			_ = c.Walk(nil, walk, "/", true)
 		}()
 		wg.Wait()
 
 		// Will include the root and the PydioSyncHiddenFile files
 		So(objects, ShouldHaveLength, 13)
-		So(objects["folder"].Uuid, ShouldNotBeEmpty)
-		So(objects["folder"].Etag, ShouldBeEmpty)
-		So(objects["folder"].Type, ShouldEqual, tree.NodeType_COLLECTION)
+		So(objects["folder"].GetUuid(), ShouldNotBeEmpty)
+		So(objects["folder"].GetEtag(), ShouldBeEmpty)
+		So(objects["folder"].GetType(), ShouldEqual, tree.NodeType_COLLECTION)
 
-		So(objects["file"].Uuid, ShouldBeEmpty)
-		So(objects["file"].Etag, ShouldNotBeEmpty)
-		So(objects["file"].Type, ShouldEqual, tree.NodeType_LEAF)
+		So(objects["file"].GetUuid(), ShouldBeEmpty)
+		So(objects["file"].GetEtag(), ShouldNotBeEmpty)
+		So(objects["file"].GetType(), ShouldEqual, tree.NodeType_LEAF)
 	})
 }
 
@@ -366,23 +371,26 @@ func TestWalkWithRoot(t *testing.T) {
 	Convey("Test walking the tree", t, func() {
 
 		c := FilledMockedClient()
-		objects := make(map[string]*tree.Node)
-		walk := func(path string, node *tree.Node, err error) {
+		objects := make(map[string]tree.N)
+		walk := func(path string, node tree.N, err error) error {
 			if err != nil {
-				log.Println("Walk Func Error ", err)
+				return err
 			}
 			if !model.IsIgnoredFile(path) {
 				objects[path] = node
 			}
+			return nil
 		}
 		wg := sync.WaitGroup{}
 		wg.Add(1)
+		var we error
 		go func() {
 			defer wg.Done()
-			c.Walk(walk, "folder/subfolder1", true)
+			we = c.Walk(nil, walk, "folder/subfolder1", true)
 		}()
 		wg.Wait()
 
+		So(we, ShouldBeNil)
 		// Will include the root and the PydioSyncHiddenFile files
 		So(objects, ShouldHaveLength, 2)
 	})

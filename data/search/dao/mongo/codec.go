@@ -1,21 +1,28 @@
 package mongo
 
 import (
+	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/blevesearch/bleve/v2/geo"
+	query2 "github.com/blevesearch/bleve/v2/search/query"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/x/bsonx"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/dao/mongodb"
-	"github.com/pydio/cells/v4/common/nodes/meta"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes/meta"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/storage/indexer"
+	"github.com/pydio/cells/v5/common/storage/mongodb"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/data/search"
+	"github.com/pydio/cells/v5/data/search/dao/commons"
 )
 
 const (
@@ -50,6 +57,38 @@ var staticBuckets = map[string][]map[interface{}]*tree.SearchFacet{
 	},
 }
 
+var (
+	validSortFields = map[string]string{
+		tree.MetaSortName: "basename",
+		tree.MetaSortTime: "modif_time",
+		tree.MetaSortSize: "size",
+		tree.MetaSortType: "node_type",
+	}
+)
+
+func init() {
+	search.Drivers.Register(NewMongoDAO)
+}
+
+func NewMongoDAO(ctx context.Context, v *mongodb.Indexer) search.Engine {
+	v.SetCollection(Collection)
+	v.SetCodex(&Codex{})
+	return commons.NewServer(ctx, v, createQueryCodec)
+}
+
+func FastMongoDAO(ctx context.Context, v *mongodb.Indexer) search.Engine {
+	v.SetCollection(Collection)
+	v.SetCodex(&Codex{})
+	return commons.NewServer(ctx, v, createQueryCodec, indexer.WithExpire(10*time.Millisecond))
+}
+
+func createQueryCodec(values configx.Values, metaProvider *meta.NsProvider) indexer.IndexCodex {
+	return &Codex{
+		QueryConfigs:    values,
+		QueryNsProvider: metaProvider,
+	}
+}
+
 type mongoBucket struct {
 	BucketID interface{} `bson:"_id"`
 	Count    int32       `bson:"count"`
@@ -61,6 +100,10 @@ type Codex struct {
 	QueryConfigs    configx.Values
 }
 
+func (m *Codex) RequirePreCount() bool {
+	return true
+}
+
 // Marshal does nothing here, input is already marshalled for indexing
 func (m *Codex) Marshal(input interface{}) (interface{}, error) {
 	return input, nil
@@ -70,11 +113,11 @@ func (m *Codex) Marshal(input interface{}) (interface{}, error) {
 func (m *Codex) Unmarshal(indexed interface{}) (interface{}, error) {
 	cursor, ok := indexed.(*mongo.Cursor)
 	if !ok {
-		return nil, fmt.Errorf("Codex.Unmarshal: not a mongo cursor")
+		return nil, errors.New("Codex.Unmarshal: not a mongo cursor")
 	}
 	result := &tree.IndexableNode{}
 	if e := cursor.Decode(result); e == nil {
-		return &result.Node, nil
+		return result.Node, nil
 	} else {
 		return nil, e
 	}
@@ -134,23 +177,152 @@ func (m *Codex) FlushCustomFacets() []interface{} {
 	return nil
 }
 
-// BuildQuery builds a mongo filter plus an Aggregation Pipeline to be performed for computing facets
-func (m *Codex) BuildQuery(query interface{}, offset, limit int32) (interface{}, interface{}, error) {
+// BuildQueryOptions overrides basic range options with sortFields data
+func (m *Codex) BuildQueryOptions(_ interface{}, offset, limit int32, sortFields string, sortDesc bool) (interface{}, error) {
+	opts := &options.FindOptions{}
+	if limit > 0 {
+		l64 := int64(limit)
+		opts.Limit = &l64
+	}
+	if offset > 0 {
+		o64 := int64(offset)
+		opts.Skip = &o64
+	}
+	if sortFields != "" {
+		// Example: opts{Sort: bson.D{{"ts", -1}, {"nano", -1}}}
+		nss := m.QueryNsProvider.Namespaces()
+		var sorts []string
+		for _, sf := range strings.Split(sortFields, ",") {
+			sf = strings.TrimSpace(sf)
+			if sortField, ok := validSortFields[sf]; ok {
+				sorts = append(sorts, sortField)
+			} else if _, ok2 := nss[sf]; ok2 {
+				sorts = append(sorts, "meta."+sf)
+			}
+		}
+		if len(sorts) > 0 {
+			sorting := bson.D{}
+			value := 1
+			if sortDesc {
+				value = -1
+			}
+			for _, key := range sorts {
+				sorting = append(sorting, bson.E{Key: key, Value: value})
+			}
+			opts.Sort = sorting
+		}
+	}
+	return opts, nil
+}
+
+func (m *Codex) regexTerm(term string) primitive.Regex {
+	if term == "*" {
+		return primitive.Regex{Pattern: ".*", Options: "i"}
+	}
+	pattern := strings.ReplaceAll(strings.Trim(term, " \""), " ", "[\\W_-]*")
+	return primitive.Regex{Pattern: pattern, Options: "i"}
+}
+
+func getCleanRegexTerms(terms []string) []string {
+	var cleanTerms []string
+	for _, part := range terms {
+		tok := strings.TrimSpace(part)
+		if tok != "" {
+			cleanTerms = append(cleanTerms, tok)
+		}
+	}
+	return cleanTerms
+}
+
+func appendRegexTerm(metaName, term string, not bool, singleTerm bool, filters []bson.E) []bson.E {
+	op := "$regex"
+	if not {
+		op = "$not"
+	}
+	var pattern string
+	if singleTerm {
+		// Only one term: match the whole tag single term with exact match regex prefix and suffix
+		// tag1 -> (^|,\s*)tag1($|,\s*)
+		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "($|,\\s*)"
+	} else {
+		// For multiple terms, match only full tags at the start or after a comma in the list.
+		// Prevents partial matches inside other tags.
+		// tag1, tag2 -> (^|,\s*)tag1(,|$)  (^|,\s*)tag2(,|$)
+		pattern = "(^|,\\s*)" + regexp.QuoteMeta(term) + "(,|$)"
+	}
+	re := primitive.Regex{Pattern: pattern, Options: "i"}
+	return append(filters, bson.E{
+		Key:   metaName,
+		Value: bson.M{op: re},
+	})
+}
+
+// TODO: optimize the regex for multiple terms with OR
+//
+//	parts := strings.Split(terms, "|")
+func (m *Codex) regexComaTerms(metaName string, terms []string, not bool) (filters []bson.E) {
+	cleanTerms := getCleanRegexTerms(terms)
+	singleTerm := len(cleanTerms) == 1
+	for _, term := range cleanTerms {
+		filters = appendRegexTerm(metaName, term, not, singleTerm, filters)
+	}
+	return
+}
+
+// customMetaQuery adds a specific parsing for Tags values
+func (m *Codex) customMetaQueryCodex(s string, q query2.Query, not bool) (string, []bson.E, bool) {
+	if s == "Basename" {
+
+		return "basename", nil, false
+
+	} else if s == "Uuid" {
+
+		return "uuid", nil, false
+
+	} else if strings.HasPrefix(s, "Meta.") {
+		s = strings.TrimPrefix(s, "Meta.")
+		finalMeta := "meta." + s
+		nss := m.QueryNsProvider.TypedNamespaces()
+		ns, ok := nss[s]
+		if !ok || ns.GetType() != "tags" {
+			return finalMeta, nil, false
+		}
+		switch qTyped := q.(type) {
+		case *query2.MatchQuery:
+			if vals := strings.Split(qTyped.Match, ","); len(vals) >= 1 {
+				ff := m.regexComaTerms(finalMeta, vals, not)
+				return finalMeta, ff, true
+			}
+		case *query2.MatchPhraseQuery:
+			if vals := strings.Split(qTyped.MatchPhrase, ","); len(vals) >= 1 {
+				ff := m.regexComaTerms(finalMeta, vals, not)
+				return finalMeta, ff, true
+			}
+		default:
+			return finalMeta, nil, false
+		}
+	}
+	return s, nil, false
+}
+
+// BuildQuery builds a mongo filter plus an Aggregation Pipeline to be performed for computing facets.
+// Range and sorting parameters are not handled here, but by BuildQueryOptions method.
+func (m *Codex) BuildQuery(query interface{}, _, _ int32, _ string, _ bool) (interface{}, interface{}, error) {
 	var filters []bson.E
 
 	queryObject := query.(*tree.Query)
-	if term := queryObject.GetFileNameOrContent(); term != "" && term != "*" {
-		// add weight on basename ?
+	if term := queryObject.GetFileNameOrContent(); term != "" {
+		rx := m.regexTerm(term)
 		filters = append(filters, bson.E{"$or", bson.A{
-			bson.M{"basename": bson.M{"$regex": bsonx.Regex(term, "i")}},
-			bson.M{"text_content": bson.M{"$regex": bsonx.Regex(term, "i")}},
+			bson.M{"basename": rx},
+			bson.M{"text_content": rx},
 		}})
 	} else {
 		if bn := queryObject.GetFileName(); bn != "" {
-			filters = append(filters, bson.E{"basename", bson.M{"$regex": bsonx.Regex(bn, "i")}})
+			filters = append(filters, bson.E{"basename", m.regexTerm(bn)})
 		}
 		if cn := queryObject.GetContent(); cn != "" {
-			filters = append(filters, bson.E{"text_content", bson.M{"$regex": bsonx.Regex(cn, "i")}})
+			filters = append(filters, bson.E{"text_content", m.regexTerm(cn)})
 		}
 	}
 
@@ -176,13 +348,32 @@ func (m *Codex) BuildQuery(query interface{}, offset, limit int32) (interface{},
 		filters = append(filters, bson.E{"modif_time", bson.M{"$lte": dt}})
 	}
 
-	// Limit to a SubTree
-	if len(queryObject.PathPrefix) > 0 {
+	// Limit to a set of Paths or to a SubTree (PathPrefix)
+	if len(queryObject.Paths) > 0 {
+		ors := bson.A{}
+		for _, pa := range queryObject.Paths {
+			ors = append(ors, bson.M{"path": primitive.Regex{Pattern: "^" + pa + "$", Options: "i"}})
+		}
+		filters = append(filters, bson.E{Key: "$or", Value: ors})
+
+	} else if len(queryObject.PathPrefix) > 0 {
 		ors := bson.A{}
 		for _, prefix := range queryObject.PathPrefix {
-			ors = append(ors, bson.M{"path": bson.M{"$regex": bsonx.Regex("^"+prefix, "i")}})
+			ors = append(ors, bson.M{"path": primitive.Regex{Pattern: "^" + prefix, Options: "i"}})
 		}
-		filters = append(filters, bson.E{"$or", ors})
+		filters = append(filters, bson.E{Key: "$or", Value: ors})
+	}
+
+	if len(queryObject.ExcludedPathPrefix) > 0 {
+		nors := bson.A{}
+		for _, prefix := range queryObject.ExcludedPathPrefix {
+			nors = append(nors, bson.M{"path": primitive.Regex{Pattern: "^" + prefix, Options: "i"}})
+		}
+		filters = append(filters, bson.E{Key: "$nor", Value: nors})
+	}
+
+	if queryObject.PathDepth > 0 {
+		filters = append(filters, bson.E{Key: "path_depth", Value: queryObject.PathDepth})
 	}
 
 	if queryObject.Type > 0 {
@@ -192,32 +383,54 @@ func (m *Codex) BuildQuery(query interface{}, offset, limit int32) (interface{},
 		}
 		filters = append(filters, bson.E{"node_type", nodeType})
 	}
+
 	if queryObject.Extension != "" {
-		filters = append(filters, bson.E{"extension", strings.ToLower(queryObject.Extension)})
+		pp := strings.Split(strings.ReplaceAll(queryObject.Extension, "|", ","), ",")
+		if len(pp) > 1 {
+			ors := bson.A{}
+			for _, ex := range pp {
+				ors = append(ors, bson.D{{"extension", strings.ToLower(ex)}})
+			}
+			filters = append(filters, bson.E{"$or", ors})
+		} else {
+			filters = append(filters, bson.E{"extension", strings.ToLower(queryObject.Extension)})
+		}
+	}
+
+	if len(queryObject.UUIDs) == 1 {
+		filters = append(filters, bson.E{Key: "uuid", Value: queryObject.UUIDs[0]})
+	} else if len(queryObject.UUIDs) > 1 {
+		ors := bson.A{}
+		for _, nodeId := range queryObject.UUIDs {
+			ors = append(ors, bson.M{"uuid": nodeId})
+		}
+		filters = append(filters, bson.E{Key: "$or", Value: ors})
 	}
 
 	if queryObject.FreeString != "" {
-		if freeFilters, er := mongodb.BleveQueryToMongoFilters(queryObject.FreeString, true, func(s string) string {
-			if s == "Basename" {
-				return "basename"
-			}
-			return strings.Replace(s, "Meta.", "meta.", 1)
-		}); er == nil {
+		if freeFilters, er := mongodb.BleveQueryToMongoFilters(queryObject.FreeString, true, m.customMetaQueryCodex); er == nil {
 			filters = append(filters, freeFilters...)
 		}
-
 	}
 
 	if queryObject.GeoQuery != nil {
 		if queryObject.GeoQuery.Center != nil && len(queryObject.GeoQuery.Distance) > 0 {
-			point := &tree.GeoJson{}
-			point.Type = "Point"
-			point.Coordinates = []float64{queryObject.GeoQuery.Center.Lon, queryObject.GeoQuery.Center.Lat}
 			distance, er := geo.ParseDistance(queryObject.GeoQuery.Distance)
 			if er != nil {
 				return nil, nil, er
 			}
-			filters = append(filters, bson.E{"geo_json", bson.M{"$near": bson.M{"$geometry": point, "$maxDistance": distance}}})
+			filters = append(filters, bson.E{
+				Key: "geo_json",
+				Value: bson.M{
+					"$geoWithin": bson.M{
+						"$centerSphere": bson.A{
+							[]float64{queryObject.GeoQuery.Center.Lon, queryObject.GeoQuery.Center.Lat},
+							distance / 6378137.0, // convert meters to radians
+						},
+					},
+				},
+			})
+
 		} else if queryObject.GeoQuery.TopLeft != nil && queryObject.GeoQuery.BottomRight != nil {
 			type Polygon struct {
 				Type        string        `bson:"type"`
@@ -266,17 +479,18 @@ func (m *Codex) BuildQuery(query interface{}, offset, limit int32) (interface{},
 		fDef = append(fDef, bson.E{fieldName, bson.A{bucketDef}})
 	}
 
-	fDef = append(fDef, bson.E{"node_type", bson.A{bson.D{bson.E{"$sortByCount", "$node_type"}}}})
-	fDef = append(fDef, bson.E{"extension", bson.A{bson.D{bson.E{"$sortByCount", "$extension"}}}})
+	fDef = append(fDef, bson.E{Key: "node_type", Value: bson.A{bson.D{bson.E{Key: "$sortByCount", Value: "$node_type"}}}})
+	fDef = append(fDef, bson.E{Key: "extension", Value: bson.A{bson.D{bson.E{Key: "$sortByCount", Value: "$extension"}}}})
 
-	nss := m.QueryNsProvider.Namespaces()
-	for metaName := range m.QueryNsProvider.IncludedIndexes() {
-		def, _ := nss[metaName].UnmarshallDefinition()
-		if def != nil && (def.GetType() == "integer" || def.GetType() == "boolean" || def.GetType() == "date") {
+	for metaName, def := range m.QueryNsProvider.TypedNamespaces() {
+		if !def.Indexable {
+			continue
+		}
+		if def.GetType() == "integer" || def.GetType() == "boolean" || def.GetType() == "date" {
 			continue
 		}
 		fieldName := "meta." + metaName
-		fDef = append(fDef, bson.E{"meta-" + metaName, bson.A{bson.D{bson.E{"$sortByCount", "$" + fieldName}}}})
+		fDef = append(fDef, bson.E{Key: "meta-" + metaName, Value: bson.A{bson.D{bson.E{Key: "$sortByCount", Value: "$" + fieldName}}}})
 	}
 
 	facets := bson.D{
@@ -308,6 +522,7 @@ func (m *Codex) GetModel(sc configx.Values) (interface{}, bool) {
 					{"extension": 1},
 					{"node_type": 1},
 					{"geo_json": 2}, // Special value for 2dsphere
+					{"path_depth": 1},
 				},
 				IDName: "uuid",
 			},

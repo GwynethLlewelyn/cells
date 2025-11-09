@@ -24,18 +24,24 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type TaskStatus int
+
 type ErrorType int
+
 type StatusScope int
 
 const (
 	StatusScopeTask = iota
 	StatusScopeProcessing
 )
+
 const (
 	TaskStatusIdle TaskStatus = iota
 	TaskStatusPaused
@@ -46,6 +52,7 @@ const (
 	TaskStatusStopping
 	TaskStatusRemoved
 )
+
 const (
 	SyncErrorUnknown ErrorType = iota
 	SyncErrorNetworking
@@ -65,7 +72,7 @@ type Status interface {
 	AtomicProgress() bool
 
 	EndpointURI() string
-	Node() *tree.Node
+	Node() tree.N
 }
 
 // StatusProvider can register channels to send status/done events during processing
@@ -85,7 +92,7 @@ type ProcessingStatus struct {
 	pg     float32
 	atomic bool
 	uri    string
-	node   *tree.Node
+	node   tree.N
 }
 
 func NewProcessingStatus(info string) *ProcessingStatus {
@@ -105,7 +112,7 @@ func (p *ProcessingStatus) SetProgress(pg float32, atomic ...bool) *ProcessingSt
 	return p
 }
 
-func (p *ProcessingStatus) SetNode(node *tree.Node) *ProcessingStatus {
+func (p *ProcessingStatus) SetNode(node tree.N) *ProcessingStatus {
 	p.node = node
 	return p
 }
@@ -147,7 +154,7 @@ func (p *ProcessingStatus) EndpointURI() string {
 	return p.uri
 }
 
-func (p *ProcessingStatus) Node() *tree.Node {
+func (p *ProcessingStatus) Node() tree.N {
 	return p.node
 }
 
@@ -164,7 +171,11 @@ func (p *ProcessingStatus) MarshalJSON() ([]byte, error) {
 		m["EndpointURI"] = p.uri
 	}
 	if p.node != nil {
-		m["Node"] = p.node
+		bb, err := json.Marshal(proto.Clone(p.node))
+		if err != nil {
+			return nil, err
+		}
+		m["Node"] = string(bb)
 	}
 	return json.Marshal(m)
 }
@@ -179,13 +190,20 @@ func (p *ProcessingStatus) UnmarshalJSON(data []byte) error {
 			p.s = s.(string)
 		}
 		if ie, ok := m["IsError"]; ok && ie.(bool) {
-			p.e = fmt.Errorf(p.s)
+			p.e = errors.New(p.s)
 		}
 		if u, ok := m["EndpointURI"]; ok {
 			p.uri = u.(string)
 		}
-		if n, ok := m["Node"]; ok {
-			p.node = n.(*tree.Node)
+		if nb, ok := m["Node"]; ok {
+			if bb, o := nb.(string); o {
+				var tn *tree.Node
+				if er := json.Unmarshal([]byte(bb), &tn); er == nil {
+					p.node = tn
+				} else {
+					return er
+				}
+			}
 		}
 	}
 	return nil

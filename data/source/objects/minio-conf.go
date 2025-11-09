@@ -24,9 +24,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/runtime"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/runtime"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 var legacyConfTemplate = `{
@@ -167,34 +167,27 @@ var legacyConfTemplate = `{
 `
 
 // CreateMinioConfigFile generates a legacy config file
-func CreateMinioConfigFile(serviceId string, accessKey string, secretKey string) (configDir string, err error) {
+func CreateMinioConfigFile(configFolder string, accessKey string, secretKey string) (err error) {
 
-	var e error
-	configDir, e = runtime.ServiceDataDir(common.ServiceGrpcNamespace_ + common.ServiceDataObjects)
-	if e != nil {
-		return "", e
-	}
-
-	gatewayDir := filepath.Join(configDir, serviceId)
-	gatewayFile := filepath.Join(gatewayDir, "config.json")
+	gatewayFile := filepath.Join(configFolder, "config.json")
 
 	// Create path to folder
 	if _, err := os.Stat(gatewayFile); err != nil && os.IsNotExist(err) {
-		e := os.MkdirAll(gatewayDir, 0755)
+		e := os.MkdirAll(configFolder, 0755)
 		if e != nil {
-			return "", e
+			return e
 		}
 	} else {
 		// File exists: remove it and recreate (config may have changed)
 		if e := os.Remove(gatewayFile); e != nil {
-			return "", e
+			return e
 		}
 	}
 
 	var legacyConf map[string]interface{}
-	e = json.Unmarshal([]byte(legacyConfTemplate), &legacyConf)
+	e := json.Unmarshal([]byte(legacyConfTemplate), &legacyConf)
 	if e != nil {
-		return "", e
+		return e
 	}
 	legacyConf["credentials"] = map[string]string{
 		"accessKey":  accessKey,
@@ -204,14 +197,17 @@ func CreateMinioConfigFile(serviceId string, accessKey string, secretKey string)
 
 	// Create basic config file
 	data, _ := json.Marshal(legacyConf)
-	if file, e := os.OpenFile(gatewayFile, os.O_CREATE|os.O_WRONLY, 0755); e == nil {
-		defer file.Close()
-		file.Write(data)
-	} else {
-		return "", e
+	file, oe := os.OpenFile(gatewayFile, os.O_CREATE|os.O_WRONLY, 0755)
+	if oe != nil {
+		return oe
+	}
+	defer file.Close()
+	_, er := file.Write(data)
+	if er != nil {
+		return er
 	}
 
-	return gatewayDir, nil
+	return nil
 
 }
 

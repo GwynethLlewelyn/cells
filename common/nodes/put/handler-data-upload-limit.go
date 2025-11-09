@@ -22,21 +22,20 @@ package put
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"path"
 	"strconv"
 	"strings"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func WithUploadLimiter() nodes.Option {
@@ -58,27 +57,27 @@ func (a *UploadLimitFilter) Adapt(c nodes.Handler, options nodes.RouterOptions) 
 }
 
 // PutObject checks Upload Limits (size, extension) defined in the frontend on PutObject operation
-func (a *UploadLimitFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (a *UploadLimitFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 
 	size, exts, err := a.getUploadLimits(ctx)
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 	if size > 0 && requestData.Size > size {
-		return 0, errors.Forbidden("max.upload.limit", fmt.Sprintf("Upload limit is %d", size))
+		return models.ObjectInfo{}, errors.WithMessagef(errors.StatusQuotaReached, "upload limit is %d", size)
 	}
 	if len(exts) > 0 {
 		// Beware, Ext function includes the leading dot
 		nodeExt := path.Ext(node.GetPath())
 		allowed := false
 		for _, e := range exts {
-			if "."+strings.ToLower(e) == strings.ToLower(nodeExt) {
+			if strings.EqualFold("."+e, nodeExt) {
 				allowed = true
 				break
 			}
 		}
 		if !allowed {
-			return 0, errors.Forbidden("forbidden.upload.extensions", fmt.Sprintf("Extension %s is not allowed!", nodeExt))
+			return models.ObjectInfo{}, errors.WithMessage(errors.ExtensionsNotAllowed, "extension %s is not allowed!", nodeExt)
 		}
 	}
 
@@ -93,19 +92,19 @@ func (a *UploadLimitFilter) MultipartPutObjectPart(ctx context.Context, target *
 		return models.MultipartObjectPart{}, err
 	}
 	if size > 0 && requestData.Size > size {
-		return models.MultipartObjectPart{}, errors.Forbidden("max.upload.limit", fmt.Sprintf("Upload limit is %d", size))
+		return models.MultipartObjectPart{}, errors.WithMessagef(errors.StatusQuotaReached, "upload limit is %d", size)
 	}
 	if len(exts) > 0 {
 		nodeExt := path.Ext(target.GetPath())
 		allowed := false
 		for _, e := range exts {
-			if strings.EqualFold(e, nodeExt) {
+			if strings.EqualFold("."+e, nodeExt) {
 				allowed = true
 				break
 			}
 		}
 		if !allowed {
-			return models.MultipartObjectPart{}, errors.Forbidden("forbidden.upload.extensions", fmt.Sprintf("Extension %s is not allowed!", nodeExt))
+			return models.MultipartObjectPart{}, errors.WithMessagef(errors.ExtensionsNotAllowed, "extension %s is not allowed!", nodeExt)
 		}
 	}
 
@@ -120,7 +119,7 @@ func (a *UploadLimitFilter) getUploadLimits(ctx context.Context) (limit int64, e
 	extensionsName := "ALLOWED_EXTENSIONS"
 
 	var stringExts string
-	if v := config.Get("frontend", "plugin", pName).StringMap(); v != nil {
+	if v := config.Get(ctx, config.FrontendPluginPath(pName)...).StringMap(); v != nil {
 		if u, ok := v[maxSizeName]; ok {
 			if l, e := strconv.ParseInt(u, 10, 64); e == nil {
 				limit = l
@@ -131,7 +130,7 @@ func (a *UploadLimitFilter) getUploadLimits(ctx context.Context) (limit int64, e
 		}
 	}
 
-	if i, ok := nodes.GetBranchInfo(ctx, "in"); ok && i.Workspace != nil {
+	if i, er := nodes.GetBranchInfo(ctx, "in"); er == nil && i.Workspace != nil {
 		acl, e := permissions.AccessListFromContextClaims(ctx)
 		if e != nil {
 			err = e

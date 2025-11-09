@@ -22,20 +22,15 @@ package share
 
 import (
 	"context"
-	"fmt"
-	"net/url"
-	"path"
 
-	"github.com/go-openapi/errors"
-
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/docstore"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/docstorec"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 const PasswordComplexitySuffix = "#$!Az1"
@@ -43,7 +38,7 @@ const PasswordComplexitySuffix = "#$!Az1"
 // StoreHashDocument sends link data to the storage backend, currently the Docstore service.
 func (sc *Client) StoreHashDocument(ctx context.Context, ownerUser *idm.User, link *rest.ShareLink, updateHash ...string) error {
 
-	store := docstore.NewDocStoreClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceDocStore))
+	store := docstorec.DocStoreClient(ctx)
 
 	hashDoc := &docstore.ShareDocument{
 		OwnerId:       ownerUser.Login,
@@ -85,7 +80,7 @@ func (sc *Client) StoreHashDocument(ctx context.Context, ownerUser *idm.User, li
 		newHash := updateHash[0]
 		// Check if it already exists
 		if _, e := store.GetDocument(ctx, &docstore.GetDocumentRequest{StoreID: storeID, DocumentID: newHash}); e == nil {
-			return fmt.Errorf("hash is already in use, please use another one")
+			return errors.WithMessage(errors.StatusConflict, "hash is already in use, please use another one")
 		}
 		removeHash = link.LinkHash
 		link.LinkHash = newHash
@@ -109,7 +104,7 @@ func (sc *Client) StoreHashDocument(ctx context.Context, ownerUser *idm.User, li
 // LoadHashDocumentData loads link data from the storage (currently Docstore) by link Uuid.
 func (sc *Client) LoadHashDocumentData(ctx context.Context, shareLink *rest.ShareLink, acls []*idm.ACL) error {
 
-	store := docstore.NewDocStoreClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceDocStore))
+	store := docstorec.DocStoreClient(ctx)
 	ct, ca := context.WithCancel(ctx)
 	defer ca()
 	streamer, er := store.ListDocuments(ct, &docstore.ListDocumentsRequest{StoreID: common.DocStoreIdShares, Query: &docstore.DocumentQuery{
@@ -131,7 +126,7 @@ func (sc *Client) LoadHashDocumentData(ctx context.Context, shareLink *rest.Shar
 		}
 	}
 	if linkDoc == nil {
-		return errors.NotFound(common.ServiceDocStore, "Cannot find link associated to this workspace")
+		return errors.WithMessage(errors.ShareNotFound, "Cannot find link associated to this workspace")
 	}
 	shareLink.LinkHash = linkDoc.ID
 	var linkData *docstore.ShareDocument
@@ -182,12 +177,8 @@ func (sc *Client) LoadHashDocumentData(ctx context.Context, shareLink *rest.Shar
 		}
 	}
 
-	shareLink.LinkUrl = path.Join(config.GetPublicBaseUri(), shareLink.LinkHash)
-	if configBase := config.Get("services", common.ServiceRestNamespace_+common.ServiceShare, "url").String(); configBase != "" {
-		if cfu, e := url.Parse(configBase); e == nil {
-			cfu.Path = path.Join(config.GetPublicBaseUri(), shareLink.LinkHash)
-			shareLink.LinkUrl = cfu.String()
-		}
+	if er = PublicLinkUrlBuilder.BuildLinkURL(ctx, shareLink); er != nil {
+		return er
 	}
 
 	return nil
@@ -197,7 +188,7 @@ func (sc *Client) LoadHashDocumentData(ctx context.Context, shareLink *rest.Shar
 // DeleteHashDocument removes link data from the storage.
 func (sc *Client) DeleteHashDocument(ctx context.Context, shareId string) error {
 
-	store := docstore.NewDocStoreClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceDocStore))
+	store := docstorec.DocStoreClient(ctx)
 	resp, err := store.DeleteDocuments(ctx, &docstore.DeleteDocumentsRequest{StoreID: common.DocStoreIdShares, Query: &docstore.DocumentQuery{
 		MetaQuery: "+REPOSITORY:\"" + shareId + "\" +SHARE_TYPE:minisite",
 	}})
@@ -205,7 +196,7 @@ func (sc *Client) DeleteHashDocument(ctx context.Context, shareId string) error 
 		return err
 	}
 	if !resp.Success || resp.DeletionCount == 0 {
-		return errors.NotFound(common.ServiceShare, "Could not delete hash associated to this workspace "+shareId)
+		return errors.WithMessage(errors.ShareNotFound, "Cannot find hash associated with workspace %s for deletion", shareId)
 	}
 	return nil
 
@@ -215,7 +206,7 @@ func (sc *Client) DeleteHashDocument(ctx context.Context, shareId string) error 
 // the passed userLogin value.
 func (sc *Client) SearchHashDocumentForUser(ctx context.Context, userLogin string) (*docstore.ShareDocument, error) {
 
-	store := docstore.NewDocStoreClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceDocStore))
+	store := docstorec.DocStoreClient(ctx)
 
 	// SEARCH PUBLIC
 	streamer, err := store.ListDocuments(ctx, &docstore.ListDocumentsRequest{StoreID: common.DocStoreIdShares, Query: &docstore.DocumentQuery{
