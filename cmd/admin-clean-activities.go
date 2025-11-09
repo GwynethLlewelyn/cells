@@ -21,7 +21,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,13 +32,13 @@ import (
 	pu "github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/broker/activity"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/dao/boltdb"
-	activity2 "github.com/pydio/cells/v4/common/proto/activity"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/broker/activity"
+	"github.com/pydio/cells/v5/broker/activity/dao/bolt"
+	"github.com/pydio/cells/v5/common/client/commons/jobsc"
+	activity2 "github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 var (
@@ -77,6 +76,7 @@ EXAMPLES
 
 `,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := cmd.Context()
 
 		if acUpdated == "" && keepMax == 0 {
 			fmt.Println(pu.IconBad + " Please set at least the --updated or --max flags select activities to purge")
@@ -142,16 +142,16 @@ EXAMPLES
 		if offlineDB != "" {
 
 			ctx := cmd.Context()
-			db, er := boltdb.NewDAO(ctx, "boltdb", offlineDB, "")
+			var er error
+			ctx, er = manager.DSNtoContextDAO(ctx, []string{offlineDB}, bolt.NewBoltDAO)
 			if er != nil {
-				log.Fatalln("Cannot open DB file", er.Error())
+				log.Fatalln("Cannot prepare DAO")
 			}
-			da, e := activity.NewDAO(ctx, db)
-			if e != nil {
-				log.Fatalln("Cannot open DAO", e.Error())
+			dao, err := manager.Resolve[activity.DAO](ctx)
+			if err != nil {
+				log.Fatalln("Cannot open DAO")
 			}
-			dao := da.(activity.DAO)
-			loggerFunc := func(s string) {
+			loggerFunc := func(s string, _ int) {
 				cmd.Println(s)
 			}
 			er = dao.Purge(cmd.Context(), loggerFunc, activity2.OwnerType(internalType), activityOwner, activity.BoxName(boxName), keepAtLeast, keepMax, updatedTime, compactDB, clearBackups)
@@ -162,7 +162,7 @@ EXAMPLES
 		} else {
 			requestData, _ := json.Marshal(requestParameters)
 
-			jobClient := jobs.NewJobServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceJobs))
+			jobClient := jobsc.JobServiceClient(ctx)
 			job := &jobs.Job{
 				ID:             uuid.New(),
 				Owner:          purgeActivityAdminUser,
@@ -183,7 +183,7 @@ EXAMPLES
 				},
 			}
 
-			_, err := jobClient.PutJob(context.Background(), &jobs.PutJobRequest{
+			_, err := jobClient.PutJob(cmd.Context(), &jobs.PutJobRequest{
 				Job: job,
 			})
 			if err != nil {

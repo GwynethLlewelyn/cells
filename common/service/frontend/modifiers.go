@@ -26,7 +26,7 @@ import (
 	restful "github.com/emicklei/go-restful/v3"
 	"github.com/gorilla/sessions"
 
-	"github.com/pydio/cells/v4/common/proto/rest"
+	"github.com/pydio/cells/v5/common/proto/rest"
 )
 
 // RegistryModifier is a func type for dynamically filtering output of the registry
@@ -37,9 +37,9 @@ type RegistryModifier func(ctx context.Context, status RequestStatus, registry *
 type PluginModifier func(ctx context.Context, status RequestStatus, plugin Plugin) error
 
 // BootConfModifier is a func type for dynamically filtering the content of the bootconf
-type BootConfModifier func(bootConf *BootConf) error
+type BootConfModifier func(ctx context.Context, bootConf *BootConf) error
 
-type EnrollMiddlewareFunc func(req *restful.Request, rsp *restful.Response, inputRequest *rest.FrontEnrollAuthRequest) bool
+type EnrollMiddlewareFunc func(req *restful.Request, rsp *restful.Response, inputRequest *rest.FrontEnrollAuthRequest) (bool, error)
 
 type FrontMiddleware struct {
 	Endpoint   string
@@ -102,10 +102,10 @@ func RegisterBootConfModifier(modifier BootConfModifier) {
 }
 
 // ApplyBootConfModifiers is called to apply all registered modifiers on the boot configuration
-func ApplyBootConfModifiers(bootConf *BootConf) error {
+func ApplyBootConfModifiers(ctx context.Context, bootConf *BootConf) error {
 
 	for _, m := range bootConfModifiers {
-		if e := m(bootConf); e != nil {
+		if e := m(ctx, bootConf); e != nil {
 			return e
 		}
 	}
@@ -123,20 +123,24 @@ func RegisterEnrollMiddleware(endpoint string, middleware EnrollMiddlewareFunc) 
 }
 
 // ApplyEnrollMiddlewares goes through registered middlewares if there are any for the current endpoint
-func ApplyEnrollMiddlewares(endpoint string, req *restful.Request, rsp *restful.Response) bool {
+func ApplyEnrollMiddlewares(endpoint string, req *restful.Request, rsp *restful.Response) error {
 
 	var request rest.FrontEnrollAuthRequest
-	req.ReadEntity(&request)
+	if er := req.ReadEntity(&request); er != nil {
+		return er
+	}
 	for _, m := range enrollMiddlewares {
 		if m.Endpoint != endpoint {
 			continue
 		}
-		if breakNow := m.Middleware(req, rsp, &request); breakNow {
-			return true
+		if breakNow, err := m.Middleware(req, rsp, &request); err != nil {
+			return err
+		} else if breakNow {
+			return nil
 		}
 	}
 
-	return false
+	return nil
 }
 
 // WrapAuthMiddleware registers an additional auth middleware

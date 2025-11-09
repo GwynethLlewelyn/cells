@@ -27,10 +27,10 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/test"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/test"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/service"
 )
 
 var name = common.ServiceTestNamespace_ + "objects"
@@ -44,7 +44,7 @@ func init() {
 			service.Description("Test Objects Service conformance"),
 			service.WithGRPC(func(ctx context.Context, server grpc.ServiceRegistrar) error {
 				h := NewHandler()
-				test.RegisterTesterEnhancedServer(server, h)
+				test.RegisterTesterServer(server, h)
 				go func() {
 					<-time.After(10 * time.Second)
 					resp, e := h.TestNodesClient(ctx)

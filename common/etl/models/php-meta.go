@@ -1,4 +1,5 @@
-// +build !386, !arm
+//go:build (!386 && ignore) || !arm
+// +build !386,ignore !arm
 
 /*
  * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
@@ -23,16 +24,18 @@
 package models
 
 import (
-	"fmt"
-
 	"github.com/yvasiyarov/php_session_decoder/php_serialize"
 
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/errors"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type phpMeta map[string]interface{}
+
 type phpUsers map[string]phpMeta
+
 type phpNodes map[string]phpUsers
+
 type phpLocalMeta map[string]phpNodes
 
 type PhpUserMeta struct {
@@ -56,7 +59,7 @@ func UserMetasFromPhpData(serializedData []byte) (metas []*PhpUserMeta, outErr e
 		if ms, ok := m.(map[string]interface{}); ok {
 			metas, outErr = Map2LocalMeta(ms)
 		} else {
-			outErr = fmt.Errorf("cannot cast phpValue")
+			outErr = errors.New("cannot cast phpValue")
 		}
 	} else {
 		outErr = err

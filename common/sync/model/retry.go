@@ -22,11 +22,12 @@ package model
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	"github.com/pydio/cells/v5/common/errors"
 )
 
-// Retry tries to apply an operation as many time as required
+// Retry tries to apply an operation as many times as required
 func Retry(f func() error, seconds ...time.Duration) error {
 
 	if e := f(); e == nil {
@@ -54,13 +55,13 @@ func Retry(f func() error, seconds ...time.Duration) error {
 			if lastErr != nil {
 				return lastErr
 			} else {
-				return fmt.Errorf("timeout")
+				return errors.New("timeout")
 			}
 		}
 	}
 }
 
-// RetryWithCtx does like Retry with an additionnal cancellable context
+// RetryWithCtx does like Retry with an additional cancellable context
 func RetryWithCtx(ctx context.Context, f func(retry int) error, seconds ...time.Duration) error {
 
 	i := 0
@@ -90,7 +91,7 @@ func RetryWithCtx(ctx context.Context, f func(retry int) error, seconds ...time.
 			if lastErr != nil {
 				return lastErr
 			} else {
-				return fmt.Errorf("timeout")
+				return errors.New("timeout")
 			}
 		case <-ctx.Done():
 			if lastErr != nil {

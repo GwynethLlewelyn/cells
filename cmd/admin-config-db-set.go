@@ -30,8 +30,8 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 // configDatabaseSetCmd assigns a database connection to a service.
@@ -55,8 +55,8 @@ DESCRIPTION
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
-
-		m := config.Get("databases").Map()
+		ctx := cmd.Context()
+		m := config.Get(ctx, "databases").Map()
 
 		var ids []string
 		var items []string
@@ -81,13 +81,13 @@ DESCRIPTION
 			os.Exit(1)
 		}
 
-		config.Set(configx.Reference("#/databases/"+ids[i]), "databases", id)
+		config.Set(ctx, configx.Reference("#/databases/"+ids[i]), "databases", id)
 
 		if id == "default" {
-			config.Set(configx.Reference("#/databases/"+ids[i]), "defaults", "database")
+			config.Set(ctx, configx.Reference("#/databases/"+ids[i]), "defaults", "database")
 		}
 
-		if err := config.Save("cli", fmt.Sprintf("Set database for service %s : %s", id, ids[i])); err == nil {
+		if err := config.Save(ctx, "cli", fmt.Sprintf("Set database for service %s : %s", id, ids[i])); err == nil {
 			cmd.Println("Config set")
 		} else {
 			log.Fatal(err)

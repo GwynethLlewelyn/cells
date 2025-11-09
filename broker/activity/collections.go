@@ -22,20 +22,38 @@ package activity
 
 import (
 	"context"
+	"sort"
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/activity"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 var (
 	router *compose.Reverse
 )
+
+type SortedWs []*idm.Workspace
+
+func (s SortedWs) Less(i, j int) bool {
+	if s[i].Scope == s[j].Scope {
+		return s[i].Label < s[j].Label
+	}
+	return s[i].Scope > s[j].Scope
+}
+
+func (s SortedWs) Len() int {
+	return len(s)
+}
+
+func (s SortedWs) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
 
 // CountCollection is a simple container for N activities.
 func CountCollection(count int32) (c *activity.Object) {
@@ -66,12 +84,12 @@ func Digest(ctx context.Context, items []*activity.Object) (*activity.Object, er
 	c.Type = activity.ObjectType_Digest
 
 	accessList, _ := permissions.AccessListFromContextClaims(ctx)
-	if len(accessList.Workspaces) == 0 {
-		log.Logger(ctx).Error("no workspaces found while building activity digest")
+	if len(accessList.GetWorkspaces()) == 0 {
+		log.Logger(ctx).Debug("no workspaces found while building activity digest, ignoring")
 		return c, nil
 	}
 
-	r := getRouter(ctx)
+	r := getRouter()
 	grouped := make(map[string]*activity.Object)
 	for _, ac := range items {
 		if ac.Type == activity.ObjectType_Event {
@@ -79,8 +97,19 @@ func Digest(ctx context.Context, items []*activity.Object) (*activity.Object, er
 			c.Items = append(c.Items, ac)
 		}
 	}
-	for _, workspace := range accessList.Workspaces {
+
+	acSet := make(map[string]struct{})
+	var sorted SortedWs
+	for _, ws := range accessList.GetWorkspaces() {
+		sorted = append(sorted, ws)
+	}
+	sort.Sort(sorted)
+
+	for _, workspace := range sorted {
 		for _, ac := range items {
+			if _, ok := acSet[ac.Id]; ok {
+				continue
+			}
 			if ac.Object != nil && (ac.Object.Type == activity.ObjectType_Folder || ac.Object.Type == activity.ObjectType_Document) {
 				node := &tree.Node{Uuid: ac.Object.Id, Path: ac.Object.Name}
 				if filtered, ok := r.WorkspaceCanSeeNode(ctx, accessList, workspace, node); ok {
@@ -106,6 +135,7 @@ func Digest(ctx context.Context, items []*activity.Object) (*activity.Object, er
 						}
 					}
 					wsColl.Items = append(wsColl.Items, filteredActivity)
+					acSet[filteredActivity.Id] = struct{}{}
 				}
 			} else if ac.Type == activity.ObjectType_Share && ac.Object != nil && ac.Object.Id == workspace.UUID {
 				wsColl := getOrCreateWorkspaceCollection(workspace, grouped)
@@ -140,14 +170,15 @@ func getOrCreateWorkspaceCollection(workspace *idm.Workspace, grouped map[string
 	}
 	wsColl.Id = workspace.UUID
 	wsColl.Name = workspace.Label
+	wsColl.Href = workspace.Slug
 	grouped[workspace.UUID] = wsColl
 	wsColl.Items = []*activity.Object{}
 	return wsColl
 }
 
-func getRouter(ctx context.Context) *compose.Reverse {
+func getRouter() *compose.Reverse {
 	if router == nil {
-		router = compose.ReverseClient(ctx)
+		router = compose.ReverseClient()
 	}
 	return router
 }

@@ -21,7 +21,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"os"
@@ -32,13 +31,14 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/update"
-	update2 "github.com/pydio/cells/v4/discovery/update"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/proto/update"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	update2 "github.com/pydio/cells/v5/discovery/update"
 )
 
 var updateToVersion string
+
 var updateDryRun bool
 
 var updateBinCmd = &cobra.Command{
@@ -52,13 +52,14 @@ DESCRIPTION
 `,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		bindViperFlags(cmd.Flags())
-		_, _, er := initConfig(cmd.Context(), false)
+		ctx, er := initManagerContext(cmd.Context())
+		cmd.SetContext(ctx)
 		return er
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 
-		configs := config.GetUpdatesConfigs()
-		binaries, e := update2.LoadUpdates(context.Background(), configs, &update.UpdateRequest{})
+		configs := config.GetUpdatesConfigs(cmd.Context())
+		binaries, e := update2.LoadUpdates(cmd.Context(), configs, &update.UpdateRequest{})
 		if e != nil {
 			log.Fatal("Cannot retrieve available updates", zap.Error(e))
 		}
@@ -124,7 +125,7 @@ DESCRIPTION
 					}
 				}
 			}()
-			update2.ApplyUpdate(context.Background(), apply, configs, updateDryRun, pgChan, doneChan, errorChan)
+			update2.ApplyUpdate(cmd.Context(), apply, configs, updateDryRun, pgChan, doneChan, errorChan)
 			wg.Wait()
 		}
 
@@ -132,7 +133,6 @@ DESCRIPTION
 }
 
 func init() {
-
 	RootCmd.AddCommand(updateBinCmd)
 
 	updateBinCmd.Flags().StringVarP(&updateToVersion, "version", "v", "", "Pass a version number to apply the upgrade")

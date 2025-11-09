@@ -22,7 +22,6 @@ package acl
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -31,20 +30,22 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth/claim"
-	grpc2 "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/cache"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/client/commons/treec"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
 )
 
 func WithQuota() nodes.Option {
@@ -55,10 +56,16 @@ func WithQuota() nodes.Option {
 	}
 }
 
+var cacheConfig = cache.Config{
+	Prefix:          "nodes/acl-quota",
+	Eviction:        "30s",
+	CleanWindow:     "3m",
+	DiscardFallback: true,
+}
+
 // QuotaFilter applies storage quota limitation on a per-workspace basis.
 type QuotaFilter struct {
 	abstract.Handler
-	readCache cache.Cache
 }
 
 func (a *QuotaFilter) Adapt(h nodes.Handler, options nodes.RouterOptions) nodes.Handler {
@@ -73,8 +80,8 @@ func (a *QuotaFilter) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, op
 		return resp, err
 	}
 
-	branch, set := nodes.GetBranchInfo(ctx, "in")
-	if !set || branch.Workspace == nil || branch.UUID == "ROOT" || branch.Workspace.UUID == "" || branch.Root == nil || branch.Root.Uuid != resp.Node.Uuid {
+	branch, be := nodes.GetBranchInfo(ctx, "in")
+	if be != nil || branch.Workspace == nil || branch.UUID == "ROOT" || branch.Workspace.UUID == "" || branch.Root == nil || branch.Root.Uuid != resp.Node.Uuid {
 		return resp, err
 	}
 	type qCache struct {
@@ -82,50 +89,48 @@ func (a *QuotaFilter) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, op
 		q  int64
 		u  int64
 	}
-	if a.readCache == nil {
-		c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=1m&cleanWindow=5m")
-		a.readCache = c
-	}
+
 	var cacheKey string
-	if claims, ok := ctx.Value(claim.ContextKey).(claim.Claims); ok {
+	ca := cache_helper.MustResolveCache(ctx, common.CacheTypeLocal, cacheConfig)
+	if claims, ok := claim.FromContext(ctx); ok {
 		cacheKey = branch.Workspace.UUID + "-" + claims.Name
 		var qc *qCache
-		if a.readCache.Get(cacheKey, &qc) {
+		if ca != nil && ca.Get(cacheKey, &qc) {
 			if qc.no {
 				return resp, nil
 			}
 			n := resp.Node.Clone()
-			n.MustSetMeta("ws_quota", qc.q)
-			n.MustSetMeta("ws_quota_usage", qc.u)
+			n.MustSetMeta(common.MetaFlagWorkspaceQuota, qc.q)
+			n.MustSetMeta(common.MetaFlagWorkspaceQuotaUsage, qc.u)
 			resp.Node = n
 			return resp, nil
 		}
 	}
 	if q, u, e := a.ComputeQuota(ctx, branch.Workspace); e == nil && q > 0 {
 		n := resp.Node.Clone()
-		n.MustSetMeta("ws_quota", q)
-		n.MustSetMeta("ws_quota_usage", u)
+		n.MustSetMeta(common.MetaFlagWorkspaceQuota, q)
+		n.MustSetMeta(common.MetaFlagWorkspaceQuotaUsage, u)
 		resp.Node = n
-		if cacheKey != "" {
-			a.readCache.Set(cacheKey, &qCache{q: q, u: u})
+		if ca != nil && cacheKey != "" {
+			_ = ca.Set(cacheKey, &qCache{q: q, u: u})
 		}
-	} else if cacheKey != "" {
-		a.readCache.Set(cacheKey, &qCache{no: true})
+	} else if ca != nil && cacheKey != "" {
+		_ = ca.Set(cacheKey, &qCache{no: true})
 	}
 	return resp, err
 }
 
 // PutObject checks quota on PutObject operation.
-func (a *QuotaFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (a *QuotaFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 
 	// Note : as the temporary file created by PutHandler is already in index,
 	// currentUsage ALREADY takes into account the input data size.
 
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, "in"); ok && !branchInfo.IsInternal() {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, "in"); er == nil && !branchInfo.IsInternal() {
 		if maxQuota, currentUsage, err := a.ComputeQuota(ctx, branchInfo.Workspace); err != nil {
-			return 0, err
+			return models.ObjectInfo{}, err
 		} else if maxQuota > 0 && currentUsage > maxQuota {
-			return 0, errors.New("quota.exceeded", fmt.Sprintf("Your allowed quota of %d is reached", maxQuota), 422)
+			return models.ObjectInfo{}, errors.WithMessagef(errors.StatusQuotaReached, "Your allowed quota of %d is reached", maxQuota)
 		}
 	}
 
@@ -135,11 +140,11 @@ func (a *QuotaFilter) PutObject(ctx context.Context, node *tree.Node, reader io.
 // MultipartPutObjectPart checks quota on MultipartPutObjectPart.
 func (a *QuotaFilter) MultipartPutObjectPart(ctx context.Context, target *tree.Node, uploadID string, partNumberMarker int, reader io.Reader, requestData *models.PutRequestData) (models.MultipartObjectPart, error) {
 
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, "in"); ok && !branchInfo.IsInternal() {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, "in"); er == nil && !branchInfo.IsInternal() {
 		if maxQuota, currentUsage, err := a.ComputeQuota(ctx, branchInfo.Workspace); err != nil {
 			return models.MultipartObjectPart{}, err
 		} else if maxQuota > 0 && currentUsage > maxQuota {
-			return models.MultipartObjectPart{}, errors.New("quota.exceeded", fmt.Sprintf("Your allowed quota of %d is reached", maxQuota), 422)
+			return models.MultipartObjectPart{}, errors.WithMessagef(errors.StatusQuotaReached, "Your allowed quota of %d is reached", maxQuota)
 		}
 	}
 
@@ -147,13 +152,13 @@ func (a *QuotaFilter) MultipartPutObjectPart(ctx context.Context, target *tree.N
 }
 
 // CopyObject checks quota on CopyObject operation.
-func (a *QuotaFilter) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (a *QuotaFilter) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 
-	if branchInfo, ok := nodes.GetBranchInfo(ctx, "to"); ok && !branchInfo.IsInternal() {
+	if branchInfo, er := nodes.GetBranchInfo(ctx, "to"); er == nil && !branchInfo.IsInternal() {
 		if maxQuota, currentUsage, err := a.ComputeQuota(ctx, branchInfo.Workspace); err != nil {
-			return 0, err
+			return models.ObjectInfo{}, err
 		} else if maxQuota > 0 && currentUsage+from.Size > maxQuota {
-			return 0, errors.New("quota.exceeded", fmt.Sprintf("Your allowed quota of %d is reached", maxQuota), 422)
+			return models.ObjectInfo{}, errors.WithMessagef(errors.StatusQuotaReached, "Your allowed quota of %d is reached", maxQuota)
 		}
 	}
 
@@ -165,22 +170,22 @@ func (a *QuotaFilter) WrappedCanApply(srcCtx context.Context, targetCtx context.
 	switch operation.GetType() {
 	case tree.NodeChangeEvent_CREATE:
 		targetNode := operation.GetTarget()
-		if bI, ok := nodes.GetBranchInfo(targetCtx, "in"); ok && !bI.IsInternal() {
+		if bI, er := nodes.GetBranchInfo(targetCtx, "in"); er == nil && !bI.IsInternal() {
 			if maxQuota, currentUsage, err := a.ComputeQuota(targetCtx, bI.Workspace); err != nil {
 				return err
 			} else if maxQuota > 0 && currentUsage+targetNode.Size > maxQuota {
-				return errors.New("quota.exceeded", fmt.Sprintf("Your allowed quota of %d is reached", maxQuota), 422)
+				return errors.WithMessagef(errors.StatusQuotaReached, "Your allowed quota of %d is reached", maxQuota)
 			}
 		}
 	case tree.NodeChangeEvent_UPDATE_PATH:
-		src, o := nodes.GetBranchInfo(srcCtx, "from")
-		tgt, o2 := nodes.GetBranchInfo(targetCtx, "to")
-		if o && o2 && src.Workspace.UUID != tgt.Workspace.UUID {
+		src, er1 := nodes.GetBranchInfo(srcCtx, "from")
+		tgt, er2 := nodes.GetBranchInfo(targetCtx, "to")
+		if er1 == nil && er2 == nil && src.Workspace.UUID != tgt.Workspace.UUID {
 			log.Logger(srcCtx).Info("Move across workspace, check quota on target!")
 			if maxQuota, currentUsage, err := a.ComputeQuota(targetCtx, tgt.Workspace); err != nil {
 				return err
 			} else if maxQuota > 0 && currentUsage+operation.GetTarget().Size > maxQuota {
-				return errors.New("quota.exceeded", fmt.Sprintf("Your allowed quota of %d is reached", maxQuota), 422)
+				return errors.WithMessagef(errors.StatusQuotaReached, "Your allowed quota of %d is reached", maxQuota)
 			}
 		}
 	}
@@ -190,7 +195,7 @@ func (a *QuotaFilter) WrappedCanApply(srcCtx context.Context, targetCtx context.
 // ComputeQuota finds quota and current usage for a given workspace
 func (a *QuotaFilter) ComputeQuota(ctx context.Context, workspace *idm.Workspace) (quota int64, usage int64, err error) {
 
-	claims, ok := ctx.Value(claim.ContextKey).(claim.Claims)
+	claims, ok := claim.FromContext(ctx)
 	if !ok {
 		return
 	}
@@ -253,20 +258,11 @@ func (a *QuotaFilter) FindParentWorkspaces(ctx context.Context, workspace *idm.W
 	}
 	log.Logger(ctx).Debug("AccessList From User", zap.Any("ownerUuid", ownerUuid), zap.Any("accessList", ownerAcls))
 
-	var roleIds []string
-	for _, r := range ownerAcls.OrderedRoles {
-		roleIds = append(roleIds, r.Uuid)
-	}
-	claims := claim.Claims{
-		Name:      userObject.Login,
-		Roles:     strings.Join(roleIds, ","),
-		GroupPath: userObject.GroupPath,
-	}
-	parentContext = context.WithValue(ctx, claim.ContextKey, claims)
-	vResolver := abstract.GetVirtualNodesManager(a.RuntimeCtx).GetResolver(false)
+	parentContext = auth.WithImpersonate(ctx, userObject)
+	vResolver := abstract.GetVirtualProvider().GetResolver(false)
 	ownerWsRoots := make(map[string]*idm.Workspace)
 
-	for _, ws := range ownerAcls.Workspaces {
+	for _, ws := range ownerAcls.GetWorkspaces() {
 		for _, originalRoot := range ws.RootUUIDs {
 			realId := originalRoot
 			if n, o := vResolver(parentContext, &tree.Node{Uuid: realId}); o {
@@ -278,7 +274,7 @@ func (a *QuotaFilter) FindParentWorkspaces(ctx context.Context, workspace *idm.W
 		}
 	}
 
-	treeClient := tree.NewNodeProviderClient(grpc2.GetClientConnFromCtx(a.RuntimeCtx, common.ServiceTree))
+	treeClient := treec.NodeProviderClient(ctx)
 	for _, root := range workspace.RootUUIDs {
 		if n, o := vResolver(ctx, &tree.Node{Uuid: root}); o {
 			root = n.Uuid
@@ -306,7 +302,7 @@ func (a *QuotaFilter) FindParentWorkspaces(ctx context.Context, workspace *idm.W
 // given by the orderedRoles list.
 func (a *QuotaFilter) QuotaForWorkspace(ctx context.Context, workspace *idm.Workspace, orderedRoles []string) (maxQuota int64, currentUsage int64, err error) {
 
-	aclClient := idm.NewACLServiceClient(grpc2.GetClientConnFromCtx(a.RuntimeCtx, common.ServiceAcl))
+	aclClient := idmc.ACLServiceClient(ctx)
 	q2, _ := anypb.New(&idm.ACLSingleQuery{WorkspaceIDs: []string{workspace.UUID}})
 	stream, er := aclClient.SearchACL(ctx, &idm.SearchACLRequest{Query: &service.Query{SubQueries: []*anypb.Any{q2}}})
 	if er != nil {
@@ -317,7 +313,6 @@ func (a *QuotaFilter) QuotaForWorkspace(ctx context.Context, workspace *idm.Work
 	roleValues := make(map[string]string)
 	detectedRoots := make(map[string]bool)
 
-	defer stream.CloseSend()
 	for {
 		resp, e := stream.Recv()
 		if e != nil {
@@ -349,8 +344,8 @@ func (a *QuotaFilter) QuotaForWorkspace(ctx context.Context, workspace *idm.Work
 
 	if maxQuota > 0 {
 		log.Logger(ctx).Debug("Found Quota", zap.Any("q", maxQuota), zap.Any("roots", detectedRoots))
-		treeClient := tree.NewNodeProviderClient(grpc2.GetClientConnFromCtx(a.RuntimeCtx, common.ServiceTree))
-		resolver := abstract.GetVirtualNodesManager(a.RuntimeCtx).GetResolver(false)
+		treeClient := treec.NodeProviderClient(ctx)
+		resolver := abstract.GetVirtualProvider().GetResolver(false)
 		for nodeId := range detectedRoots {
 			var rootNode *tree.Node
 			if n, o := resolver(ctx, &tree.Node{Uuid: nodeId}); o {

@@ -24,14 +24,13 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/test"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/test"
 )
 
 var (
@@ -49,9 +48,9 @@ var testCmd = &cobra.Command{
 			cmd.Help()
 			return
 		}
-		c := test.NewTesterClient(grpc.GetClientConnFromCtx(ctx, conformanceTestServiceName))
+		c := test.NewTesterClient(grpc.ResolveConn(cmd.Context(), conformanceTestServiceName))
 		fmt.Println("")
-		if response, e := c.Run(context.Background(), &test.RunTestsRequest{}); e != nil {
+		if response, e := c.Run(cmd.Context(), &test.RunTestsRequest{}); e != nil {
 			fmt.Println("Error while running tests, did you start the server?", e)
 		} else {
 			pass := true

@@ -23,12 +23,13 @@ package broker
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/service/context/metadata"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type Message interface {
-	Unmarshal(target proto.Message) (context.Context, error)
+	Unmarshal(ctx context.Context, target proto.Message) (context.Context, error)
 	RawData() (map[string]string, []byte)
 }
 
@@ -37,17 +38,24 @@ type message struct {
 	body   []byte
 }
 
-func (m *message) Unmarshal(target proto.Message) (context.Context, error) {
+func (m *message) Unmarshal(ctx context.Context, target proto.Message) (context.Context, error) {
 	if e := proto.Unmarshal(m.body, target); e != nil {
-		return nil, e
+		return ctx, e
 	}
-	ctx := context.Background()
+
 	if m.header != nil {
-		ctx = metadata.NewContext(ctx, m.header)
+		ctx = propagator.NewContext(ctx, m.header)
 	}
+
 	return ctx, nil
 }
 
 func (m *message) RawData() (map[string]string, []byte) {
 	return m.header, m.body
+}
+
+type MessageQueue interface {
+	Consume(callback func(context.Context, ...Message)) error
+	PushRaw(ctx context.Context, message Message) error
+	Close(ctx context.Context) error
 }

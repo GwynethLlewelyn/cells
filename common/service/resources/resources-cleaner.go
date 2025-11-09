@@ -22,14 +22,13 @@ package resources
 
 import (
 	"context"
-	"fmt"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/sql/resources"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/storage/sql/resources"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type PoliciesCleanerOptions struct {
@@ -38,34 +37,34 @@ type PoliciesCleanerOptions struct {
 }
 
 type PoliciesCleaner struct {
-	Dao     dao.DAO
 	Options PoliciesCleanerOptions
-	LogCtx  context.Context
 }
 
 // Handle cleans resources in the current DAO based on the delete events
-func (c *PoliciesCleaner) Handle(ctx context.Context, msg *idm.ChangeEvent) error {
+func (c *PoliciesCleaner) Handle(ctx context.Context, dao resources.DAO, msg *idm.ChangeEvent) error {
 
 	if msg.Type != idm.ChangeEventType_DELETE {
 		return nil
 	}
 
-	var subject string
+	var subjects []string
 	if c.Options.SubscribeRoles && msg.Role != nil {
-		subject = fmt.Sprintf("role:%s", msg.Role.Uuid)
+		subjects = append(subjects, permissions.PolicySubjectRolePrefix+msg.Role.Uuid)
 	}
 	if c.Options.SubscribeUsers && msg.User != nil {
 		if msg.User.IsGroup {
-			subject = fmt.Sprintf("role:%s", msg.User.Uuid)
+			subjects = append(subjects, permissions.PolicySubjectRolePrefix+msg.User.Uuid)
 		} else {
-			subject = fmt.Sprintf("user:%s", msg.User.Login)
+			subjects = append(subjects, permissions.PolicySubjectUuidPrefix+msg.User.Uuid)
+			subjects = append(subjects, permissions.PolicySubjectLoginPrefix+msg.User.Login)
 		}
 	}
 
-	if len(subject) > 0 {
-		log.Logger(c.LogCtx).Debug("DELETING POLICIES ON EVENT", zap.Any("event", msg), zap.String("subject", subject))
-		dao := c.Dao.(resources.DAO)
-		return dao.DeletePoliciesBySubject(subject)
+	for _, subject := range subjects {
+		log.Logger(ctx).Info("Deleting policies on event", zap.Any("event", msg), zap.String("subject", subject))
+		if er := dao.DeletePoliciesBySubject(ctx, subject); er != nil {
+			log.Logger(ctx).Info("Failed to delete policies on event", zap.String("subject", subject), zap.Error(er))
+		}
 	}
 	return nil
 

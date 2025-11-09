@@ -25,32 +25,26 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/sqlite"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/idm/user"
-	srv "github.com/pydio/cells/v4/idm/user/grpc"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/server/stubs/inject"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	srv "github.com/pydio/cells/v5/idm/user/grpc"
 )
 
-func NewUsersService(users ...*idm.User) (grpc.ClientConnInterface, error) {
-	ctx := context.Background()
-
-	mockDAO, e := dao.InitDAO(ctx, sqlite.Driver, sqlite.SharedMemDSN, "idm_user", user.NewDAO, configx.New())
-	if e != nil {
-		return nil, e
-	}
+// NewUsersService registers a mock - Warning, passed context must contain necessary data to resolve DAO
+func NewUsersService(ctx context.Context, svc service.Service, users ...*idm.User) (grpc.ClientConnInterface, error) {
 
 	serv := &idm.UserServiceStub{
-		UserServiceServer: srv.NewHandler(nil, mockDAO.(user.DAO)),
+		UserServiceServer: srv.NewHandler(),
 	}
-	ctx = servicecontext.WithDAO(ctx, mockDAO)
+	mock := &inject.SvcInjectorMock{ClientConnInterface: serv, Svc: svc}
+	ctx = propagator.With(ctx, service.ContextKey, svc)
 	for _, u := range users {
 		_, er := serv.UserServiceServer.CreateUser(ctx, &idm.CreateUserRequest{User: u})
 		if er != nil {
 			return nil, er
 		}
 	}
-	return serv, nil
+	return mock, nil
 }

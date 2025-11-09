@@ -22,33 +22,28 @@ package idmtest
 
 import (
 	"context"
+
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/sqlite"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/idm/workspace"
-	srv "github.com/pydio/cells/v4/idm/workspace/grpc"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/server/stubs/inject"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	srv "github.com/pydio/cells/v5/idm/workspace/grpc"
 )
 
-func NewWorkspacesService(ww ...*idm.Workspace) (grpc.ClientConnInterface, error) {
-	ctx := context.Background()
-
-	mockDAO, e := dao.InitDAO(ctx, sqlite.Driver, sqlite.SharedMemDSN, "idm_workspace", workspace.NewDAO, configx.New())
-	if e != nil {
-		return nil, e
-	}
+func NewWorkspacesService(ctx context.Context, svc service.Service, ww ...*idm.Workspace) (grpc.ClientConnInterface, error) {
 	serv := &idm.WorkspaceServiceStub{
-		WorkspaceServiceServer: srv.NewHandler(nil, mockDAO.(workspace.DAO)),
+		WorkspaceServiceServer: srv.NewHandler(),
 	}
-	ctx = servicecontext.WithDAO(ctx, mockDAO)
+	mock := &inject.SvcInjectorMock{ClientConnInterface: serv, Svc: svc}
+	ctx = propagator.With(ctx, service.ContextKey, svc)
+
 	for _, u := range ww {
 		_, er := serv.WorkspaceServiceServer.CreateWorkspace(ctx, &idm.CreateWorkspaceRequest{Workspace: u})
 		if er != nil {
 			return nil, er
 		}
 	}
-	return serv, nil
+	return mock, nil
 }

@@ -22,14 +22,14 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/pydio/cells/v4/common/log"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 var createAclCmd = &cobra.Command{
@@ -43,7 +43,7 @@ DESCRIPTION
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		client := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(cmd.Context(), common.ServiceAcl))
+		client := idm.NewACLServiceClient(grpc.ResolveConn(cmd.Context(), common.ServiceAclGRPC))
 
 		if action == "" || value == "" || (roleID == "" && workspaceID == "" && nodeID == "") {
 			log.Fatal("Please provide at least one of role_id, workspace_id or node_id, and an action name/value")

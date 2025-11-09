@@ -1,89 +1,40 @@
-/*
- * Copyright (c) 2019-2022. Abstrium SAS <team (at) pydio.com>
- * This file is part of Pydio Cells.
- *
- * Pydio Cells is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Pydio Cells is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with Pydio Cells.  If not, see <http://www.gnu.org/licenses/>.
- *
- * The latest code can be found at <https://pydio.com>.
- */
-
 package configx
 
 import (
-	"errors"
+	"context"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/cast"
+
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
-var (
-	ErrNoMarshallerDefined  = errors.New("no marshaller defined")
-	ErrNoUnmarshalerDefined = errors.New("no unmarshaler defined")
-)
-
-type Scanner interface {
-	Scan(interface{}, ...Option) error
+type Values interface {
+	Storer
+	Caster
 }
 
-type Watcher interface {
-	Watch(opts ...WatchOption) (Receiver, error)
+type Storer interface {
+	Context(ctx context.Context) Values
+	Options() *Options
+	Key() []string
+	Val(path ...string) Values
+	Default(def any) Values
+	Get() any
+	Set(value any) error
+	Del() error
 }
 
-type Receiver interface {
-	Next() (interface{}, error)
-	Stop()
-}
-
-type WatchOption func(*WatchOptions)
-
-type WatchOptions struct {
-	Path        []string
-	ChangesOnly bool
-}
-
-func WithPath(path ...string) WatchOption {
-	return func(o *WatchOptions) {
-		o.Path = path
-	}
-}
-
-func WithChangesOnly() WatchOption {
-	return func(o *WatchOptions) {
-		o.ChangesOnly = true
-	}
-}
-
-// TODO - we should be returning a Value
-type KV struct {
-	Key   string
-	Value interface{}
-}
-
-type Key interface{}
-
-type Value interface {
-	Default(interface{}) Value
-
+type Caster interface {
 	Bool() bool
 	Bytes() []byte
-	Key() []string
-	Reference() Ref
 	Interface() interface{}
 	Int() int
 	Int64() int64
@@ -93,720 +44,395 @@ type Value interface {
 	StringArray() []string
 	Slice() []interface{}
 	Map() map[string]interface{}
-
 	Scanner
 }
 
-type KVStore interface {
-	Get() Value
-	Set(value interface{}) error
-	Del() error
+type Scanner interface {
+	Scan(out any, options ...Option) error
 }
 
-type Entrypoint interface {
-	KVStore
-	Val(path ...string) Values
-}
+type storer struct {
+	v    *any
+	d    any
+	k    []string // Reference to current key
+	opts *Options
 
-type Values interface {
-	Entrypoint
-	Value
-}
-
-type Ref interface {
-	Get() string
-}
-
-type Source interface {
-	Entrypoint
-	Watcher
-}
-
-func NewFrom(i interface{}) Values {
-	c := New()
-	c.Set(i)
-	return c
-}
-
-// config is standard
-type config struct {
-	v       interface{}
-	d       interface{} // Default
-	r       *config     // Root
-	k       []string    // Reference to key for re-assignment
-	opts    Options
+	mutex   *sync.RWMutex
 	rLocked bool
 }
 
-func newWithRoot(v interface{}, root *config, k []string, opts Options) Values {
-	opts.RWMutex = &sync.RWMutex{}
-	return &config{
-		v:    v,
-		r:    root,
-		k:    k,
-		opts: opts,
-	}
-}
-
-func New(opts ...Option) Values {
-	options := Options{
-		RWMutex: &sync.RWMutex{},
-	}
+func New(opts ...Option) (ret Values) {
+	options := &Options{}
 
 	for _, o := range opts {
-		o(&options)
+		o(options)
 	}
 
-	return &config{
-		opts: options,
-	}
-}
-
-func (c *config) rLock() func() {
-	if c.opts.RWMutex == nil || c.rLocked {
-		return func() {}
-	}
-	c.opts.RLock()
-	c.rLocked = true
-	return func() {
-		c.rLocked = false
-		c.opts.RUnlock()
-	}
-}
-
-func (c *config) get() interface{} {
-	if c == nil {
-		return nil
-	}
-
-	if c.v != nil {
-		useDefault := false
-
-		switch vv := c.v.(type) {
-		case map[interface{}]interface{}:
-			if ref, ok := vv["$ref"]; ok {
-				vvv := c.r.Val(ref.(string)).Get()
-				switch vvvv := vvv.(type) {
-				case *config:
-					return vvvv.get()
-				default:
-					return vvvv
-				}
-			}
-		case map[string]interface{}:
-			if ref, ok := vv["$ref"]; ok {
-				vvv := c.r.Val(ref.(string)).Get()
-				switch vvvv := vvv.(type) {
-				case *config:
-					return vvvv.get()
-				default:
-					return vvvv
-				}
-			}
-		case []byte:
-			if len(vv) == 0 {
-				useDefault = true
-			}
-		case string:
-			if vv == "default" {
-				useDefault = true
-			}
-		}
-
-		if !useDefault {
-			str, ok := c.v.(string)
-			if ok {
-				if d := c.opts.Decrypter; d != nil {
-					b, err := d.Decrypt(str)
-					if err != nil {
-						return c.v
-					}
-					return string(b)
-				}
-			}
-			return c.v
-		} else if c.d == nil {
-			return c.v
-		}
-	}
-
-	if c.d != nil {
-		switch vv := c.d.(type) {
-		case map[string]interface{}:
-			if ref, ok := vv["$ref"]; ok {
-				vvv := c.r.Val(ref.(string)).Get()
-				switch vvvv := vvv.(type) {
-				case *config:
-					return vvvv.get()
-				default:
-					return vvvv
-				}
-			}
-		case *ref:
-			vvv := c.r.Val(vv.Get()).Get()
-			switch vvvv := vvv.(type) {
-			case *config:
-				return vvvv.get()
-			default:
-				return vvvv
-			}
-		case *config:
-			return vv.get()
-		}
-		return c.d
-	}
-
-	return nil
-}
-
-// Get retrieve interface
-func (c *config) Get() Value {
-	u := c.rLock()
-	defer u()
-
-	if c.v == nil && c.d == nil {
-		return nil
-	}
-
-	switch vv := c.v.(type) {
-	case map[string]interface{}:
-		if ref, ok := vv["$ref"]; ok {
-			return c.r.Val(ref.(string)).Get()
-		}
-	case *ref:
-		if c.r == nil {
-			return nil
-		}
-		return c.r.Val(vv.Get()).Get()
-	}
-
-	return c
-}
-
-// Default value set
-func (c *config) Default(i interface{}) Value {
-	if c.d == nil {
-		c.d = i
-	}
-
-	switch vv := c.v.(type) {
-	case string:
-		if vv == "default" {
-			c.v = nil
-		}
-	}
-
-	return c.Get()
-}
-
-// Set data in interface
-func (c *config) Set(data interface{}) error {
-	if c == nil {
-		return fmt.Errorf("value doesn't exist")
-	}
-
-	if c.opts.Unmarshaler != nil {
-		switch vv := data.(type) {
-		case []byte:
-			if len(vv) > 0 {
-				if err := c.opts.Unmarshaler.Unmarshal(vv, &data); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	switch d := data.(type) {
-	case *config:
-		data = d.v
-	}
-
-	// convert data to map
-	/*switch reflect.ValueOf(data).Kind() {
-	case reflect.Struct:
-		var out map[string]interface{}
-
-		if err := mapstructure.Decode(data, &out); err != nil {
-			return err
-		}
-
-		data = out
-	}*/
-
-	if len(c.k) == 0 {
-		if c.opts.SetCallback != nil {
-			c.opts.SetCallback(c.k, data)
-		}
-
-		c.v = data
-
-		return nil
-	}
-
-	k := c.k[len(c.k)-1]
-	pk := c.k[0 : len(c.k)-1]
-
-	// Retrieve parent value
-	p := c.r.Val(pk...)
-
-	del := false
-	if data == nil {
-		del = true
+	if st := options.Storer; st != nil {
+		ret = caster{Storer: st}
 	} else {
-		if enc := c.opts.Encrypter; enc != nil {
-			switch vv := data.(type) {
-			case []byte:
-				// Encrypting value
-				str, err := enc.Encrypt(vv)
-				if err != nil {
-					return err
-				}
-
-				data = str
-			case string:
-				// Encrypting value
-				str, err := enc.Encrypt([]byte(vv))
-				if err != nil {
-					return err
-				}
-
-				data = str
-			}
-		}
+		var v any
+		ret = caster{Storer: storer{v: &v, opts: options}}
 	}
 
-	pv := reflect.ValueOf(p.Interface())
-	switch pv.Kind() {
-	case reflect.Slice:
-		kk, err := strconv.Atoi(k)
-		if err != nil {
-			return fmt.Errorf("wrong key for slice")
-		}
-
-		m := p.Slice()
-
-		var mm []interface{}
-		if cap(m) < kk+1 {
-			mm = make([]interface{}, kk+1)
-		} else {
-			mm = make([]interface{}, len(m))
-		}
-
-		copy(mm, m)
-
-		c.opts.RWMutex.Lock()
-		if del {
-			mm = append(mm[:kk], mm[kk+1:]...)
-		} else {
-			mm[kk] = data
-		}
-		c.opts.RWMutex.Unlock()
-
-		p.Set(mm)
-	case reflect.Map:
-		m := p.Map()
-
-		unlock := c.rLock()
-		mm := make(map[string]interface{})
-		for k, v := range m {
-			mm[k] = v
-		}
-		unlock()
-
-		if del {
-			delete(mm, k)
-		} else {
-			mm[k] = data
-		}
-
-		p.Set(mm)
-	case reflect.Struct:
-		mm := make(map[string]interface{})
-		mv := reflect.ValueOf(mm)
-
-		unlock := c.rLock()
-		pt := reflect.TypeOf(p.Interface())
-		for i := 0; i < pt.NumField(); i++ {
-			name := pt.Field(i).Name
-			mv.SetMapIndex(reflect.ValueOf(name), pv.FieldByName(name))
-		}
-		unlock()
-
-		if del {
-			delete(mm, k)
-		} else {
-			mm[k] = data
-		}
-
-		p.Set(mm)
-	default:
-		kk, err := strconv.Atoi(k)
-		if err == nil {
-			mm := make([]interface{}, kk+1)
-
-			c.opts.RWMutex.Lock()
-			if del {
-				mm = append(mm[:kk], mm[kk+1:]...)
-			} else {
-				mm[kk] = data
-			}
-			c.opts.RWMutex.Unlock()
-
-			p.Set(mm)
-		} else {
-			mm := make(map[string]interface{})
-			if del {
-				delete(mm, k)
-			} else {
-				mm[k] = data
-			}
-
-			p.Set(mm)
-		}
+	if enc, dec := options.Encrypter, options.Decrypter; enc != nil && dec != nil {
+		ret = encrypter{Values: ret, Encrypter: enc, Decrypter: dec}
 	}
 
-	if mtx := c.opts.RWMutex; mtx != nil {
-		mtx.Lock()
-		defer mtx.Unlock()
+	if mar, unm := options.Marshaller, options.Unmarshaler; mar != nil && unm != nil {
+		ret = marshaller{Values: ret, Marshaller: mar, Unmarshaler: unm}
 	}
 
-	if c.opts.SetCallback != nil {
-		c.opts.SetCallback(c.k, data)
-	}
-
-	c.v = data
-
-	return nil
+	return ret
 }
 
-func (c *config) Del() error {
-	if c == nil {
-		return fmt.Errorf("value doesn't exist")
+func Walk(keys []string, current any, fn func(i int, v any) (bool, error)) error {
+
+	if cont, err := fn(-1, current); err != nil {
+		return err
+	} else if !cont {
+		return nil
 	}
 
-	return c.Set(nil)
-}
-
-// Val values cannot retrieve lower values as it is final
-func (c *config) Val(s ...string) Values {
-	keys := StringToKeys(s...)
-
-	// Need to do something for reference
-	if len(keys) == 1 && keys[0] == "#" {
-		if c.r != nil {
-			return c.r
-		}
-		return c
-	} else if len(keys) > 0 && keys[0] == "#" {
-		keys = keys[1:]
-	} else {
-		keys = append(c.k, keys...)
-	}
-
-	root := c.r
-	if c.r == nil {
-		root = c
-	}
-
-	if len(keys) == 0 {
-		return c
-	}
-
-	pk := keys
-
-	// Looking for the specific key
-	var current interface{} = root.Interface()
-
-	unlocker := c.rLock()
-	defer unlocker()
-
-	for _, pkk := range pk {
-		cvv := reflect.ValueOf(current)
-
-		switch cvv.Kind() {
-		case reflect.Ptr:
-			if cvv.Elem().Kind() != reflect.Struct {
-				return newWithRoot(nil, root, keys, c.opts)
+	for i, k := range keys {
+		switch v := current.(type) {
+		case []any:
+			kk, err := strconv.Atoi(k)
+			if err != nil {
+				return err
 			}
-			f := cvv.Elem().FieldByName(pkk)
-			if f.IsValid() {
-				current = f.Interface()
+
+			if kk >= len(v) {
+				return errors.New("invalid key")
+			}
+
+			current = v[kk]
+		case map[any]any:
+			if vv, ok := v[k]; ok {
+				current = vv
 			} else {
-				return newWithRoot(nil, root, keys, c.opts)
+				return errors.New("invalid key")
 			}
-		case reflect.Struct:
-			f := cvv.FieldByName(pkk)
-			if f.IsValid() {
-				current = f.Interface()
+		case map[string]any:
+			if vv, ok := v[k]; ok {
+				current = vv
 			} else {
-				return newWithRoot(nil, root, keys, c.opts)
+				return errors.New("invalid key")
 			}
-		case reflect.Map:
-			f := cvv.MapIndex(reflect.ValueOf(pkk))
-			if f.IsValid() {
-				current = f.Interface()
-			} else {
-				return newWithRoot(nil, root, keys, c.opts)
-			}
-		case reflect.Slice:
-			i, err := strconv.Atoi(pkk)
-			if err != nil || i < 0 || i >= cvv.Len() {
-				return newWithRoot(nil, root, keys, c.opts)
-			}
-
-			current = cvv.Index(i).Interface()
 		default:
-			return newWithRoot(nil, root, keys, c.opts)
+			current = nil
 		}
 
-		/*
-			switch cv := current.(type) {
-			case map[interface{}]interface{}:
-				cvv, ok := cv[pkk]
-				if !ok {
-					// The parent doesn't actually exist here, we return the nil value
-					return &config{nil, nil, root, keys, c.opts}
-				}
-
-				current = cvv
-			case map[string]string:
-				cvv, ok := cv[pkk]
-				if !ok {
-					// The parent doesn't actually exist here, we return the nil value
-					return &config{nil, nil, root, keys, c.opts}
-				}
-
-				current = cvv
-			case map[string]interface{}:
-				cvv, ok := cv[pkk]
-				if !ok {
-					// The parent doesn't actually exist here, we return the nil value
-					return &config{nil, nil, root, keys, c.opts}
-				}
-
-				current = cvv
-			case []interface{}:
-				i, err := strconv.Atoi(pkk)
-				if err != nil || i < 0 || i >= len(cv) {
-					return &config{nil, nil, root, keys, c.opts}
-				}
-
-				cvv := cv[i]
-
-				current = cvv
-
-			default:
-				cvv := reflect.ValueOf(cv)
-
-				switch cvv.Kind() {
-				case reflect.Ptr:
-					f := cvv.Elem().FieldByName(pkk)
-					if f.IsValid() {
-						current = f.Interface()
-					}
-				case reflect.Struct:
-					f := cvv.FieldByName(pkk)
-					if f.IsValid() {
-						current = f.Interface()
-					}
-				default:
-					return &config{nil, nil, root, keys, c.opts}
-				}
-			}*/
+		if cont, err := fn(i, current); err != nil {
+			return err
+		} else if !cont {
+			break
+		}
 	}
 
-	return newWithRoot(current, root, keys, c.opts)
+	return nil
 }
 
-// Scan to interface
-func (c *config) Scan(val interface{}, options ...Option) error {
+func (c storer) Context(ctx context.Context) Values {
 	opts := c.opts
+	opts.Context = ctx
 
-	unlocker := c.rLock()
-	defer unlocker()
-
-	v := c.get()
-	if v == nil {
-		return nil
+	return &caster{
+		Storer: &storer{
+			v:     c.v,
+			k:     c.k,
+			opts:  opts,
+			mutex: c.mutex,
+		},
 	}
+}
 
-	if len(options) > 0 {
-		opts = Options{}
-		for _, o := range options {
-			o(&opts)
-		}
+func (c storer) Val(s ...string) Values {
+	return caster{
+		storer{
+			v:     c.v,
+			k:     std.StringToKeys(append(c.k, s...)...),
+			opts:  c.opts,
+			mutex: c.mutex,
+		},
 	}
+}
 
-	marshaller := opts.Marshaller
-	if marshaller == nil {
-		rtarget := reflect.ValueOf(val)
-		rtargetValType := reflect.TypeOf(val).Elem()
-		rorig := reflect.ValueOf(v)
-
-		switch rtarget.Kind() {
-		case reflect.Ptr:
-			el := rtarget.Elem()
-			if !el.IsValid() {
-				return fmt.Errorf("invalid value")
-			}
-			if el.Kind() != rorig.Kind() {
-				return fmt.Errorf("invalid value (not the same kind)")
-			}
-			el.Set(reflect.ValueOf(v))
-
-		case reflect.Map:
-			orig := rorig
-			if rorig.Kind() == reflect.Ptr {
-				orig = rorig.Elem()
-			}
-
-			if orig.Kind() != reflect.Map {
-				return fmt.Errorf("invalid origin value")
-			}
-
-			for _, key := range orig.MapKeys() {
-				mv := orig.MapIndex(key)
-				if mv.IsValid() {
-					if mv.Elem().Type().ConvertibleTo(rtargetValType) {
-						rtarget.SetMapIndex(key, mv.Elem().Convert(rtargetValType))
-					} else {
-						out := reflect.New(rtargetValType)
-						if err := mapstructure.Decode(mv.Interface(), out.Interface()); err != nil {
-							return err
-						}
-
-						rtarget.SetMapIndex(key, out.Elem())
-					}
-				}
-			}
-		}
-		return nil
+func (c storer) Default(d any) Values {
+	return caster{
+		storer{
+			v:     c.v,
+			k:     c.k,
+			opts:  c.opts,
+			mutex: c.mutex,
+			d:     d,
+		},
 	}
+}
 
-	b, err := marshaller.Marshal(v)
+func (c storer) Key() []string {
+	return c.k
+}
+
+func (c storer) Options() *Options {
+	return c.opts
+}
+
+func (c storer) UnmarshalJSON(data []byte) error {
+	var m map[string]interface{}
+
+	err := c.opts.Unmarshaler.Unmarshal(data, &m)
 	if err != nil {
 		return err
 	}
-	if string(b) == "\"\"" {
-		// shouldn't unmarshal empty string
+
+	*c.v = m
+
+	return nil
+}
+
+func (c storer) MarshalJSON() ([]byte, error) {
+	return c.opts.Marshaller.Marshal(c.v)
+}
+
+func (c storer) Get() any {
+	var current any
+
+	if len(c.k) == 0 {
+		return *c.v
+	}
+
+	if err := Walk(c.k, *c.v, func(i int, v any) (bool, error) {
+		current = v
+
+		return true, nil
+	}); err != nil || current == nil {
+		return c.d
+	}
+
+	return current
+}
+
+func (c storer) Set(data any) error {
+
+	// Building the keys one by one
+	var current = data
+	for i := len(c.k); i >= 1; i-- {
+		k, err := strconv.Atoi(c.k[i-1])
+		if err == nil {
+			s := make([]any, k+1)
+			s[k] = current
+			current = s
+		} else {
+			m := make(map[string]any)
+			m[c.k[i-1]] = current
+			current = m
+		}
+	}
+
+	if merged, err := merge(*c.v, current); err != nil {
+		return err
+	} else {
+		*c.v = merged
+	}
+
+	return nil
+}
+
+func (c storer) Del() error {
+
+	if len(c.k) == 0 {
+		*c.v = nil
 		return nil
 	}
 
-	unmarshaler := opts.Unmarshaler
-	if unmarshaler == nil {
-		return ErrNoUnmarshalerDefined
+	// Retrieving parent
+	v := c.Val("#").Val(c.k[:len(c.k)-1]...)
+	switch vv := v.Interface().(type) {
+	case []any:
+		kk, err := strconv.Atoi(c.k[len(c.k)-1])
+		if err != nil {
+			return errors.New("wrong key for slice")
+		}
+
+		vv = append(vv[:kk], vv[kk+1:]...)
+
+		return v.Set(vv)
+	case map[any]any:
+		delete(vv, c.k[len(c.k)-1])
+
+		return v.Set(vv)
+	case map[string]any:
+		delete(vv, c.k[len(c.k)-1])
+
+		return v.Set(vv)
 	}
 
-	return unmarshaler.Unmarshal(b, val)
+	return nil
 }
 
-func (c *config) Bool() bool {
-	unlocker := c.rLock()
-	defer unlocker()
+func merge(dst any, src any) (any, error) {
+	if dst == nil {
+		return src, nil
+	}
 
-	v := c.get()
+	// If the src is nil, then it's a delete
+	if src == nil {
+		return nil, nil
+	}
+
+	var current any
+
+	switch dstV := dst.(type) {
+	case []any:
+		srcV, ok := src.([]any)
+		if !ok {
+			return src, nil
+		}
+
+		s := slices.Clone(dstV)
+		for k, v := range dstV {
+			if len(srcV) > k {
+				if merged, err := merge(v, srcV[k]); err != nil {
+					return nil, err
+				} else {
+					s[k] = merged
+				}
+			}
+		}
+
+		for i := len(dstV); i < len(srcV); i++ {
+			s = append(s, srcV[i])
+		}
+
+		current = s
+	case map[any]any:
+		var srcV map[any]any
+		switch vv := src.(type) {
+		case map[string]any:
+			srcV = map[any]any{}
+			for k, v := range vv {
+				srcV[k] = v
+			}
+		case map[any]any:
+			srcV = vv
+		default:
+			return src, nil
+		}
+
+		// Merging those that are both in dst and in src
+		m := maps.Clone(dstV)
+		for k, v := range srcV {
+			if merged, err := merge(dstV[k], v); err != nil {
+				return nil, err
+			} else {
+				m[k] = merged
+			}
+		}
+
+		current = m
+	case map[string]any:
+		var srcV map[string]any
+		switch vv := src.(type) {
+		case map[string]any:
+			srcV = vv
+		case map[any]any:
+			srcV = map[string]any{}
+			for k, v := range vv {
+				srcV[fmt.Sprintf("%s", k)] = v
+			}
+		default:
+			return src, nil
+		}
+
+		// Merging those that are both in dst and in src
+		m := maps.Clone(dstV)
+		for k, v := range srcV {
+			if merged, err := merge(dstV[k], v); err != nil {
+				return nil, err
+			} else {
+				m[k] = merged
+			}
+		}
+
+		current = m
+	default:
+		current = src
+	}
+
+	return current, nil
+}
+
+var _ Values = (*caster)(nil)
+
+type caster struct {
+	Storer
+}
+
+func (c caster) Bool() bool {
+	v := c.Get()
 	if v == nil {
 		return false
 	}
 	return cast.ToBool(v)
 }
-func (c *config) Bytes() []byte {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) Bytes() []byte {
+	v := c.Interface()
 	if v == nil {
 		return []byte{}
 	}
 
-	/*switch v := c.v.(type) {
-	case string:
-		// Need to handle it differently
-		if v == "default" {
-			c.v = nil
-		}
-	case interface{}, []interface{}, map[string]interface{}:
+	switch vv := v.(type) {
+	case map[string]any, map[any]any, []any:
+		if m := c.Options().Marshaller; m != nil {
+			data, err := m.Marshal(vv)
+			if err != nil {
+				return []byte{}
+			}
 
-	*/
-	if m := c.opts.Marshaller; m != nil {
-		data, err := m.Marshal(v)
-		if err != nil {
-			return []byte{}
+			return data
 		}
-
-		return data
 	}
-
-	/*	return []byte{}
-		}*/
 
 	return []byte(cast.ToString(v))
 }
-func (c *config) Key() []string {
-	if c.r != nil {
-		return append(c.r.k, c.k...)
-	}
-	return c.k
+
+func (c caster) Interface() interface{} {
+	return c.Get()
 }
-func (c *config) Reference() Ref {
-	r := &ref{}
-	if err := c.Scan(r); err != nil {
-		return nil
-	}
 
-	rr, ok := GetReference(r)
-	if ok {
-		return rr
-	}
-
-	return nil
-}
-func (c *config) Interface() interface{} {
-	unlocker := c.rLock()
-	defer unlocker()
-
-	return c.get()
-}
-func (c *config) Int() int {
-	unlocker := c.rLock()
-	defer unlocker()
-
-	v := c.get()
+func (c caster) Int() int {
+	v := c.Get()
 	if v == nil {
 		return 0
 	}
 	return cast.ToInt(v)
 }
-func (c *config) Int64() int64 {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) Int64() int64 {
+	v := c.Get()
 	if v == nil {
 		return 0
 	}
 	return cast.ToInt64(v)
 }
-func (c *config) Duration() time.Duration {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) Duration() time.Duration {
+	v := c.Get()
 	if v == nil {
 		return 0 * time.Second
 	}
 	return cast.ToDuration(v)
 }
-func (c *config) String() string {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) String() string {
 
-	switch v := c.v.(type) {
+	v := c.Get()
+	switch vv := v.(type) {
 	case []interface{}, map[string]interface{}:
-		if m := c.opts.Marshaller; m != nil {
-			data, err := m.Marshal(v)
+		if m := c.Options().Marshaller; m != nil {
+			data, err := m.Marshal(vv)
 			if err != nil {
 				return ""
 			}
@@ -815,69 +441,85 @@ func (c *config) String() string {
 		}
 
 		return ""
-	case string:
-		// Need to handle it differently
-		if v == "default" {
-			c.v = nil
-		}
 	}
 
 	return cast.ToString(v)
 }
-func (c *config) StringMap() map[string]string {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) StringMap() map[string]string {
+	v := c.Get()
 	if v == nil {
 		return map[string]string{}
 	}
 	return cast.ToStringMapString(v)
 }
-func (c *config) StringArray() []string {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) StringArray() []string {
+	v := c.Get()
 	if v == nil {
 		return []string{}
 	}
-	return cast.ToStringSlice(c.get())
+	return cast.ToStringSlice(c.Get())
 }
-func (c *config) Slice() []interface{} {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) Slice() []interface{} {
+	v := c.Get()
 	if v == nil {
 		return []interface{}{}
 	}
-	return cast.ToSlice(c.get())
+	return cast.ToSlice(c.Get())
 }
-func (c *config) Map() map[string]interface{} {
-	unlocker := c.rLock()
-	defer unlocker()
 
-	v := c.get()
+func (c caster) Map() map[string]interface{} {
+	v := c.Get()
 	if v == nil {
 		return map[string]interface{}{}
 	}
 	r, _ := cast.ToStringMapE(v)
 	return r
 }
-func (c *config) UnmarshalJSON(data []byte) error {
-	var m map[string]interface{}
 
-	err := c.opts.Unmarshaler.Unmarshal(data, &m)
-	if err != nil {
-		return err
+func (c caster) Scan(out any, options ...Option) error {
+
+	v := c.Get()
+	if v == nil {
+		return nil
 	}
 
-	c.v = m
+	var opts Options
+	for _, o := range options {
+		o(&opts)
+	}
+
+	marshaller := opts.Marshaller
+	if marshaller == nil {
+		marshaller = c.Options().Marshaller
+	}
+
+	unmarshaler := opts.Unmarshaler
+	if unmarshaler == nil {
+		unmarshaler = c.Options().Unmarshaler
+	}
+
+	var b []byte
+	if marshaller != nil {
+		if bb, err := marshaller.Marshal(c.Get()); err != nil {
+			return err
+		} else {
+			b = bb
+		}
+	}
+
+	if unmarshaler != nil {
+		return unmarshaler.Unmarshal(b, out)
+	} else {
+		rv := reflect.ValueOf(out).Elem()
+		if rv.CanSet() {
+			rv.Set(reflect.ValueOf(c.Get()))
+		} else {
+			return errors.New("cannot be set")
+		}
+	}
 
 	return nil
-}
-
-func (c *config) MarshalJSON() ([]byte, error) {
-	return c.opts.Marshaller.Marshal(c.v)
 }

@@ -27,11 +27,11 @@ then
   export PATH=$GOBIN:$PATH
   go install google.golang.org/protobuf/cmd/protoc-gen-go
   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
-  go install github.com/pydio/cells/cmd/protoc-gen-go-enhanced-grpc@main
   go install github.com/pydio/cells/cmd/protoc-gen-go-client-stub@main
+  go install github.com/pydio/cells/cmd/protoc-gen-go-tags
+  go install github.com/pydio/cells/cmd/protoc-gen-go-setter
   go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway
   go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2
-  go install github.com/mwitkow/go-proto-validators/protoc-gen-govalidators
 else
   export GOBIN=$PWD/bin
   export PATH=$GOBIN:$PATH
@@ -40,14 +40,23 @@ fi
 cd $1
 
 echo "Generate protobufs for $1"
-buf generate --output $GOPATH/src
-go run ../patch-imports.go
-
+buf generate --output .
+if [ -f  "buf.gen.tag.yaml" ]; then
+  # Debug mode if required add --debug
+  buf generate --template=buf.gen.tag.yaml --output .
+fi
+if [ -f  "buf.gen.python.yaml" ]; then
+  # Debug mode if required add --debug
+  buf generate --include-imports --template=buf.gen.python.yaml --output .
+fi
 if [ $1 == "rest" ]
 then
   echo "Generate OpenAPIv2 JSON specification"
   buf generate --path cellsapi-rest.proto --template buf.openapi.yaml
-  go run cmd/main.go
+  go run cmd/main.go ./cellsapi-rest.swagger.json
+  buf generate --path cellsapi-rest-v2.proto --template buf.openapi.yaml
+  go run cmd/main.go ./cellsapi-rest-v2.swagger.json
+  ./swagger.sh
 fi
 
 cd -

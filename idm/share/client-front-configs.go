@@ -24,19 +24,20 @@ import (
 	"context"
 	"time"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 type PluginOptions struct {
 	MaxExpiration           int
+	CellsMaxExpiration      int
 	MaxDownloads            int
 	HashMinLength           int
 	HashEditable            bool
@@ -54,32 +55,32 @@ func (sc *Client) CheckLinkOptionsAgainstConfigs(ctx context.Context, link *rest
 	if e != nil {
 		return PluginOptions{}, e
 	}
-	options := sc.defaultOptions()
+	options := sc.DefaultOptions(ctx)
 	checkScopes := permissions.FrontValuesScopesFromWorkspaceRelativePaths(wss)
 	options = sc.filterOptionsFromScopes(options, contextParams, checkScopes)
 
 	if files && !options.enableFilePublicLinks {
-		return options, errors.Forbidden("file.public-link.forbidden", "You are not allowed to create public link on files")
+		return options, errors.WithStack(errors.ShareFileLinkForbidden)
 	}
 	if folders && !options.enableFolderPublicLinks {
-		return options, errors.Forbidden("folder.public-link.forbidden", "You are not allowed to create public link on folders")
+		return options, errors.WithStack(errors.ShareFolderLinkForbidden)
 	}
 	if options.MaxDownloads > 0 && link.MaxDownloads > int64(options.MaxDownloads) {
-		return options, errors.Forbidden("link.max-downloads.mandatory", "Please set a maximum number of downloads for links")
+		return options, errors.WithStack(errors.ShareLinkMaxDownloadRequired)
 	}
 	if options.MaxExpiration > 0 && (link.AccessEnd == 0 || (link.AccessEnd-time.Now().Unix()) > int64(options.MaxExpiration*24*60*60)) {
-		return options, errors.Forbidden("link.max-expiration.mandatory", "Please set a maximum expiration date for links")
+		return options, errors.WithStack(errors.ShareLinkMaxExpirationRequired)
 	}
 	if options.ShareForcePassword && !link.PasswordRequired {
-		return options, errors.Forbidden("link.password.required", "Share links must use a password")
+		return options, errors.WithStack(errors.ShareLinkPasswordRequired)
 	}
 
 	return options, nil
 }
 
 // CheckCellOptionsAgainstConfigs loads specific share configurations from ACLs and checks that current cell complies with these.
-func (sc *Client) CheckCellOptionsAgainstConfigs(ctx context.Context, request *rest.PutCellRequest) error {
-	router := compose.ReverseClient(sc.RuntimeContext)
+func (sc *Client) CheckCellOptionsAgainstConfigs(ctx context.Context, cell *rest.Cell) error {
+	router := compose.ReverseClient()
 	acl, e := permissions.AccessListFromContextClaims(ctx)
 	if e != nil {
 		return e
@@ -88,15 +89,15 @@ func (sc *Client) CheckCellOptionsAgainstConfigs(ctx context.Context, request *r
 	if e != nil {
 		return e
 	}
-	options := sc.defaultOptions()
-	aclWss := acl.Workspaces
+	options := sc.DefaultOptions(ctx)
+	aclWss := acl.GetWorkspaces()
 	return router.WrapCallback(func(inputFilter nodes.FilterFunc, outputFilter nodes.FilterFunc) error {
-		for _, n := range request.Room.RootNodes {
+		for _, n := range cell.RootNodes {
 			var files, folders bool
 			var wss []*idm.Workspace
 			_, internal, _ := inputFilter(ctx, n, "in")
 			for _, ws := range aclWss {
-				if request.Room.Uuid == ws.UUID { // Ignore current room
+				if cell.Uuid == ws.UUID { // Ignore current room
 					continue
 				}
 				if _, ok := router.WorkspaceCanSeeNode(ctx, nil, ws, internal); ok {
@@ -114,19 +115,23 @@ func (sc *Client) CheckCellOptionsAgainstConfigs(ctx context.Context, request *r
 				return e
 			}
 			if files && !loopOptions.enableFileInternal {
-				return errors.Forbidden("file.share-internal.forbidden", "You are not allowed to create Cells on files")
+				return errors.WithStack(errors.ShareFileCellsForbidden)
 			}
 			if folders && !loopOptions.enableFolderInternal {
-				return errors.Forbidden("folder.share-internal.forbidden", "You are not allowed to create Cells on folders")
+				return errors.WithStack(errors.ShareFolderCellsForbidden)
+			}
+			if loopOptions.CellsMaxExpiration > 0 && (cell.AccessEnd == -1 || (cell.AccessEnd-time.Now().Unix()) > int64(loopOptions.CellsMaxExpiration*24*60*60)) {
+				return errors.WithStack(errors.ShareCellMaxExpirationRequired)
 			}
 		}
 		return nil
 	})
 }
 
-func (sc *Client) defaultOptions() PluginOptions {
+// DefaultOptions loads the plugin default options, without further context-based filtering
+func (sc *Client) DefaultOptions(ctx context.Context) PluginOptions {
 	// Defaults
-	configParams := config.Get("frontend", "plugin", "action.share")
+	configParams := config.Get(ctx, config.FrontendPluginPath("action.share")...)
 	options := PluginOptions{
 		MaxExpiration:           configParams.Val("FILE_MAX_EXPIRATION").Default(-1).Int(),
 		MaxDownloads:            configParams.Val("FILE_MAX_DOWNLOAD").Default(-1).Int(),
@@ -137,6 +142,7 @@ func (sc *Client) defaultOptions() PluginOptions {
 		enableFolderPublicLinks: configParams.Val("ENABLE_FOLDER_PUBLIC_LINK").Default(true).Bool(),
 		enableFolderInternal:    configParams.Val("ENABLE_FOLDER_INTERNAL_SHARING").Default(true).Bool(),
 		ShareForcePassword:      configParams.Val("SHARE_FORCE_PASSWORD").Default(false).Bool(),
+		CellsMaxExpiration:      configParams.Val("CELLS_MAX_EXPIRATION").Default(-1).Int(),
 	}
 	return options
 }
@@ -146,7 +152,9 @@ func (sc *Client) aclParams(ctx context.Context) (configx.Values, error) {
 	if e != nil {
 		return nil, e
 	}
-	permissions.AccessListLoadFrontValues(ctx, acl)
+	if er := permissions.AccessListLoadFrontValues(ctx, acl); er != nil {
+		return nil, er
+	}
 	return acl.FlattenedFrontValues().Val("parameters", "action.share"), nil
 }
 
@@ -163,6 +171,7 @@ func (sc *Client) filterOptionsFromScopes(options PluginOptions, contextParams c
 		options.enableFileInternal = contextParams.Val("ENABLE_FILE_INTERNAL_SHARING", scope).Default(options.enableFileInternal).Bool()
 		options.enableFolderPublicLinks = contextParams.Val("ENABLE_FOLDER_PUBLIC_LINK", scope).Default(options.enableFolderPublicLinks).Bool()
 		options.enableFolderInternal = contextParams.Val("ENABLE_FOLDER_INTERNAL_SHARING", scope).Default(options.enableFolderInternal).Bool()
+		options.CellsMaxExpiration = contextParams.Val("CELLS_MAX_EXPIRATION", scope).Default(options.CellsMaxExpiration).Int()
 	}
 
 	return options

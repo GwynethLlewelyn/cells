@@ -23,6 +23,12 @@
   "database.legend.bold": {
     "other": "MySQLのバージョンが5.6以上であることを確認してください。"
   },
+  "database.legend1": {
+    "other": "Pydio requires at least one SQL storage for configuration and data indexation."
+  },
+  "database.legend2": {
+    "other": "Supported databases are MySQL/MariaDB or PostgreSQL or SQLite."
+  },
   "database.installDetected": {
     "other": "データベースにセットアップされたCellsがあります。このまま続行するか確認してください。 "
   },
@@ -63,31 +69,31 @@
     "other": "ユーザーの個人データとcellsを保存するデータソースは、スタートアップ時に作成されます。後で、他のデータソースを作成することも可能です。"
   },
   "advanced.mongo.title": {
-    "other": "Configure a MongoDB Connection"
+    "other": "MongoDB 接続設定"
   },
   "advanced.mongo.legend": {
-    "other": "This is better for scalability, and required for clustering deployment. If you do not have a Mongo DB ready, this can be done later."
+    "other": "これは拡張性に優れていて、クラスタの展開に必要です。Mongo DBをまだ用意していない場合は、後で実行することもできます。"
   },
   "advanced.mongo.host": {
-    "other": "Server host"
+    "other": "サーバー ホスト名"
   },
   "advanced.mongo.port": {
-    "other": "Server port"
+    "other": "サーバー ポート"
   },
   "advanced.mongo.db": {
-    "other": "Database Name"
+    "other": "データベース名"
   },
   "advanced.mongo.username": {
-    "other": "Username"
+    "other": "ユーザー名"
   },
   "advanced.mongo.password": {
-    "other": "Password"
+    "other": "パスワード"
   },
   "advanced.mongo.authSource": {
-    "other": "Auth DB"
+    "other": "認証"
   },
   "advanced.mongo.validate": {
-    "other": "Test connection"
+    "other": "接続テスト"
   },
   "license.stepLabel": {
     "other": "エンタープライズライセンス"
@@ -134,11 +140,20 @@
   "form.dbConnectionType.label": {
     "other": "接続タイプ"
   },
-  "form.dbConnectionType.tcp": {
-    "other": "TCP"
+  "form.dbConnectionType.mysql_tcp": {
+    "other": "MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket": {
-    "other": "ソケット"
+  "form.dbConnectionType.mysql_socket": {
+    "other": "MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp": {
+    "other": "PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket": {
+    "other": "PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite": {
+    "other": "SQLite (dev purpose only)"
   },
   "form.dbConnectionType.manual": {
     "other": "手動"
@@ -179,6 +194,18 @@
   "form.dbSocketFile.legend": {
     "other": "接続に使用するソケットファイルの場所を入力してください"
   },
+  "form.dbSocketFileSQLite.label": {
+    "other": "Database Path"
+  },
+  "form.dbSocketFileSQLite.legend": {
+    "other": "Enter the location of the SQLite database"
+  },
+  "form.dbSqliteFile.label": {
+    "other": "File Path"
+  },
+  "form.dbSqliteFile.legend": {
+    "other": "Enter the location of the file to use as database"
+  },
   "form.dbManualDSN.label": {
     "other": "DSN"
   },
@@ -192,7 +219,7 @@
     "other": "プログラムのメインタイトル"
   },
   "form.frontendDefaultLanguage.label": {
-    "other": "デフォルトの言語"
+    "other": "既定の言語"
   },
   "form.frontendLogin.label": {
     "other": "管理者ユーザーのログイン *"
@@ -218,6 +245,9 @@
   "form.dsFolder.legend": {
     "other": "絶対パスを使用する"
   },
+  "form.dsType.Label": {
+    "other": "ストレージタイプ"
+  },
   "form.dsType.FS": {
     "other": "ローカル FS (このサーバーにすべてのデータを保存する)"
   },
@@ -225,7 +255,7 @@
     "other": "Amazon S3 / S3 互換(S3 バケット内に格納)"
   },
   "form.dsS3Custom.label": {
-    "other": "S3 互換ストレージエンドポイント"
+    "other": "URL, append ?minio=true if Minio."
   },
   "form.dsS3Custom.legend": {
     "other": "空白の場合Amazonになります"

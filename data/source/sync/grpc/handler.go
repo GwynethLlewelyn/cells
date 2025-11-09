@@ -22,503 +22,122 @@ package grpc
 
 import (
 	"context"
-	"fmt"
-	"math"
-	"strconv"
 	"strings"
-	sync2 "sync"
+	sync3 "sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/utils/std"
-
-	"github.com/pydio/cells/v4/common/runtime"
-
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	grpccli "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/objects/mc"
-	"github.com/pydio/cells/v4/common/proto/encryption"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/object"
-	protosync "github.com/pydio/cells/v4/common/proto/sync"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/sync/endpoints/index"
-	"github.com/pydio/cells/v4/common/sync/endpoints/s3"
-	"github.com/pydio/cells/v4/common/sync/merger"
-	"github.com/pydio/cells/v4/common/sync/model"
-	"github.com/pydio/cells/v4/common/sync/task"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/data/source/sync"
-	"github.com/pydio/cells/v4/scheduler/tasks"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/jobsc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/server"
+	"github.com/pydio/cells/v5/common/proto/sync"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/sync/merger"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/data/source"
+	sync2 "github.com/pydio/cells/v5/data/source/sync"
+	"github.com/pydio/cells/v5/data/source/sync/clients"
+	"github.com/pydio/cells/v5/scheduler/tasks"
 )
 
-// Handler structure
 type Handler struct {
-	globalCtx      context.Context
-	dsName         string
-	handlerName    string
-	errorsDetected chan string
-
-	indexClientRead    tree.NodeProviderClient
-	indexClientWrite   tree.NodeReceiverClient
-	indexClientClean   protosync.SyncEndpointClient
-	indexClientSession tree.SessionIndexerClient
-	s3client           model.Endpoint
-
-	syncTask     *task.Sync
-	SyncConfig   *object.DataSource
-	ObjectConfig *object.MinioConfig
-
-	watcher configx.Receiver
-	stop    chan bool
+	grpc_health_v1.HealthServer
+	PresetSync *Syncer
+	*source.Resolver[*Syncer]
 
 	tree.UnimplementedNodeProviderServer
 	tree.UnimplementedNodeReceiverServer
-	protosync.UnimplementedSyncEndpointServer
+	tree.UnimplementedNodeChangesReceiverStreamerServer
+	sync.UnimplementedSyncEndpointServer
 	object.UnimplementedDataSourceEndpointServer
 	object.UnimplementedResourceCleanerEndpointServer
+	server.UnimplementedReadyzServer
 }
 
-func NewHandler(ctx context.Context, handlerName, datasource string) (*Handler, error) {
-	h := &Handler{
-		globalCtx:      ctx,
-		dsName:         datasource,
-		handlerName:    handlerName,
-		errorsDetected: make(chan string),
-		stop:           make(chan bool),
-	}
-	/*
-		var syncConfig *object.DataSource
-		if err := config.Get("services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+datasource).Scan(&syncConfig); err != nil {
-			return nil, err
-		}
-		if sec := config.GetSecret(syncConfig.ApiSecret).String(); sec != "" {
-			syncConfig.ApiSecret = sec
-		}
-
-		e := h.initSync(syncConfig)
-	*/
-
-	return h, nil
-}
-
-func (s *Handler) Init() error {
-
-	var syncConfig *object.DataSource
-	if err := config.Get("services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+s.dsName).Scan(&syncConfig); err != nil {
-		return err
-	}
-	if sec := config.GetSecret(syncConfig.ApiSecret).String(); sec != "" {
-		syncConfig.ApiSecret = sec
-	}
-
-	return s.initSync(syncConfig)
-
-}
-
-func (s *Handler) Name() string {
-	return s.handlerName
-}
-
-func (s *Handler) Start() {
-	s.syncTask.Start(s.globalCtx, true)
-	go s.watchConfigs()
-	go s.watchErrors()
-	go s.watchDisconnection()
-	go func() {
-		<-s.globalCtx.Done()
-		s.Stop()
-	}()
-}
-
-func (s *Handler) Stop() {
-	s.stop <- true
-	s.syncTask.Shutdown()
-	if s.watcher != nil {
-		s.watcher.Stop()
-	}
-}
-
-func (s *Handler) StartConfigsOnly() {
-	go s.watchConfigs()
-	go func() {
-		<-s.globalCtx.Done()
-		s.StopConfigsOnly()
-	}()
-}
-
-func (s *Handler) StopConfigsOnly() {
-	if s.watcher != nil {
-		s.watcher.Stop()
-	}
-}
-
-// BroadcastCloseSession forwards session id to underlying sync task
-func (s *Handler) BroadcastCloseSession(sessionUuid string) {
-	if s.syncTask == nil {
-		return
-	}
-	s.syncTask.BroadcastCloseSession(sessionUuid)
-}
-
-func (s *Handler) NotifyError(errorPath string) {
-	s.errorsDetected <- errorPath
-}
-
-func (s *Handler) initSync(syncConfig *object.DataSource) error {
-
-	ctx := s.globalCtx
-	dataSource := s.dsName
-
-	// Making sure Object AND underlying S3 is started
-	var minioConfig *object.MinioConfig
-	var indexOK bool
-	wg := &sync2.WaitGroup{}
-	wg.Add(2)
-
-	// Making sure index is started
-	go func() {
-		defer wg.Done()
-		log.Logger(ctx).Debug("Sync " + dataSource + " - Try to contact Index")
-		cli := tree.NewNodeProviderClient(grpccli.GetClientConnFromCtx(ctx, common.ServiceDataIndex_+dataSource))
-		if _, e := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: "/"}}); e != nil {
-			return
-		}
-		log.Logger(ctx).Info("Index connected")
-		indexOK = true
-	}()
-
-	// Making sure Objects is started
-	var minioErr error
-	go func() {
-		defer wg.Done()
-		cli := object.NewObjectsEndpointClient(grpccli.GetClientConnFromCtx(ctx, common.ServiceDataObjects_+syncConfig.ObjectsServiceName))
-		resp, err := cli.GetMinioConfig(ctx, &object.GetMinioConfigRequest{})
-		if err != nil {
-			log.Logger(ctx).Warn(common.ServiceDataObjects_+syncConfig.ObjectsServiceName+" not yet available", zap.Error(err))
-			minioErr = err
-			return
-		} else if resp.MinioConfig == nil {
-			log.Logger(ctx).Debug(common.ServiceDataObjects_ + syncConfig.ObjectsServiceName + " not yet available")
-			minioErr = fmt.Errorf("empty config")
-			return
-		}
-		minioConfig = resp.MinioConfig
-		if sec := config.GetSecret(minioConfig.ApiSecret).String(); sec != "" {
-			minioConfig.ApiSecret = sec
-		}
-
-		var retryCount int
-		minioErr = std.Retry(ctx, func() error {
-			retryCount++
-			oc, e := mc.New(minioConfig.BuildUrl(), minioConfig.ApiKey, minioConfig.ApiSecret, minioConfig.RunningSecure)
-			if e != nil {
-				log.Logger(ctx).Error("Cannot create objects client", zap.Error(e))
-				return e
-			}
-			testCtx := metadata.NewContext(ctx, map[string]string{common.PydioContextUserKey: common.PydioSystemUsername})
-			if syncConfig.ObjectsBucket == "" {
-				log.Logger(ctx).Debug("Sending ListBuckets", zap.Any("config", syncConfig))
-				_, err = oc.ListBuckets(testCtx)
-				if err != nil {
-					//if retryCount > 1 {
-					//	log.Logger(ctx).Warn("Cannot contact s3 service (list buckets), will retry in 4s", zap.Error(err))
-					//}
-					return err
-				} else {
-					log.Logger(ctx).Info("Successfully listed buckets")
-					return nil
-				}
-			} else {
-				log.Logger(ctx).Debug("Sending ListObjects")
-				t := time.Now()
-				_, err = oc.ListObjects(testCtx, syncConfig.ObjectsBucket, "", "/", "/", 1)
-				log.Logger(ctx).Debug("Sent ListObjects")
-				if err != nil {
-					if retryCount > 1 {
-						log.Logger(ctx).Warn("Cannot contact s3 service (bucket "+syncConfig.ObjectsBucket+"), will retry in 1s", zap.Error(err))
-					}
-					return err
-				} else {
-					log.Logger(ctx).Info(fmt.Sprintf("Successfully retrieved first object from bucket %s (%s)", syncConfig.ObjectsBucket, time.Since(t)))
-					return nil
-				}
-			}
-		}, 1*time.Second, 180*time.Second)
-	}()
-
-	wg.Wait()
-
-	if minioErr != nil {
-		return fmt.Errorf("objects not reachable: %v", minioErr)
-	} else if minioConfig == nil {
-		return fmt.Errorf("objects not reachable")
-	} else if !indexOK {
-		return fmt.Errorf("index not reachable")
-	}
-
-	var source model.PathSyncTarget
-	if syncConfig.Watch {
-		return fmt.Errorf("datasource watch is not implemented yet")
-	}
-	normalizeS3, _ := strconv.ParseBool(syncConfig.StorageConfiguration[object.StorageKeyNormalize])
-	var computer func(string) (int64, error)
-	if syncConfig.EncryptionMode != object.EncryptionMode_CLEAR {
-		keyClient := encryption.NewNodeKeyManagerClient(grpccli.GetClientConnFromCtx(ctx, common.ServiceEncKey))
-		computer = func(nodeUUID string) (i int64, e error) {
-			if resp, e := keyClient.GetNodePlainSize(ctx, &encryption.GetNodePlainSizeRequest{
-				NodeId: nodeUUID,
-				UserId: "ds:" + syncConfig.Name,
-			}); e == nil {
-				log.Logger(ctx).Debug("Loaded plain size from data-key service")
-				return resp.GetSize(), nil
-			} else {
-				log.Logger(ctx).Error("Cannot loaded plain size from data-key service", zap.Error(e))
-				return 0, e
-			}
-		}
-	}
-	options := model.EndpointOptions{}
-	bucketTags, o1 := syncConfig.StorageConfiguration[object.StorageKeyBucketsTags]
-	o1 = o1 && bucketTags != ""
-	objectsTags, o2 := syncConfig.StorageConfiguration[object.StorageKeyObjectsTags]
-	o2 = o2 && objectsTags != ""
-	var syncMetas bool
-	if o1 || o2 {
-		syncMetas = true
-		options.Properties = make(map[string]string)
-		if o1 {
-			options.Properties[object.StorageKeyBucketsTags] = bucketTags
-		}
-		if o2 {
-			options.Properties[object.StorageKeyObjectsTags] = objectsTags
-		}
-	}
-	if readOnly, o := syncConfig.StorageConfiguration[object.StorageKeyReadonly]; o && readOnly == "true" {
-		options.BrowseOnly = true
-	}
-	var keepNativeEtags bool
-	if k, o := syncConfig.StorageConfiguration[object.StorageKeyNativeEtags]; o && k == "true" {
-		keepNativeEtags = true
-	}
-	if syncConfig.ObjectsBucket == "" {
-		var bucketsFilter string
-		if f, o := syncConfig.StorageConfiguration[object.StorageKeyBucketsRegexp]; o {
-			bucketsFilter = f
-		}
-		multiClient, errs3 := s3.NewMultiBucketClient(ctx,
-			minioConfig.BuildUrl(),
-			minioConfig.ApiKey,
-			minioConfig.ApiSecret,
-			false,
-			options,
-			bucketsFilter,
-		)
-		if errs3 != nil {
-			return errs3
-		}
-		if normalizeS3 {
-			multiClient.SetServerRequiresNormalization()
-		}
-		if computer != nil {
-			multiClient.SetPlainSizeComputer(computer)
-		}
-		if dao := servicecontext.GetDAO(s.globalCtx); dao != nil {
-			if csm, ok := dao.(s3.ChecksumMapper); ok {
-				multiClient.SetChecksumMapper(csm)
-			}
-		}
-		if keepNativeEtags {
-			multiClient.SkipRecomputeEtagByCopy()
-		}
-
-		source = multiClient
-
+func (h *Handler) getSyncer(ctx context.Context) (*Syncer, bool) {
+	if h.PresetSync != nil {
+		return h.PresetSync, true
 	} else {
-		s3client, errs3 := s3.NewClient(ctx,
-			minioConfig.BuildUrl(),
-			minioConfig.ApiKey,
-			minioConfig.ApiSecret,
-			syncConfig.ObjectsBucket,
-			syncConfig.ObjectsBaseFolder,
-			false,
-			options)
-		if errs3 != nil {
-			return errs3
-		}
-		if normalizeS3 {
-			s3client.SetServerRequiresNormalization()
-		}
-		if computer != nil {
-			s3client.SetPlainSizeComputer(computer)
-		}
-		if syncConfig.StorageType == object.StorageType_GCS || keepNativeEtags {
-			s3client.SkipRecomputeEtagByCopy()
-		}
-		if dao := servicecontext.GetDAO(s.globalCtx); dao != nil {
-			if csm, ok := dao.(s3.ChecksumMapper); ok {
-				s3client.SetChecksumMapper(csm, true)
-			}
-		}
-
-		source = s3client
-	}
-
-	conn := grpccli.GetClientConnFromCtx(ctx, common.ServiceDataIndex_+dataSource)
-	s.indexClientWrite = tree.NewNodeReceiverClient(conn)
-	s.indexClientRead = tree.NewNodeProviderClient(conn)
-	s.indexClientClean = protosync.NewSyncEndpointClient(conn)
-	s.indexClientSession = tree.NewSessionIndexerClient(conn)
-
-	var target model.Endpoint
-	if syncMetas {
-		target = index.NewClientWithMeta(ctx, dataSource, s.indexClientRead, s.indexClientWrite, s.indexClientSession)
-	} else {
-		target = index.NewClient(dataSource, s.indexClientRead, s.indexClientWrite, s.indexClientSession)
-	}
-
-	s.s3client = source
-	s.SyncConfig = syncConfig
-	s.ObjectConfig = minioConfig
-	s.syncTask = task.NewSync(source, target, model.DirectionRight)
-	s.syncTask.SkipTargetChecks = true
-	s.syncTask.FailsafeDeletes = true
-
-	return nil
-
-}
-
-func (s *Handler) watchDisconnection() {
-	//defer close(watchOnce)
-	watchOnce := make(chan interface{})
-	s.syncTask.SetupEventsChan(nil, nil, watchOnce)
-
-	for w := range watchOnce {
-		if m, ok := w.(*model.EndpointStatus); ok && m.WatchConnection == model.WatchDisconnected {
-			log.Logger(s.globalCtx).Error("Watcher disconnected! Will try to restart sync now.")
-			s.syncTask.Shutdown()
-			<-time.After(3 * time.Second)
-			var syncConfig *object.DataSource
-			if err := servicecontext.ScanConfig(s.globalCtx, &syncConfig); err != nil {
-				log.Logger(s.globalCtx).Error("Cannot read config to reinitialize sync")
-			}
-			if sec := config.GetSecret(syncConfig.ApiSecret).String(); sec != "" {
-				syncConfig.ApiSecret = sec
-			}
-			if e := s.initSync(syncConfig); e != nil {
-				log.Logger(s.globalCtx).Error("Error while restarting sync")
-			}
-			s.syncTask.Start(s.globalCtx, true)
-			return
-		}
+		h, er := h.Resolve(ctx)
+		return h, er == nil
 	}
 }
 
-func (s *Handler) watchErrors() {
-	var branch string
-	for {
-		select {
-		case e := <-s.errorsDetected:
-			e = "/" + strings.TrimLeft(e, "/")
-			if len(branch) == 0 {
-				branch = e
-			} else {
-				path := strings.Split(e, "/")
-				stack := strings.Split(branch, "/")
-				max := math.Min(float64(len(stack)), float64(len(path)))
-				var commonParent []string
-				for i := 0; i < int(max); i++ {
-					if stack[i] == path[i] {
-						commonParent = append(commonParent, stack[i])
-					}
-				}
-				branch = "/" + strings.TrimLeft(strings.Join(commonParent, "/"), "/")
-			}
-		case <-time.After(5 * time.Second):
-			if len(branch) > 0 {
-				log.Logger(context.Background()).Info(fmt.Sprintf("Got errors on datasource, should resync now branch: %s", branch))
-				branch = ""
-				md := make(map[string]string)
-				md[common.PydioContextUserKey] = common.PydioSystemUsername
-				ctx := metadata.NewContext(context.Background(), md)
-				broker.MustPublish(ctx, common.TopicTimerEvent, &jobs.JobTriggerEvent{
-					JobID:  "resync-ds-" + s.dsName,
-					RunNow: true,
-				})
-			}
-		case <-s.stop:
-			return
-		}
+// Ready implements a custom Readyness healthcheck API
+func (h *Handler) Ready(ctx context.Context, req *server.ReadyCheckRequest) (*server.ReadyCheckResponse, error) {
+	hsResp, er := h.HealthServer.Check(ctx, req.HealthCheckRequest)
+	if er != nil {
+		return nil, errors.Tag(er, errors.HealthCheckError)
 	}
-}
-
-func (s *Handler) watchConfigs() {
-	serviceName := common.ServiceGrpcNamespace_ + common.ServiceDataSync_ + s.dsName
-
-	// TODO - should be linked to context
-	for {
-		watcher, e := config.Watch(configx.WithPath("services", serviceName))
-		if e != nil {
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		s.watcher = watcher
-		for {
-			event, err := watcher.Next()
-			if err != nil {
-				break
-			}
-
-			var cfg object.DataSource
-
-			if err := event.(configx.Values).Scan(&cfg); err == nil && cfg.Name == s.dsName {
-				log.Logger(s.globalCtx).Info("Config changed on "+serviceName+", comparing", zap.Any("old", s.SyncConfig), zap.Any("new", &cfg))
-				if s.SyncConfig.ObjectsBaseFolder != cfg.ObjectsBaseFolder || s.SyncConfig.ObjectsBucket != cfg.ObjectsBucket {
-					// @TODO - Object service must be restarted before restarting sync
-					log.Logger(s.globalCtx).Info("Path changed on " + serviceName + ", should reload sync task entirely - Please restart service")
-				} else if s.SyncConfig.VersioningPolicyName != cfg.VersioningPolicyName || s.SyncConfig.EncryptionMode != cfg.EncryptionMode {
-					log.Logger(s.globalCtx).Info("Versioning policy changed on "+serviceName+", updating internal config", zap.Any("cfg", &cfg))
-					s.SyncConfig.VersioningPolicyName = cfg.VersioningPolicyName
-					s.SyncConfig.EncryptionMode = cfg.EncryptionMode
-					s.SyncConfig.EncryptionKey = cfg.EncryptionKey
-					<-time.After(2 * time.Second)
-					config.TouchSourceNamesForDataServices(common.ServiceDataSync)
-				}
-			} else if err != nil {
-				log.Logger(s.globalCtx).Error("Could not scan event", zap.Error(err))
-			}
-		}
-
-		watcher.Stop()
-		time.Sleep(1 * time.Second)
+	resp := &server.ReadyCheckResponse{
+		HealthCheckResponse: hsResp,
+		ReadyStatus:         server.ReadyStatus_NotReady,
+		Components:          make(map[string]*server.ComponentStatus, 3),
 	}
+	if hsResp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+		return resp, nil
+	}
+	cLock := &sync3.Mutex{}
+	callback := func(sName string, status bool, detail string) {
+		st := &server.ComponentStatus{Details: detail}
+		if status {
+			st.ReadyStatus = server.ReadyStatus_Ready
+		} else {
+			st.ReadyStatus = server.ReadyStatus_NotReady
+		}
+		cLock.Lock()
+		defer cLock.Unlock()
+		resp.Components[sName] = st
+	}
+	conf, er := h.Lookup(ctx)
+	if er != nil {
+		resp.ReadyStatus = server.ReadyStatus_Unknown
+		return resp, errors.Tag(er, errors.HealthCheckError)
+	}
+	sc, e := conf.Config(ctx)
+	if e != nil {
+		resp.ReadyStatus = server.ReadyStatus_Unknown
+		return resp, errors.Tag(e, errors.HealthCheckError)
+	}
+	_, _, er = clients.CheckSubServices(ctx, sc, callback)
+	if er == nil {
+		resp.ReadyStatus = server.ReadyStatus_Ready
+	}
+
+	return resp, errors.Tag(er, errors.HealthCheckError)
 }
 
 // TriggerResync sets 2 servers in sync
-func (s *Handler) TriggerResync(c context.Context, req *protosync.ResyncRequest) (*protosync.ResyncResponse, error) {
+func (h *Handler) TriggerResync(c context.Context, req *sync.ResyncRequest) (*sync.ResyncResponse, error) {
 
-	resp := &protosync.ResyncResponse{}
-	var statusChan chan model.Status
-	var doneChan chan interface{}
-	fullLog := &jobs.ActionLog{
-		OutputMessage: &jobs.ActionMessage{},
+	sh, ok := h.getSyncer(c)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
 	}
+
+	resp := &sync.ResyncResponse{}
+
+	var statusChan chan model.Status
+	doneChan := make(chan interface{})
+	blocker := make(chan interface{})
 
 	if req.Task != nil {
 		statusChan = make(chan model.Status)
-		doneChan = make(chan interface{})
 
-		subCtx := metadata.WithUserNameMetadata(context.Background(), common.PydioSystemUsername)
-		subCtx = runtime.ForkContext(subCtx, c)
+		subCtx := context.WithoutCancel(c)
+		subCtx = propagator.WithUserNameMetadata(subCtx, common.PydioContextUserKey, common.PydioSystemUsername)
 
 		theTask := req.Task
 		autoClient := tasks.NewTaskReconnectingClient(subCtx)
@@ -530,7 +149,6 @@ func (s *Handler) TriggerResync(c context.Context, req *protosync.ResyncRequest)
 		theTask.Progress = 0
 		theTask.Status = jobs.TaskStatus_Running
 		theTask.StartTime = int32(time.Now().Unix())
-		theTask.ActionsLogs = append(theTask.ActionsLogs, fullLog)
 
 		log.TasksLogger(c).Info("Starting Resync")
 		taskChan <- theTask
@@ -540,6 +158,7 @@ func (s *Handler) TriggerResync(c context.Context, req *protosync.ResyncRequest)
 				close(doneChan)
 				<-time.After(2 * time.Second)
 				close(statusChan)
+				close(blocker)
 				autoClient.Stop()
 			}()
 			for {
@@ -560,9 +179,9 @@ func (s *Handler) TriggerResync(c context.Context, req *protosync.ResyncRequest)
 					ta := proto.Clone(theTask).(*jobs.Task)
 					ta.HasProgress = true
 					ta.Progress = 1
-					ta.StatusMessage = "Complete"
+					ta.StatusMessage = "Resync Completed"
 					ta.EndTime = int32(time.Now().Unix())
-					ta.Status = jobs.TaskStatus_Finished
+					//ta.Status = jobs.TaskStatus_Finished
 					if patch, ok := data.(merger.Patch); ok {
 						if errs, has := patch.HasErrors(); has {
 							ta.StatusMessage = "Error: " + errs[0].Error()
@@ -579,35 +198,45 @@ func (s *Handler) TriggerResync(c context.Context, req *protosync.ResyncRequest)
 				}
 			}
 		}()
+	} else {
+		go func() {
+			select {
+			case <-doneChan:
+				close(blocker)
+			}
+			close(doneChan)
+		}()
 	}
 
 	// First trigger a Resync on index, to clean potential issues
-	if _, e := s.indexClientClean.TriggerResync(c, req); e != nil {
+	if _, err := sh.IndexClientClean.TriggerResync(c, req); err != nil {
 		if req.Task != nil {
-			log.TasksLogger(c).Error("Could not run index Lost+found "+e.Error(), zap.Error(e))
+			log.TasksLogger(c).Error("Could not run index Lost+found "+err.Error(), zap.Error(err))
 		} else {
-			log.Logger(c).Error("Could not run index Lost+found "+e.Error(), zap.Error(e))
+			log.Logger(c).Error("Could not run index Lost+found "+err.Error(), zap.Error(err))
 		}
 	}
 
-	// Copy context
-	bg := context.Background()
-	bg = metadata.WithUserNameMetadata(bg, common.PydioSystemUsername)
-	bg = servicecontext.WithServiceName(bg, servicecontext.GetServiceName(c))
-	if s, o := servicecontext.SpanFromContext(c); o {
-		bg = servicecontext.WithSpan(bg, s)
-	}
+	// Context extends request Context, which allows sync.Run cancellation from within the scheduler.
+	// Internal context used for SessionData is re-extended from context.Background
+	bg := propagator.WithUserNameMetadata(c, common.PydioContextUserKey, common.PydioSystemUsername)
+	bg = propagator.ForkOneKey(runtime.ServiceNameKey, bg, c)
+	/*
+		if s, o := servicecontext.SpanFromContext(c); o {
+			bg = servicecontext.WithSpan(bg, s)
+		}
+	*/
 
 	var result model.Stater
-	var e error
-	if s.SyncConfig.FlatStorage {
+	var err error
+	if sh.SyncConfig.FlatStorage {
 		pathParts := strings.Split(strings.Trim(req.GetPath(), "/"), "/")
 		if len(pathParts) == 2 {
 			dir := pathParts[0]
 			snapName := pathParts[1]
-			result, e = s.FlatSyncSnapshot(bg, dir, snapName, statusChan, doneChan)
+			result, err = sh.FlatSyncSnapshot(bg, sh.SyncConfig, dir, snapName, statusChan, doneChan)
 		} else if len(pathParts) == 1 && pathParts[0] == "init" {
-			result, e = s.FlatScanEmpty(bg, statusChan, doneChan)
+			result, err = sh.FlatScanEmpty(bg, statusChan, doneChan)
 		} else {
 			// Nothing to do, just close doneChan
 			if doneChan != nil {
@@ -618,83 +247,97 @@ func (s *Handler) TriggerResync(c context.Context, req *protosync.ResyncRequest)
 			return resp, nil
 		}
 	} else {
-		s.syncTask.SetupEventsChan(statusChan, doneChan, nil)
-		result, e = s.syncTask.Run(bg, req.DryRun, false)
+		sh.StMux.Lock()
+		sh.SyncTask.SetupEventsChan(statusChan, doneChan, nil)
+		result, err = sh.SyncTask.Run(bg, req.DryRun, false)
+		sh.StMux.Unlock()
 	}
 
-	if e != nil {
+	if err != nil {
 		if req.Task != nil {
 			theTask := req.Task
-			taskClient := jobs.NewJobServiceClient(grpccli.GetClientConnFromCtx(s.globalCtx, common.ServiceJobs))
+			taskClient := jobsc.JobServiceClient(sh.GlobalCtx) //jobs.NewJobServiceClient(grpccli.ResolveConn(s.GlobalCtx, common.ServiceJobs))
 			theTask.StatusMessage = "Error"
 			theTask.HasProgress = true
 			theTask.Progress = 1
 			theTask.EndTime = int32(time.Now().Unix())
 			theTask.Status = jobs.TaskStatus_Error
-			log.TasksLogger(c).Error("Error during sync task", zap.Error(e))
-			theTask.ActionsLogs = append(theTask.ActionsLogs, fullLog)
-			taskClient.PutTask(c, &jobs.PutTaskRequest{Task: theTask})
+			log.TasksLogger(c).Error("Error during sync task", zap.Error(err))
+			_, _ = taskClient.PutTask(c, &jobs.PutTaskRequest{Task: theTask})
 		}
-		return nil, e
-	} else {
-		data, _ := json.Marshal(result.Stats())
+		return nil, err
+	} else if result != nil {
+		if blocker != nil {
+			<-blocker
+		}
+		data, _ := jsonx.Marshal(result.Stats())
 		resp.JsonDiff = string(data)
 		resp.Success = true
 		return resp, nil
+	} else {
+		return nil, errors.New("empty result")
 	}
 }
 
 // GetDataSourceConfig implements the S3Endpoint Interface by using the real object configs + the local datasource configs for bucket and base folder.
-func (s *Handler) GetDataSourceConfig(ctx context.Context, request *object.GetDataSourceConfigRequest) (*object.GetDataSourceConfigResponse, error) {
+func (h *Handler) GetDataSourceConfig(ctx context.Context, _ *object.GetDataSourceConfigRequest) (*object.GetDataSourceConfigResponse, error) {
 
-	if s.SyncConfig == nil {
-		return nil, fmt.Errorf("syncConfig not initialized yet")
+	sh, ok := h.getSyncer(ctx)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
 	}
-	s.SyncConfig.ObjectsHost = s.ObjectConfig.RunningHost
-	s.SyncConfig.ObjectsPort = s.ObjectConfig.RunningPort
-	s.SyncConfig.ObjectsSecure = s.ObjectConfig.RunningSecure
-	s.SyncConfig.ApiKey = s.ObjectConfig.ApiKey
-	s.SyncConfig.ApiSecret = s.ObjectConfig.ApiSecret
+
+	if sh.SyncConfig == nil {
+		return nil, errors.WithMessage(errors.StatusServiceUnavailable, "syncConfig not initialized yet")
+	}
+	sh.SyncConfig.ObjectsHost = sh.ObjectConfig.RunningHost
+	sh.SyncConfig.ObjectsPort = sh.ObjectConfig.RunningPort
+	sh.SyncConfig.ObjectsSecure = sh.ObjectConfig.RunningSecure
+	sh.SyncConfig.ApiKey = sh.ObjectConfig.ApiKey
+	sh.SyncConfig.ApiSecret = sh.ObjectConfig.ApiSecret
 
 	return &object.GetDataSourceConfigResponse{
-		DataSource: s.SyncConfig,
+		DataSource: sh.SyncConfig,
 	}, nil
 }
 
 // CleanResourcesBeforeDelete gracefully stops the sync task and remove the associated resync job
-func (s *Handler) CleanResourcesBeforeDelete(ctx context.Context, request *object.CleanResourcesRequest) (*object.CleanResourcesResponse, error) {
+func (h *Handler) CleanResourcesBeforeDelete(ctx context.Context, _ *object.CleanResourcesRequest) (*object.CleanResourcesResponse, error) {
+	sh, ok := h.getSyncer(ctx)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
 
 	response := &object.CleanResourcesResponse{}
-	s.syncTask.Shutdown()
+	sh.StMux.Lock()
+	sh.SyncTask.Shutdown()
+	sh.StMux.Unlock()
 
 	var mm []string
-	var ee []string
+	var ee []error
 
-	if dao := servicecontext.GetDAO(ctx); dao != nil {
-		if d, o := dao.(sync.DAO); o {
-			if m, e := d.CleanResourcesOnDeletion(); e != nil {
-				ee = append(ee, e.Error())
-			} else {
-				mm = append(mm, m)
-			}
-
+	if dao, er := manager.Resolve[sync2.DAO](ctx); er == nil {
+		if m, e := dao.CleanResourcesOnDeletion(ctx); e != nil {
+			ee = append(ee, e)
+		} else {
+			mm = append(mm, m)
 		}
 	}
 
-	serviceName := servicecontext.GetServiceName(ctx)
+	serviceName := runtime.GetServiceName(ctx)
 	dsName := strings.TrimPrefix(serviceName, common.ServiceGrpcNamespace_+common.ServiceDataSync_)
-	taskClient := jobs.NewJobServiceClient(grpccli.GetClientConnFromCtx(ctx, common.ServiceJobs))
+	taskClient := jobsc.JobServiceClient(ctx)
 	log.Logger(ctx).Info("Removing job for datasource " + dsName)
-	if _, e := taskClient.DeleteJob(ctx, &jobs.DeleteJobRequest{
+	if _, err := taskClient.DeleteJob(ctx, &jobs.DeleteJobRequest{
 		JobID: "resync-ds-" + dsName,
-	}); e != nil {
-		ee = append(ee, e.Error())
+	}); err != nil {
+		ee = append(ee, err)
 	} else {
 		mm = append(mm, "Removed associated job for datasource")
 	}
-	if len(ee) > 0 {
+	if me := multierr.Combine(ee...); me != nil {
 		response.Success = false
-		return nil, fmt.Errorf(strings.Join(ee, ", "))
+		return nil, me
 	} else if len(mm) > 0 {
 		response.Success = true
 		response.Message = strings.Join(mm, ", ")
@@ -702,4 +345,124 @@ func (s *Handler) CleanResourcesBeforeDelete(ctx context.Context, request *objec
 	}
 
 	return response, nil
+}
+
+// CreateNode Forwards to Index
+func (h *Handler) CreateNode(ctx context.Context, req *tree.CreateNodeRequest) (*tree.CreateNodeResponse, error) {
+
+	sh, ok := h.getSyncer(ctx)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
+
+	resp := &tree.CreateNodeResponse{}
+	err := sh.S3client.(model.PathSyncTarget).CreateNode(ctx, req.Node, req.UpdateIfExists)
+	if err != nil {
+		return nil, err
+	}
+	resp.Node = req.Node
+	return resp, nil
+}
+
+// UpdateNode Forwards to S3
+func (h *Handler) UpdateNode(ctx context.Context, req *tree.UpdateNodeRequest) (*tree.UpdateNodeResponse, error) {
+
+	sh, ok := h.getSyncer(ctx)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
+
+	resp := &tree.UpdateNodeResponse{}
+	err := sh.S3client.(model.PathSyncTarget).MoveNode(ctx, req.From.Path, req.To.Path)
+	if err != nil {
+		resp.Success = false
+		return resp, err
+	}
+	resp.Success = true
+	return resp, nil
+}
+
+// DeleteNode Forwards to S3
+func (h *Handler) DeleteNode(ctx context.Context, req *tree.DeleteNodeRequest) (*tree.DeleteNodeResponse, error) {
+	sh, ok := h.getSyncer(ctx)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
+
+	resp := &tree.DeleteNodeResponse{}
+	err := sh.S3client.(model.PathSyncTarget).DeleteNode(ctx, req.Node.Path)
+	if err != nil {
+		resp.Success = false
+		return resp, err
+	}
+	resp.Success = true
+	return resp, nil
+}
+
+// ReadNode Forwards to Index
+func (h *Handler) ReadNode(ctx context.Context, req *tree.ReadNodeRequest) (*tree.ReadNodeResponse, error) {
+
+	sh, ok := h.getSyncer(ctx)
+	if !ok {
+		return nil, errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
+
+	resp := &tree.ReadNodeResponse{}
+	r, err := sh.IndexClientRead.ReadNode(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Success = true
+	resp.Node = r.Node
+	return resp, nil
+
+}
+
+// ListNodes Forward to index
+func (h *Handler) ListNodes(req *tree.ListNodesRequest, resp tree.NodeProvider_ListNodesServer) error {
+
+	sh, ok := h.getSyncer(resp.Context())
+	if !ok {
+		return errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
+
+	ctx := resp.Context()
+	client, err := sh.IndexClientRead.ListNodes(ctx, req)
+	if err != nil {
+		return err
+	}
+	defer client.CloseSend()
+	for {
+		nodeResp, re := client.Recv()
+		if nodeResp == nil {
+			break
+		}
+		if re != nil {
+			return re
+		}
+		se := resp.Send(nodeResp)
+		if se != nil {
+			return se
+		}
+	}
+
+	return nil
+}
+
+// PostNodeChanges receives NodeChangesEvents, to be used with FallbackWatcher
+func (h *Handler) PostNodeChanges(server tree.NodeChangesReceiverStreamer_PostNodeChangesServer) error {
+	sh, ok := h.getSyncer(server.Context())
+	if !ok {
+		return errors.WithMessage(errors.StatusInternalServerError, "cannot find datasource in context")
+	}
+	for {
+		event, err := server.Recv()
+		if err != nil {
+			return err
+		}
+		if sh.ChangeEventsFallback != nil {
+			sh.ChangeEventsFallback <- event
+		}
+	}
+
 }

@@ -23,16 +23,15 @@ package mailer
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
-	"gopkg.in/gomail.v2"
+	gomail "gopkg.in/gomail.v2"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/mailer"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 type Smtp struct {
@@ -42,32 +41,33 @@ type Smtp struct {
 	Port               int
 	LocalName          string
 	InsecureSkipVerify bool
+	UseSSL             bool
 }
 
 func (gm *Smtp) Configure(ctx context.Context, conf configx.Values) error {
 
 	gm.User = conf.Val("user").String()
 	if gm.User == "" {
-		return fmt.Errorf("cannot configure mailer: missing compulsory user name")
+		return errors.New("cannot configure mailer: missing compulsory user name")
 	}
 
 	gm.Password = conf.Val("clearPass").Default("NOT_SET").String()
 	if gm.Password == "NOT_SET" {
-		gm.Password = config.GetSecret(conf.Val("password").String()).Default("NOT_SET").String()
+		gm.Password = config.GetSecret(ctx, conf.Val("password").String()).Default("NOT_SET").String()
 	}
 
 	if gm.Password == "NOT_SET" {
-		return fmt.Errorf("cannot configure mailer: missing compulsory password")
+		return errors.New("cannot configure mailer: missing compulsory password")
 	}
 
 	gm.Host = conf.Val("host").String()
 	if gm.Host == "" {
-		return fmt.Errorf("cannot configure mailer: missing compulsory host address")
+		return errors.New("cannot configure mailer: missing compulsory host address")
 	}
 
 	gm.Port = conf.Val("port").Int()
 	if gm.Port == 0 {
-		return fmt.Errorf("cannot configure mailer: missing compulsory port")
+		return errors.New("cannot configure mailer: missing compulsory port")
 	}
 
 	if loc := conf.Val("localName").Default("").String(); loc != "" {
@@ -76,6 +76,8 @@ func (gm *Smtp) Configure(ctx context.Context, conf configx.Values) error {
 
 	// Set default to be false.
 	gm.InsecureSkipVerify = conf.Val("insecureSkipVerify").Bool()
+
+	gm.UseSSL = conf.Val("connectionSecurity").Default("starttls").String() == "ssl"
 
 	log.Logger(ctx).Debug("SMTP Configured", zap.String("u", gm.User), zap.String("h", gm.Host), zap.Int("p", gm.Port))
 
@@ -97,6 +99,10 @@ func (gm *Smtp) Check(ctx context.Context) error {
 		InsecureSkipVerify: gm.InsecureSkipVerify,
 		ServerName:         gm.Host,
 	}
+	if gm.UseSSL { // only change if explicitly set, d.SSL may also be automatically switched by port value = 465
+		d.SSL = true
+	}
+
 	// Check configuration
 	d.TLSConfig = &tlsConfig
 	if closer, err := d.Dial(); err != nil {
@@ -110,8 +116,8 @@ func (gm *Smtp) Check(ctx context.Context) error {
 
 }
 
-func (gm *Smtp) Send(email *mailer.Mail) error {
-	log.Logger(context.Background()).Debug("Trying to send email", zap.String("smtpHost", gm.Host), zap.String("smtpUser", gm.User), zap.Any("mail", email))
+func (gm *Smtp) Send(ctx context.Context, email *mailer.Mail) error {
+	log.Logger(ctx).Debug("Trying to send email", zap.String("smtpHost", gm.Host), zap.String("smtpUser", gm.User), zap.Any("mail", email))
 	m, e := NewGomailMessage(email)
 	if e != nil {
 		return e
@@ -119,6 +125,9 @@ func (gm *Smtp) Send(email *mailer.Mail) error {
 	d := gomail.NewDialer(gm.Host, gm.Port, gm.User, gm.Password)
 	if gm.LocalName != "" {
 		d.LocalName = gm.LocalName
+	}
+	if gm.UseSSL { // only change if explicitly set, d.SSL may also be automatically switched by port value = 465
+		d.SSL = true
 	}
 	tlsConfig := tls.Config{
 		InsecureSkipVerify: gm.InsecureSkipVerify,

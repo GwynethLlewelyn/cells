@@ -22,22 +22,26 @@ package tree
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/config/mock"
-	"github.com/pydio/cells/v4/common/proto/object"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/pydio/cells/v5/common/config/mock"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/scheduler/actions"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+var (
+	global context.Context
 )
 
 func init() {
 	// Ignore client pool for unit tests
 	nodes.IsUnitTestEnv = true
-	_ = mock.RegisterMockConfig()
+	global, _ = mock.RegisterMockConfig(context.Background())
 }
 
 func TestCopyMoveAction_GetName(t *testing.T) {
@@ -52,11 +56,11 @@ func TestCopyMoveAction_Init(t *testing.T) {
 		action := &CopyMoveAction{}
 		job := &jobs.Job{}
 		// Test action without parameters
-		e := action.Init(job, &jobs.Action{})
+		e := action.Init(global, job, &jobs.Action{})
 		So(e, ShouldNotBeNil)
 
 		// Test action without empty target parameters
-		e = action.Init(job, &jobs.Action{
+		e = action.Init(global, job, &jobs.Action{
 			Parameters: map[string]string{
 				"paramName": "paramValue",
 			},
@@ -64,7 +68,7 @@ func TestCopyMoveAction_Init(t *testing.T) {
 		So(e, ShouldNotBeNil)
 
 		// Test action with parameters
-		e = action.Init(job, &jobs.Action{
+		e = action.Init(global, job, &jobs.Action{
 			Parameters: map[string]string{
 				"target": "target/path",
 				"type":   "move",
@@ -85,7 +89,7 @@ func TestCopyMoveAction_RunCopy(t *testing.T) {
 
 		action := &CopyMoveAction{}
 		job := &jobs.Job{}
-		action.Init(job, &jobs.Action{
+		action.Init(global, job, &jobs.Action{
 			Parameters: map[string]string{
 				"target": "target/path/moved",
 				"type":   "copy",
@@ -104,15 +108,15 @@ func TestCopyMoveAction_RunCopy(t *testing.T) {
 		status := make(chan string, 10000)
 		progress := make(chan float32, 10000)
 
-		ignored, err := action.Run(context.Background(), &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		ignored, err := action.Run(global, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{},
 		})
 		So(ignored.GetLastOutput().Ignored, ShouldBeTrue)
 
 		bi := nodes.BranchInfo{LoadedSource: nodes.LoadedSource{DataSource: &object.DataSource{Name: "fake", FlatStorage: true}}}
-		ctx := nodes.WithBranchInfo(context.Background(), "from", bi)
+		ctx := nodes.WithBranchInfo(global, "from", bi)
 		ctx = nodes.WithBranchInfo(ctx, "to", bi)
-		output, err := action.Run(ctx, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		output, err := action.Run(ctx, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{&tree.Node{
 				Path:      "path/to/original",
 				MetaStore: map[string]string{"name": `"original"`},
@@ -152,7 +156,7 @@ func TestCopyMoveAction_RunCopyOnItself(t *testing.T) {
 		}
 		action.PresetHandler(mock)
 
-		action.Init(job, &jobs.Action{
+		action.Init(global, job, &jobs.Action{
 			Parameters: map[string]string{
 				"target": "path/to/original",
 				"type":   "copy",
@@ -162,15 +166,15 @@ func TestCopyMoveAction_RunCopyOnItself(t *testing.T) {
 		status := make(chan string, 10000)
 		progress := make(chan float32, 10000)
 
-		ignored, err := action.Run(context.Background(), &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		ignored, err := action.Run(global, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{},
 		})
 		So(ignored.GetLastOutput().Ignored, ShouldBeTrue)
 
 		bi := nodes.BranchInfo{LoadedSource: nodes.LoadedSource{DataSource: &object.DataSource{Name: "fake", FlatStorage: true}}}
-		ctx := nodes.WithBranchInfo(context.Background(), "from", bi)
+		ctx := nodes.WithBranchInfo(global, "from", bi)
 		ctx = nodes.WithBranchInfo(ctx, "to", bi)
-		_, err = action.Run(ctx, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		_, err = action.Run(ctx, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{&tree.Node{
 				Path:      "path/to/original",
 				MetaStore: map[string]string{"name": `"original"`},
@@ -202,7 +206,7 @@ func TestCopyMoveAction_RunMove(t *testing.T) {
 			Nodes: map[string]*tree.Node{"path/to/original": originalNode},
 		}
 		action.PresetHandler(mock)
-		action.Init(job, &jobs.Action{
+		action.Init(global, job, &jobs.Action{
 			Parameters: map[string]string{
 				"target": "target/path/moved",
 				"type":   "move",
@@ -212,15 +216,15 @@ func TestCopyMoveAction_RunMove(t *testing.T) {
 		status := make(chan string, 10000)
 		progress := make(chan float32, 10000)
 
-		ignored, err := action.Run(context.Background(), &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		ignored, err := action.Run(global, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{},
 		})
 		So(ignored.GetLastOutput().Ignored, ShouldBeTrue)
 
 		bi := nodes.BranchInfo{LoadedSource: nodes.LoadedSource{DataSource: &object.DataSource{Name: "fake", FlatStorage: true}}}
-		ctx := nodes.WithBranchInfo(context.Background(), "from", bi)
+		ctx := nodes.WithBranchInfo(global, "from", bi)
 		ctx = nodes.WithBranchInfo(ctx, "to", bi)
-		output, err := action.Run(ctx, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, jobs.ActionMessage{
+		output, err := action.Run(ctx, &actions.RunnableChannels{StatusMsg: status, Progress: progress}, &jobs.ActionMessage{
 			Nodes: []*tree.Node{&tree.Node{
 				Path: "path/to/original",
 			}},
@@ -235,8 +239,9 @@ func TestCopyMoveAction_RunMove(t *testing.T) {
 		//So(mock.Nodes, ShouldHaveLength, 3)
 		So(mock.Nodes["from"].Path, ShouldEqual, "path/to/original")
 		So(mock.Nodes["to"].Path, ShouldEqual, "target/path/moved")
-		// Deleted Node
-		So(mock.Nodes["in"].Path, ShouldEqual, "path/to/original")
+		// Deleted Node - no : DS is FLAT so there is no explicit call to Delete
+		// Previous test was in fact checking the last ReadNode call...
+		// So(mock.Nodes["in"].Path, ShouldEqual, "path/to/original")
 
 	})
 }

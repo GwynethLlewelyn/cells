@@ -23,27 +23,57 @@ package grpc
 import (
 	"context"
 	"fmt"
-	mock2 "github.com/pydio/cells/v4/common/config/mock"
-	"github.com/pydio/cells/v4/common/server"
 	"log"
-	"net"
+	"strings"
 	"testing"
+	"text/template"
+	"time"
 
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/examples/helloworld/helloworld"
 	"google.golang.org/grpc/test/bufconn"
 
-	clientcontext "github.com/pydio/cells/v4/common/client/context"
-	cgrpc "github.com/pydio/cells/v4/common/client/grpc"
-	pbregistry "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	servercontext "github.com/pydio/cells/v4/common/server/context"
-	"github.com/pydio/cells/v4/common/service"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	discoveryregistry "github.com/pydio/cells/v4/discovery/registry"
+	"github.com/pydio/cells/v5/common/config"
+	pbregistry "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/server"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/cache/gocache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	discoveryregistry "github.com/pydio/cells/v5/discovery/registry"
 
-	_ "github.com/pydio/cells/v4/common/registry/config"
+	_ "github.com/pydio/cells/v5/common/registry/config"
 )
+
+var (
+	yaml = `
+listeners:
+  bufconn:
+    type: bufconn
+    bufsize: 1048576
+servers:
+  grpc:
+    type: grpc
+    listener: bufconn
+services:
+  test:
+`
+
+	tmpl *template.Template
+)
+
+func init() {
+	var err error
+	tmpl, err = template.New("test").Parse(yaml)
+	if err != nil {
+		panic(err)
+	}
+}
 
 type mock struct {
 	helloworld.UnimplementedGreeterServer
@@ -57,8 +87,7 @@ func (m *mock) SayHello(ctx context.Context, req *helloworld.HelloRequest) (*hel
 
 func createApp1(reg registry.Registry) *bufconn.Listener {
 	ctx := context.Background()
-	ctx = servicecontext.WithRegistry(ctx, reg)
-	ctx = servercontext.WithRegistry(ctx, reg)
+	ctx = propagator.With(ctx, registry.ContextKey, reg)
 
 	listener := bufconn.Listen(1024 * 1024)
 	srv := New(ctx, WithListener(listener))
@@ -100,8 +129,7 @@ func createApp1(reg registry.Registry) *bufconn.Listener {
 
 func createApp2(reg registry.Registry) {
 	ctx := context.Background()
-	ctx = servicecontext.WithRegistry(ctx, reg)
-	ctx = servercontext.WithRegistry(ctx, reg)
+	ctx = propagator.With(ctx, registry.ContextKey, reg)
 
 	listener := bufconn.Listen(1024 * 1024)
 	srv := New(ctx, WithListener(listener))
@@ -128,11 +156,11 @@ func createApp2(reg registry.Registry) {
 	}()
 }
 
-func TestServiceRegistry(t *testing.T) {
+// TODO - not used anymore ?
+/*func TestServiceRegistry(t *testing.T) {
 
-	_ = mock2.RegisterMockConfig()
+	ctx, _ := mock2.RegisterMockConfig(context.Background())
 
-	ctx := context.Background()
 	mem, err := registry.OpenRegistry(ctx, "mem:///")
 	if err != nil {
 		log.Fatal("could not create memory registry", err)
@@ -147,17 +175,127 @@ func TestServiceRegistry(t *testing.T) {
 		log.Fatal("no conn", err)
 	}
 
-	ctx = clientcontext.WithClientConn(ctx, conn)
+	ctx = runtime.WithClientConn(ctx, conn)
 
-	cli1 := helloworld.NewGreeterClient(cgrpc.GetClientConnFromCtx(ctx, "test.registry"))
+	cli1 := helloworld.NewGreeterClient(cgrpc.ResolveConn(ctx, "test.registry"))
 	resp1, err1 := cli1.SayHello(ctx, &helloworld.HelloRequest{Name: "test"})
 
 	fmt.Println(resp1, err1)
 
-	cli2 := helloworld.NewGreeterClient(cgrpc.GetClientConnFromCtx(ctx, "service.that.does.not.exist"))
+	cli2 := helloworld.NewGreeterClient(cgrpc.ResolveConn(ctx, "service.that.does.not.exist"))
 	resp2, err2 := cli2.SayHello(ctx, &helloworld.HelloRequest{Name: "test"}, grpc.WaitForReady(false))
 
 	fmt.Println(resp2, err2)
+
+}*/
+
+func TestGetServiceInfo(t *testing.T) {
+	// read template
+	b := &strings.Builder{}
+	err := tmpl.Execute(b, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	v := viper.New()
+	v.Set(runtime.KeyConfig, "mem://")
+	v.Set(runtime.KeyArgTags, "test")
+	v.Set(runtime.KeyBootstrapYAML, b.String())
+	runtime.SetRuntime(v)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	mem, _ := config.OpenStore(ctx, "mem://")
+	ctx = propagator.With(ctx, config.ContextKey, mem)
+	cache_helper.SetStaticResolver("pm://", &gocache.URLOpener{})
+
+	runtime.Register("test", func(ctx context.Context) {
+		listener := bufconn.Listen(1024 * 1024)
+		srv := New(ctx, WithListener(listener))
+
+		svc := service.NewService(
+			service.Name("test"),
+			service.Tag("test"),
+			service.Context(ctx),
+			service.WithServer(srv),
+			service.WithGRPC(func(_ context.Context, srv grpc.ServiceRegistrar) error {
+				fmt.Println("Registering")
+				helloworld.RegisterGreeterServer(srv, &mock{})
+				return nil
+			}),
+		)
+
+		var mgr manager.Manager
+		if propagator.Get(ctx, manager.ContextKey, &mgr) {
+			for i := 0; i < 100; i++ {
+				endpoint := util.CreateEndpoint("/tests/test", nil, map[string]string{})
+
+				go func(endpoint registry.Item) {
+					duration := 5 * time.Second
+					ticker := time.NewTicker(10 * time.Millisecond)
+					defer ticker.Stop()
+
+					start := time.Now()
+
+					for range ticker.C {
+						// Check if the total duration has elapsed
+						if time.Since(start) >= duration {
+							break
+						}
+
+						mgr.Registry().Register(endpoint,
+							registry.WithEdgeTo(svc.ID(), "handler", map[string]string{
+								"modtime": time.Now().String(),
+							}),
+							registry.WithEdgeTo(srv.ID(), "server", map[string]string{
+								"modtime": time.Now().String(),
+							}),
+						)
+					}
+					for {
+						select {
+						case <-time.After(1 * time.Nanosecond):
+
+						}
+					}
+				}(endpoint)
+			}
+		}
+
+		var grpcServer *grpc.Server
+		if srv.As(&grpcServer) {
+			go func() {
+				start := time.Now()
+				duration := 5 * time.Second
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+
+				for range ticker.C {
+					// Check if the total duration has elapsed
+					if time.Since(start) >= duration {
+						break
+					}
+
+					fmt.Println("Geting service info ", grpcServer.GetServiceInfo())
+				}
+
+				// Cancelling context
+				cancel()
+			}()
+		}
+	})
+
+	mgr, err := manager.NewManager(ctx, "test")
+	if err != nil {
+		panic(err)
+	}
+
+	if err := mgr.ServeAll(); err != nil {
+		fmt.Println(err)
+	}
+
+	<-ctx.Done()
 
 }
 

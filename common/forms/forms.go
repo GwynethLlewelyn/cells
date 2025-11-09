@@ -23,9 +23,7 @@ package forms
 import (
 	"encoding/xml"
 
-	"github.com/nicksnyder/go-i18n/i18n"
-
-	i18n2 "github.com/pydio/cells/v4/common/utils/i18n"
+	"github.com/pydio/cells/v5/common/utils/i18n"
 )
 
 // Should reflect the frontend Form definitions
@@ -119,7 +117,7 @@ type Group struct {
 
 type Form struct {
 	Groups     []*Group
-	I18NBundle *i18n2.I18nBundle
+	I18NBundle *i18n.I18nBundle
 }
 
 // Serialize returns a list of serializable fields
@@ -127,9 +125,9 @@ func (f *Form) Serialize(languages ...string) interface{} {
 	sForm := &SerialForm{}
 	var T i18n.TranslateFunc
 	if f.I18NBundle != nil {
-		T = f.I18NBundle.GetTranslationFunc(languages...)
+		T = f.I18NBundle.T(languages...)
 	} else {
-		T = i18n.IdentityTfunc()
+		T = i18n.IdentityFunc
 	}
 	for _, group := range f.Groups {
 		for _, field := range group.Fields {

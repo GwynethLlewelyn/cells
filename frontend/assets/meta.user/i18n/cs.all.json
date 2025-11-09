@@ -1,0 +1,50 @@
+{
+  "1": {
+    "other": "Meta Data"
+  },
+  "10": {
+    "other": "Stávající nebo nový štítek"
+  },
+  "11": {
+    "other": "Nenastavena žádná metadata –kliknutím nějaká přidejte"
+  },
+  "16": {
+    "other": "Nenastavena žádná metadata"
+  },
+  "12": {
+    "other": "Vícenásobný výběr:"
+  },
+  "13": {
+    "other": "check the fields that you want to update, value will be applied to all selected files"
+  },
+  "14": {
+    "other": "Upravit meta"
+  },
+  "15": {
+    "other": "Uložit meta"
+  },
+  "2": {
+    "other": "Bez štítku"
+  },
+  "3": {
+    "other": "Odstranit hodnocení"
+  },
+  "4": {
+    "other": "Nízká"
+  },
+  "5": {
+    "other": "Udělat"
+  },
+  "6": {
+    "other": "Osobní"
+  },
+  "7": {
+    "other": "Pracovní"
+  },
+  "8": {
+    "other": "Důležité"
+  },
+  "9": {
+    "other": "No Value"
+  }
+}

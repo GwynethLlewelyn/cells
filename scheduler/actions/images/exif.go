@@ -24,25 +24,23 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
 
 	"github.com/rwcarlsen/goexif/exif"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 const (
@@ -55,7 +53,6 @@ var (
 )
 
 type ExifProcessor struct {
-	common.RuntimeHolder
 	metaClient tree.NodeReceiverClient
 }
 
@@ -64,7 +61,7 @@ func (e *ExifProcessor) GetDescription(lang ...string) actions.ActionDescription
 	return actions.ActionDescription{
 		ID:                exifTaskName,
 		Label:             "Extract EXIF",
-		Icon:              "image",
+		Icon:              "image-search",
 		Description:       "Extract EXIF data from jpeg images and store them as indexed metadata",
 		SummaryTemplate:   "",
 		HasForm:           false,
@@ -75,7 +72,7 @@ func (e *ExifProcessor) GetDescription(lang ...string) actions.ActionDescription
 }
 
 // GetParametersForm returns a UX form
-func (e *ExifProcessor) GetParametersForm() *forms.Form {
+func (e *ExifProcessor) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 
@@ -85,16 +82,16 @@ func (e *ExifProcessor) GetName() string {
 }
 
 // Init passes parameters to the action
-func (e *ExifProcessor) Init(job *jobs.Job, action *jobs.Action) error {
+func (e *ExifProcessor) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	//e.Router = views.NewStandardRouter(views.RouterOptions{AdminView: true, WatchRegistry: false})
 	if !nodes.IsUnitTestEnv {
-		e.metaClient = tree.NewNodeReceiverClient(grpc.GetClientConnFromCtx(e.GetRuntimeContext(), common.ServiceMeta))
+		e.metaClient = tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC))
 	}
 	return nil
 }
 
 // Run the actual action code
-func (e *ExifProcessor) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (e *ExifProcessor) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 || input.Nodes[0].Size == -1 || input.Nodes[0].Etag == common.NodeFlagEtagTemporary {
 		return input.WithIgnore(), nil
@@ -112,15 +109,8 @@ func (e *ExifProcessor) Run(ctx context.Context, channels *actions.RunnableChann
 		return input, nil
 	}
 
-	output := input
+	output := input.Clone()
 	node.MustSetMeta(MetadataExif, exifData)
-	orientation, oe := exifData.Get(exif.Orientation)
-	if oe == nil {
-		t := orientation.String()
-		if t != "" {
-			node.MustSetMeta(MetadataCompatOrientation, t)
-		}
-	}
 	lat, long, err := exifData.LatLong()
 	if err == nil {
 		var readLat, readLong string
@@ -158,7 +148,9 @@ func (e *ExifProcessor) Run(ctx context.Context, channels *actions.RunnableChann
 		node.MustSetMeta(common.MetaNamespaceGeoLocation, geoLocation)
 	}
 
-	e.metaClient.UpdateNode(ctx, &tree.UpdateNodeRequest{From: node, To: node})
+	if _, er := e.metaClient.UpdateNode(ctx, &tree.UpdateNodeRequest{From: node, To: node}); er != nil {
+		return output.WithError(er), er
+	}
 
 	output.Nodes[0] = node
 	log.TasksLogger(ctx).Info("Extracted EXIF data from "+node.GetPath(), node.ZapPath())
@@ -173,7 +165,7 @@ func (e *ExifProcessor) ExtractExif(ctx context.Context, node *tree.Node) (*exif
 
 	// Open the test image.
 	if !node.HasSource() {
-		return nil, errors.InternalServerError(common.ServiceJobs, "Node does not have enough metadata")
+		return nil, errors.WithMessagef(errors.StatusInternalServerError, "Node does not have enough metadata")
 	}
 
 	var reader io.ReadCloser
@@ -184,7 +176,7 @@ func (e *ExifProcessor) ExtractExif(ctx context.Context, node *tree.Node) (*exif
 		targetFileName := filepath.Join(localFolder, baseName)
 		reader, rer = os.Open(targetFileName)
 	} else {
-		reader, rer = getRouter(e.GetRuntimeContext()).GetObject(ctx, proto.Clone(node).(*tree.Node), &models.GetRequestData{Length: -1})
+		reader, rer = getRouter(ctx).GetObject(ctx, proto.Clone(node).(*tree.Node), &models.GetRequestData{Length: -1})
 	}
 
 	//reader, rer := node.ReadFile(ctx)
@@ -192,8 +184,8 @@ func (e *ExifProcessor) ExtractExif(ctx context.Context, node *tree.Node) (*exif
 		return nil, rer
 	}
 	defer func() {
-		ioutil.ReadAll(reader)
-		reader.Close()
+		_, _ = io.ReadAll(reader)
+		_ = reader.Close()
 	}()
 
 	// Optionally register camera makenote data parsing - currently Nikon and

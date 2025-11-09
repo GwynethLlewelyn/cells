@@ -28,11 +28,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/mailer"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 type NoOpSender struct {
@@ -58,7 +59,7 @@ func (n *NoOpSender) Configure(ctx context.Context, conf configx.Values) error {
 	return nil
 }
 
-func (n *NoOpSender) Send(email *mailer.Mail) error {
+func (n *NoOpSender) Send(ctx context.Context, email *mailer.Mail) error {
 	if !n.valid || !n.dump {
 		return nil
 	}
@@ -69,7 +70,7 @@ func (n *NoOpSender) Send(email *mailer.Mail) error {
 		}
 	}
 	if len(to) == 0 {
-		return fmt.Errorf("fake email : missing To address(es)")
+		return errors.New("fake email : missing To address(es)")
 	}
 
 	gom, er := NewGomailMessage(email)
@@ -91,6 +92,6 @@ func (n *NoOpSender) Check(ctx context.Context) error {
 	if n.valid {
 		return nil
 	} else {
-		return fmt.Errorf("no mailer configured")
+		return errors.New("no mailer configured")
 	}
 }

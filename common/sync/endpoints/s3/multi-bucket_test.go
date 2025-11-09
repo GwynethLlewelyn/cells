@@ -25,16 +25,21 @@ import (
 	"path"
 	"testing"
 
-	"github.com/pydio/cells/v4/common"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/sync/model"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes/objects/mock"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/sync/model"
+
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestMultiBucketClient_Walk(t *testing.T) {
 	Convey("test simple walk", t, func() {
-		cl, e := NewMultiBucketClient(context.Background(), "s3.amazonaws.com", "***************", "***************", true, model.EndpointOptions{BrowseOnly: true}, "^cell")
+		ocMock := mock.New()
+		ctx := context.Background()
+		cl, e := NewMultiBucketClient(ctx, ocMock, "az", "^cell", model.EndpointOptions{BrowseOnly: true})
 		So(e, ShouldBeNil)
 		mainMock := NewS3Mock()
 		cl.mainClient = mainMock
@@ -44,36 +49,38 @@ func TestMultiBucketClient_Walk(t *testing.T) {
 			"cell3": NewS3Mock("cell3"),
 		}
 
-		var data []*tree.Node
-		cl.Walk(func(path string, node *tree.Node, err error) {
+		var data []tree.N
+		cl.Walk(ctx, func(path string, node tree.N, err error) error {
 			data = append(data, node)
+			return nil
 		}, "", false)
 		So(data, ShouldHaveLength, 3)
 
 		// Try LoadNode on first bucket
-		b, e := cl.LoadNode(context.Background(), data[0].Path)
+		b, e := cl.LoadNode(context.Background(), data[0].GetPath())
 		So(e, ShouldBeNil)
-		So(b.Path, ShouldEqual, data[0].Path)
-		So(b.Type, ShouldEqual, tree.NodeType_COLLECTION)
+		So(b.GetPath(), ShouldEqual, data[0].GetPath())
+		So(b.GetType(), ShouldEqual, tree.NodeType_COLLECTION)
 		//t.Log("FIRST BUCKET", b)
 
-		var fullData []*tree.Node
-		cl.Walk(func(path string, node *tree.Node, err error) {
+		var fullData []tree.N
+		cl.Walk(ctx, func(path string, node tree.N, err error) error {
 			fullData = append(fullData, node)
+			return nil
 		}, "", true)
 		So(data, ShouldNotBeEmpty)
 		t.Log("Number of buckets and objects", len(fullData))
-		var first *tree.Node
+		var first tree.N
 		for _, d := range fullData {
 			//t.Log(d.Path, "\t\t", d.Type)
-			if d.IsLeaf() && first == nil && path.Base(d.Path) != common.PydioSyncHiddenFile {
+			if d.IsLeaf() && first == nil && path.Base(d.GetPath()) != common.PydioSyncHiddenFile {
 				first = d
 			}
 		}
 		if first != nil {
-			loaded, e := cl.LoadNode(context.Background(), first.Path, true)
+			loaded, e := cl.LoadNode(context.Background(), first.GetPath(), true)
 			So(e, ShouldBeNil)
-			So(loaded.Path, ShouldEqual, first.Path)
+			So(loaded.GetPath(), ShouldEqual, first.GetPath())
 		}
 
 	})
@@ -85,7 +92,15 @@ func TestBucketMetadata(t *testing.T) {
 			BrowseOnly: true,
 			Properties: map[string]string{"bucketsTags": "Tag*"},
 		}
-		cl, e := NewMultiBucketClient(context.Background(), "s3.amazonaws.com", "***************", "***************", true, options, "^cell")
+		ocMock := mock.New()
+		ocMock.FakeTags = map[string]map[string]string{
+			"cell1": map[string]string{
+				"TagName":      "TagValue",
+				"OtherTagName": "OtherTagValue",
+			},
+		}
+		ctx := context.Background()
+		cl, e := NewMultiBucketClient(ctx, ocMock, "az", "^cell", options)
 		So(e, ShouldBeNil)
 		mainMock := NewS3Mock()
 		cl.mainClient = mainMock
@@ -95,16 +110,21 @@ func TestBucketMetadata(t *testing.T) {
 			"cell3": NewS3Mock("cell3"),
 		}
 
-		var data []*tree.Node
-		cl.Walk(func(path string, node *tree.Node, err error) {
+		var data []tree.N
+		cl.Walk(ctx, func(path string, node tree.N, err error) error {
 			if !node.IsLeaf() {
 				data = append(data, node)
 			}
+			return nil
 		}, "", false)
 		So(data, ShouldHaveLength, 3)
-		So(data[0].MetaStore, ShouldNotBeNil)
-		So(data[0].GetStringMeta(s3BucketTagPrefix+"TagName"), ShouldEqual, "TagValue")
-		So(data[0].GetStringMeta(s3BucketTagPrefix+"OtherTagName"), ShouldBeEmpty)
-
+		for _, d := range data {
+			if d.GetPath() == "cell1" {
+				dp := proto.Clone(d).(tree.N)
+				So(dp.GetMetaStore(), ShouldNotBeNil)
+				So(dp.GetStringMeta(s3BucketTagPrefix+"TagName"), ShouldEqual, "TagValue")
+				So(dp.GetStringMeta(s3BucketTagPrefix+"OtherTagName"), ShouldBeEmpty)
+			}
+		}
 	})
 }

@@ -26,40 +26,43 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/slug"
-	"github.com/pydio/cells/v4/idm/workspace"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/storage/sql/resources"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/slug"
+	"github.com/pydio/cells/v5/idm/workspace"
 )
 
 // Handler definition
 type Handler struct {
 	idm.UnimplementedWorkspaceServiceServer
-	dao workspace.DAO
+	service.UnimplementedLoginModifierServer
 }
 
-func NewHandler(ctx context.Context, dao workspace.DAO) idm.NamedWorkspaceServiceServer {
-	return &Handler{dao: dao}
-}
-
-func (h *Handler) Name() string {
-	return ServiceName
+func NewHandler() *Handler {
+	return &Handler{}
 }
 
 // CreateWorkspace in database
 func (h *Handler) CreateWorkspace(ctx context.Context, req *idm.CreateWorkspaceRequest) (*idm.CreateWorkspaceResponse, error) {
+	dao, err := manager.Resolve[workspace.DAO](ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	if req.Workspace.Slug == "" {
 		req.Workspace.Slug = slug.Make(req.Workspace.Label)
 	}
-	update, err := h.dao.Add(req.Workspace)
+	update, err := dao.Add(ctx, req.Workspace)
 	// ADD POLICIES
 	if len(req.Workspace.Policies) > 0 {
-		if e := h.dao.AddPolicies(update, req.Workspace.UUID, req.Workspace.Policies); e != nil {
-			return nil, e
+		if req.Workspace.Policies, err = dao.AddPolicies(ctx, update, req.Workspace.UUID, req.Workspace.Policies); err != nil {
+			return nil, err
 		}
 	}
 	resp := &idm.CreateWorkspaceResponse{
@@ -98,13 +101,18 @@ func (h *Handler) CreateWorkspace(ctx context.Context, req *idm.CreateWorkspaceR
 
 // DeleteWorkspace from database
 func (h *Handler) DeleteWorkspace(ctx context.Context, req *idm.DeleteWorkspaceRequest) (*idm.DeleteWorkspaceResponse, error) {
-
-	workspaces := new([]interface{})
-	if err := h.dao.Search(req.Query, workspaces); err != nil {
+	dao, err := manager.Resolve[workspace.DAO](ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	numRows, err := h.dao.Del(req.Query)
+	workspaces := new([]interface{})
+	req.Query = service.PrepareResourcePolicyQuery(req.Query, service.ResourcePolicyAction_READ)
+	if err := dao.Search(ctx, req.Query, workspaces); err != nil {
+		return nil, err
+	}
+
+	numRows, err := dao.Del(ctx, req.Query)
 	response := &idm.DeleteWorkspaceResponse{
 		RowsDeleted: numRows,
 	}
@@ -115,7 +123,7 @@ func (h *Handler) DeleteWorkspace(ctx context.Context, req *idm.DeleteWorkspaceR
 	// Update relevant policies and propagate event
 	for _, w := range *workspaces {
 		currW := w.(*idm.Workspace)
-		err2 := h.dao.DeletePoliciesForResource(currW.UUID)
+		err2 := dao.DeletePoliciesForResource(ctx, currW.UUID)
 		if err2 != nil {
 			log.Logger(ctx).Error("could not delete policies for removed ws "+currW.Slug, zap.Error(err2))
 			continue
@@ -140,19 +148,25 @@ func (h *Handler) SearchWorkspace(request *idm.SearchWorkspaceRequest, response 
 
 	ctx := response.Context()
 
+	dao, err := manager.Resolve[workspace.DAO](ctx)
+	if err != nil {
+		return err
+	}
+
 	workspaces := new([]interface{})
-	if err := h.dao.Search(request.Query, workspaces); err != nil {
+	request.Query = service.PrepareResourcePolicyQuery(request.Query, service.ResourcePolicyAction_READ)
+	if err := dao.Search(ctx, request.Query, workspaces); err != nil {
 		return err
 	}
 	var e error
 	for _, in := range *workspaces {
 		ws, ok := in.(*idm.Workspace)
-		if ws.Policies, e = h.dao.GetPoliciesForResource(ws.UUID); e != nil {
+		if ws.Policies, e = dao.GetPoliciesForResource(ctx, ws.UUID); e != nil {
 			log.Logger(ctx).Error("cannot load policies for workspace "+ws.UUID, zap.Error(e))
 			continue
 		}
 		if !ok {
-			if e := response.SendMsg(errors.InternalServerError(common.ServiceWorkspace, "Wrong type")); e != nil {
+			if e := response.SendMsg(errors.WithMessage(errors.StatusInternalServerError, "Wrong type")); e != nil {
 				return e
 			}
 		} else {
@@ -170,6 +184,11 @@ func (h *Handler) StreamWorkspace(streamer idm.WorkspaceService_StreamWorkspaceS
 
 	ctx := streamer.Context()
 
+	dao, err := manager.Resolve[workspace.DAO](ctx)
+	if err != nil {
+		return err
+	}
+
 	for {
 		incoming, err := streamer.Recv()
 		if incoming == nil {
@@ -180,14 +199,16 @@ func (h *Handler) StreamWorkspace(streamer idm.WorkspaceService_StreamWorkspaceS
 		}
 
 		workspaces := new([]interface{})
-		if err := h.dao.Search(incoming.Query, workspaces); err != nil {
+
+		incoming.Query = service.PrepareResourcePolicyQuery(incoming.Query, service.ResourcePolicyAction_READ)
+		if err := dao.Search(ctx, incoming.Query, workspaces); err != nil {
 			continue
 		}
 
 		var e error
 		for _, in := range *workspaces {
 			if ws, ok := in.(*idm.Workspace); ok {
-				if ws.Policies, e = h.dao.GetPoliciesForResource(ws.UUID); e != nil {
+				if ws.Policies, e = dao.GetPoliciesForResource(ctx, ws.UUID); e != nil {
 					log.Logger(ctx).Error("cannot load policies for workspace "+ws.UUID, zap.Error(e))
 					continue
 				}
@@ -201,4 +222,12 @@ func (h *Handler) StreamWorkspace(streamer idm.WorkspaceService_StreamWorkspaceS
 	}
 
 	return nil
+}
+
+func (h *Handler) ModifyLogin(ctx context.Context, req *service.ModifyLoginRequest) (*service.ModifyLoginResponse, error) {
+	dao, err := manager.Resolve[workspace.DAO](ctx)
+	if err != nil {
+		return nil, err
+	}
+	return resources.ModifyLogin(ctx, dao, req)
 }

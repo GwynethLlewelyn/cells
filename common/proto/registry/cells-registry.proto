@@ -2,9 +2,10 @@ syntax = "proto3";
 
 package registry;
 
-option go_package = "github.com/pydio/cells/common/proto/registry";
+option go_package = "github.com/pydio/cells/v5/common/proto/registry";
 
 service Registry {
+  rpc Session(stream SessionRequest) returns (stream EmptyResponse) {};
   rpc Start(Item) returns (EmptyResponse) {};
   rpc Stop(Item) returns (EmptyResponse) {};
   rpc Get(GetRequest) returns (GetResponse) {};
@@ -12,6 +13,13 @@ service Registry {
   rpc Deregister(Item) returns (EmptyResponse) {};
   rpc List(ListRequest) returns (ListResponse) {};
   rpc Watch(WatchRequest) returns (stream Result) {};
+  rpc NewLocker(stream NewLockerRequest) returns (stream NewLockerResponse) {};
+}
+
+
+message SessionRequest {
+  SessionRequestType type = 1;
+  Item item = 2;
 }
 
 enum ItemType {
@@ -29,6 +37,7 @@ enum ItemType {
   PROCESS = 9;
   ENDPOINT = 10;
   STATS = 11;
+  STORAGE = 12;
 }
 
 enum ActionType {
@@ -38,6 +47,12 @@ enum ActionType {
   CREATE = 3;
   UPDATE = 4;
   DELETE = 5;
+}
+
+enum SessionRequestType {
+  INIT = 0;
+  REGISTER = 1;
+  DEREGISTER = 2;
 }
 
 message Item {
@@ -96,9 +111,11 @@ message Options {
   int64 ttl = 1;
   repeated ItemType types = 2;
   repeated ActionType actions = 3;
+  repeated string ids = 7;
   repeated string names = 4;
   string metaName = 5;
   string metaValue = 6;
+
 }
 
 // Result is returns by the watcher
@@ -116,6 +133,10 @@ message StartRequest {
 
 message StopRequest {
   Item item = 1;
+}
+
+message RegisterRequest {
+
 }
 
 message GetRequest {
@@ -139,6 +160,21 @@ message ListResponse {
 message WatchRequest {
   string name = 1;
   Options options = 2;
+}
+
+message NewLockerRequest {
+  string prefix = 1;
+  LockType type = 2;
+}
+
+message NewLockerResponse {
+  string prefix = 1;
+  LockType type = 2;
+}
+
+enum LockType {
+  Lock = 0;
+  Unlock = 1;
 }
 
 // EventType defines the type of event

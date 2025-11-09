@@ -30,9 +30,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/allegro/bigcache/v3"
+	bigcache "github.com/allegro/bigcache/v3"
 
-	"github.com/pydio/cells/v4/common/utils/cache"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/metrics"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
 )
 
 var (
@@ -46,16 +50,20 @@ var (
 
 type bigCache struct {
 	*bigcache.BigCache
+	closed bool
+	scope  metrics.MeterHelper
+	ticker *time.Ticker
 }
 
 type URLOpener struct{}
 
 func init() {
 	o := &URLOpener{}
-	cache.DefaultURLMux().Register(scheme, o)
+	cache_helper.RegisterCachePool(scheme, o)
+	runtime.RegisterEnvVariable("CELLS_CACHES_HARD_LIMIT", "8", "In MB, default maximum size used by various in-memory caches")
 }
 
-func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (cache.Cache, error) {
+func (o *URLOpener) Open(ctx context.Context, u *url.URL) (cache.Cache, error) {
 	conf := DefaultBigCacheConfig()
 	if v := u.Query().Get("evictionTime"); v != "" {
 		if i, err := time.ParseDuration(v); err != nil {
@@ -72,14 +80,22 @@ func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (cache.Cache, error
 		}
 	}
 
-	bc, err := bigcache.NewBigCache(conf)
+	bc, err := bigcache.New(ctx, conf)
 	if err != nil {
 		return nil, err
 	}
 
-	return &bigCache{
+	cac := &bigCache{
 		BigCache: bc,
-	}, nil
+		ticker:   time.NewTicker(30 * time.Second),
+		scope:    metrics.ServiceHelper(u.Query().Get("prefix")),
+	}
+	go func() {
+		for range cac.ticker.C {
+			cac.metrics()
+		}
+	}()
+	return cac, nil
 }
 
 func (b *bigCache) Get(key string, value interface{}) (ok bool) {
@@ -109,18 +125,26 @@ func (b *bigCache) GetBytes(key string) (value []byte, ok bool) {
 func (b *bigCache) Set(key string, value interface{}) error {
 	data, ok := value.([]byte)
 	if !ok {
-		return fmt.Errorf("not a byte value")
+		return errors.New("not a byte value")
 	}
-
 	return b.BigCache.Set(key, data)
 }
 
 func (b *bigCache) SetWithExpiry(key string, value interface{}, duration time.Duration) error {
-	return fmt.Errorf("not implemented")
+	return errors.New("not implemented")
 }
 
 func (b *bigCache) Delete(key string) error {
 	return b.BigCache.Delete(key)
+}
+
+func (b *bigCache) Exists(key string) bool {
+	_, err := b.BigCache.Get(key)
+	if err == bigcache.ErrEntryNotFound {
+		return false
+	}
+
+	return true
 }
 
 func (b *bigCache) KeysByPrefix(prefix string) ([]string, error) {
@@ -160,10 +184,35 @@ func (b *bigCache) Iterate(f func(key string, val interface{})) error {
 	return nil
 }
 
+func (b *bigCache) Close(_ context.Context) error {
+	if !b.closed {
+		if b.ticker != nil {
+			b.ticker.Stop()
+		}
+		if err := b.BigCache.Close(); err != nil {
+			return err
+		}
+		b.closed = true
+	}
+	return nil
+}
+
+func (b *bigCache) metrics() {
+	s := b.Stats()
+	b.scope.Gauge("bigcache_capacity").Update(float64(b.Capacity()))
+	b.scope.Gauge("bigcache_hits").Update(float64(s.Hits))
+	b.scope.Gauge("bigcache_collisions").Update(float64(s.Collisions))
+	b.scope.Gauge("bigcache_delHits").Update(float64(s.DelHits))
+	b.scope.Gauge("bigcache_delMisses").Update(float64(s.DelMisses))
+	b.scope.Gauge("bigcache_misses").Update(float64(s.Misses))
+
+}
+
 func DefaultBigCacheConfig() bigcache.Config {
 	// Todo : pass this via Cache URL
 	o.Do(func() {
 		defaultConfig = bigcache.DefaultConfig(30 * time.Minute)
+		defaultConfig.Verbose = false
 		defaultConfig.Shards = 64
 		defaultConfig.MaxEntriesInWindow = 10 * 60 * 64
 		defaultConfig.MaxEntrySize = 200

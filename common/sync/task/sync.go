@@ -29,18 +29,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/sync/endpoints/memory"
-
 	"github.com/gobwas/glob"
-	"github.com/pydio/cells/v4/common/log"
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/sync/filters"
-	"github.com/pydio/cells/v4/common/sync/merger"
-	"github.com/pydio/cells/v4/common/sync/model"
-	"github.com/pydio/cells/v4/common/sync/proc"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/sync/endpoints/memory"
+	"github.com/pydio/cells/v5/common/sync/filters"
+	"github.com/pydio/cells/v5/common/sync/merger"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/sync/proc"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type Sync struct {
@@ -85,7 +85,7 @@ func (s *Sync) SetFilters(roots []string, excludes []string) {
 		if g, e := glob.Compile(i, '/'); e == nil {
 			s.Ignores = append(s.Ignores, g)
 		} else {
-			log.Logger(context.Background()).Error("Unsupported glob pattern format!", zap.Error(e))
+			log.Logger(runtime.CoreBackground()).Error("Unsupported glob pattern format!", zap.Error(e))
 		}
 	}
 }
@@ -158,6 +158,8 @@ func (s *Sync) Shutdown() {
 		s.watchConn = nil
 	}
 	s.processor.Stop()
+	// process.Stop closes the underlying patchChan - nullify it locally
+	s.patchChan = nil
 	if s.echoFilter != nil {
 		s.echoFilter.Stop()
 	}
@@ -299,7 +301,7 @@ func (s *Sync) RootStats(ctx context.Context, useSnapshots bool) (map[string]*mo
 			defer wg.Done()
 			if sourceRoots, e := s.statRoots(ctx, epCopy); e == nil {
 				lock.Lock()
-				log.Logger(ctx).Info("Got Stats for "+keyCopy, zap.Any("stats", sourceRoots))
+				log.Logger(ctx).Info("Got Stats for "+keyCopy, zap.Any("stats", *sourceRoots))
 				result[keyCopy] = sourceRoots
 				lock.Unlock()
 				if !useSnapshots && s.watchConn != nil {
@@ -335,9 +337,13 @@ func (s *Sync) RootStats(ctx context.Context, useSnapshots bool) (map[string]*mo
 func (s *Sync) walkToJSON(ctx context.Context, source model.PathSyncSource, jsonFile string) error {
 
 	db := memory.NewMemDB()
-	source.Walk(func(path string, node *tree.Node, err error) {
-		db.CreateNode(ctx, node, false)
-	}, "/", true)
+	if er := source.Walk(ctx, func(path string, node tree.N, err error) error {
+
+		return db.CreateNode(ctx, node, false)
+
+	}, "/", true); er != nil {
+		return er
+	}
 
 	return db.ToJSON(jsonFile)
 
@@ -355,22 +361,16 @@ func (s *Sync) statRoots(ctx context.Context, source model.Endpoint) (stat *mode
 		if err != nil {
 			return stat, errors.WithMessage(err, "Cannot Stat Root")
 		}
-		if node.HasMetaKey(model.MetaRecursiveChildrenSize) {
+		if cs, ok := node.GetChildrenSize(); ok {
 			stat.HasSizeInfo = true
-			var s int64
-			if e := node.GetMeta(model.MetaRecursiveChildrenSize, &s); e == nil {
-				stat.Size += s
-			}
+			stat.Size += int64(cs)
 		}
-		if node.HasMetaKey(model.MetaRecursiveChildrenFolders) && node.HasMetaKey(model.MetaRecursiveChildrenFiles) {
+		files, o1 := node.GetChildrenFiles()
+		folders, o2 := node.GetChildrenFolders()
+		if o1 && o2 {
 			stat.HasChildrenInfo = true
-			var folders, files int64
-			if e := node.GetMeta(model.MetaRecursiveChildrenFolders, &folders); e == nil {
-				stat.Folders += folders
-			}
-			if e := node.GetMeta(model.MetaRecursiveChildrenFiles, &files); e == nil {
-				stat.Files += files
-			}
+			stat.Files += int64(files)
+			stat.Folders += int64(folders)
 		}
 	}
 	return

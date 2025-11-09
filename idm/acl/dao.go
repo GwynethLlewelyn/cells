@@ -25,24 +25,42 @@ import (
 	"context"
 	"time"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/sql"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	service2 "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/service"
 )
+
+var Drivers = service.StorageDrivers{}
+
+type ExpirationProvider interface {
+	GetExpiredBefore() int64
+	GetExpiredAfter() int64
+}
+
+type ExpirationPeriod struct {
+	Start time.Time
+	End   time.Time
+}
+
+func ReadExpirationPeriod(p ExpirationProvider) *ExpirationPeriod {
+	if p.GetExpiredBefore() == 0 && p.GetExpiredAfter() == 0 {
+		return nil
+	}
+	period := &ExpirationPeriod{}
+	if p.GetExpiredAfter() > 0 {
+		period.Start = time.Unix(p.GetExpiredAfter(), 0)
+	}
+	if p.GetExpiredBefore() > 0 {
+		period.End = time.Unix(p.GetExpiredBefore(), 0)
+	}
+	return period
+}
 
 // DAO interface
 type DAO interface {
-	dao.DAO
-
-	Add(interface{}) error
-	SetExpiry(sql.Enquirer, time.Time) (int64, error)
-	Del(sql.Enquirer) (numRows int64, e error)
-	Search(sql.Enquirer, *[]interface{}) error
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{DAO: v}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+	Migrate(context.Context) error
+	Add(context.Context, bool, ...*idm.ACL) error
+	SetExpiry(context.Context, service2.Enquirer, *time.Time, *ExpirationPeriod) (int64, error)
+	Del(context.Context, service2.Enquirer, *ExpirationPeriod) (numRows int64, e error)
+	Search(context.Context, service2.Enquirer, *[]interface{}, *ExpirationPeriod) error
 }

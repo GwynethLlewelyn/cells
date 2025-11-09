@@ -29,9 +29,10 @@ import (
 	p "github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
-	"github.com/pydio/cells/v4/common/utils/net"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/utils/net"
 )
 
 var sitesAdd = &cobra.Command{
@@ -45,7 +46,7 @@ DESCRIPTION
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		sites, _ := config.LoadSites(true)
+		sites, _ := routing.LoadSites(cmd.Context(), true)
 
 		newSite := &install.ProxyConfig{}
 
@@ -145,7 +146,7 @@ func promptMaintenanceMode(site *install.ProxyConfig) (e error) {
 func promptBindURLs(site *install.ProxyConfig, resolveHosts bool, bindingPort string) (e error) {
 
 	if bindingPort == "" {
-		def := strings.Split(config.DefaultBindingSite.Binds[0], ":")[1]
+		def := strings.Split(routing.DefaultBindingSite.Binds[0], ":")[1]
 		portPrompt := &p.Prompt{
 			Label:     "Binding Port",
 			Validate:  validPortNumber,
@@ -222,7 +223,7 @@ func promptBindURLs(site *install.ProxyConfig, resolveHosts bool, bindingPort st
 	// TODO let end user try again
 	parts := strings.Split(bindURL.Host, ":")
 	if len(parts) != 2 {
-		return fmt.Errorf("Please provide an [IP|DOMAIN]:[PORT] string")
+		return errors.New("Please provide an [IP|DOMAIN]:[PORT] string")
 	}
 
 	site.Binds = append(site.Binds, fmt.Sprintf("%s:%s", bindURL.Hostname(), bindURL.Port()))
@@ -328,7 +329,7 @@ func promptTLSMode(site *install.ProxyConfig) (enabled bool, e error) {
 			e = e1
 			return
 		} else if !(val == "Y" || val == "y" || val == "") {
-			e = fmt.Errorf("You must agree to Let's Encrypt SA to use automated certificate generation feature.")
+			e = errors.New("You must agree to Let's Encrypt SA to use automated certificate generation feature.")
 			return
 		}
 

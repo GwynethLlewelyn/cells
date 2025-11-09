@@ -27,16 +27,16 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/sync/endpoints/cells"
-	"github.com/pydio/cells/v4/common/sync/model"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/sync/endpoints/cells"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 var (
@@ -55,7 +55,12 @@ type Local struct {
 
 // NewLocal creates a new instance of a Local endpoint
 func NewLocal(root string, options cells.Options) *Local {
-	ctx := context.Background()
+	var ctx context.Context
+	if options.LocalRuntimeContext != nil {
+		ctx = options.LocalRuntimeContext
+	} else {
+		ctx = context.Background()
+	}
 	if options.LocalInitRegistry {
 		localRouterOnce.Do(func() {
 			// TODO - If we re-enable this endpoint, we may have to do something here
@@ -63,7 +68,7 @@ func NewLocal(root string, options cells.Options) *Local {
 			if err != nil {
 				panic(err)
 			}
-			ctx = servicecontext.WithRegistry(ctx, reg)
+			ctx = propagator.With(ctx, registry.ContextKey, reg)
 		})
 	}
 	l := &Local{
@@ -75,10 +80,10 @@ func NewLocal(root string, options cells.Options) *Local {
 		},
 	}
 	l.Factory = &localRouterFactory{
-		router: compose.PathClient(l.GlobalCtx, nodes.AsAdmin(), nodes.WithSynchronousTasks()),
+		router: compose.PathClient(nodes.AsAdmin(), nodes.WithSynchronousTasks(), nodes.WithHashesAsETags()),
 	}
 	l.Source = l
-	l.GlobalCtx = servicecontext.WithServiceName(l.GlobalCtx, "endpoint.cells.local")
+	l.GlobalCtx = runtime.WithServiceName(l.GlobalCtx, "endpoint.cells.local")
 	return l
 }
 

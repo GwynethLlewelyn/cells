@@ -25,25 +25,23 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
-	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/pydio/cells/v4/common/nodes"
-
 	"github.com/krolaw/zipstream"
 	"go.uber.org/zap"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type Reader struct {
@@ -158,7 +156,7 @@ func (a *Reader) StatChildZip(ctx context.Context, archiveNode *tree.Node, inner
 
 	nn, err := a.ListChildrenZip(ctx, archiveNode, innerPath, true)
 	if err != nil || len(nn) == 0 {
-		return nil, nodes.ErrFileNotFound("File " + innerPath + " not found inside archive " + archiveNode.Path)
+		return nil, errors.WithMessage(errors.NodeNotFound, "File "+innerPath+" not found inside archive "+archiveNode.Path)
 	}
 	return nn[0], nil
 
@@ -178,7 +176,7 @@ func (a *Reader) ReadChildZip(ctx context.Context, archiveNode *tree.Node, inner
 		}
 		defer remoteReader.Close()
 		// Create tmp file
-		file, e := ioutil.TempFile("", "pydio-archive-")
+		file, e := os.CreateTemp("", "pydio-archive-")
 		if e != nil {
 			return nil, e
 		}
@@ -204,7 +202,7 @@ func (a *Reader) ReadChildZip(ctx context.Context, archiveNode *tree.Node, inner
 			return fileReader, err
 		}
 	}
-	return nil, nodes.ErrFileNotFound("File " + innerPath + " not found inside archive")
+	return nil, errors.WithMessage(errors.NodeNotFound, "File "+innerPath+" not found inside archive")
 
 }
 
@@ -214,7 +212,7 @@ func (a *Reader) ExtractAllZip(ctx context.Context, archiveNode *tree.Node, targ
 	// We have to download whole archive to read its content
 	var archiveName string
 	var archiveSize, uncompressed int64
-	maxRatio := config.Get("defaults", "archiveMaxRatio").Default(UnCompressThreshold).Int64()
+	maxRatio := config.Get(ctx, "defaults", "archiveMaxRatio").Default(UnCompressThreshold).Int64()
 
 	if localFolder := archiveNode.GetStringMeta(common.MetaNamespaceNodeTestLocalFolder); localFolder != "" {
 		archiveName = filepath.Join(localFolder, archiveNode.Uuid)
@@ -230,7 +228,7 @@ func (a *Reader) ExtractAllZip(ctx context.Context, archiveNode *tree.Node, targ
 		}
 		defer remoteReader.Close()
 		// Create tmp file
-		file, e := ioutil.TempFile("", "pydio-archive-")
+		file, e := os.CreateTemp("", "pydio-archive-")
 		if e != nil {
 			return e
 		}
@@ -263,7 +261,7 @@ func (a *Reader) ExtractAllZip(ctx context.Context, archiveNode *tree.Node, targ
 				return e
 			}
 			if len(logChannels) > 0 {
-				logChannels[0] <- "Creating directory " + strings.TrimSuffix(fName, "/")
+				logChannels[0] <- "Creating directory " + path.Base(strings.TrimSuffix(fName, "/"))
 			}
 		} else {
 			fileReader, err := file.Open()
@@ -275,7 +273,7 @@ func (a *Reader) ExtractAllZip(ctx context.Context, archiveNode *tree.Node, targ
 			uncompressed += int64(file.UncompressedSize64)
 			if uncompressed/archiveSize > maxRatio {
 				log.Auditer(ctx).Error("Decompression of archive " + archiveNode.GetPath() + " was interrupted because compression ratio seems too high. It could be a zip bomb. You can set the defaults/archiveMaxRatio value to override default threshold (100).")
-				return fmt.Errorf("interrupting archive decompression: ratio seems too high, it could be a zip-bomb.")
+				return errors.New("interrupting archive decompression: ratio seems too high, it could be a zip-bomb.")
 			}
 
 			_, err = a.Router.PutObject(ctx, &tree.Node{Path: pa}, fileReader, &models.PutRequestData{Size: int64(file.UncompressedSize64)})
@@ -286,7 +284,7 @@ func (a *Reader) ExtractAllZip(ctx context.Context, archiveNode *tree.Node, targ
 				return err
 			}
 			if len(logChannels) > 0 {
-				logChannels[0] <- "Writing new file " + strings.TrimSuffix(fName, "/")
+				logChannels[0] <- "Extracting file " + path.Base(strings.TrimSuffix(fName, "/"))
 			}
 		}
 
@@ -406,7 +404,7 @@ func (a *Reader) StatChildTar(ctx context.Context, gzipFormat bool, archiveNode 
 
 	nn, err := a.ListChildrenTar(ctx, gzipFormat, archiveNode, innerPath, true)
 	if err != nil || len(nn) == 0 {
-		return nil, nodes.ErrFileNotFound("File " + innerPath + " not found inside archive " + archiveNode.Path)
+		return nil, errors.WithMessage(errors.NodeNotFound, "File "+innerPath+" not found inside archive "+archiveNode.Path)
 	}
 	return nn[0], nil
 
@@ -455,7 +453,7 @@ func (a *Reader) ReadChildTar(ctx context.Context, gzipFormat bool, writer io.Wr
 			return written, err
 		}
 	}
-	return 0, nodes.ErrFileNotFound("File " + innerPath + " not found inside archive")
+	return 0, errors.WithMessage(errors.NodeNotFound, "File "+innerPath+" not found inside archive")
 
 }
 
@@ -466,7 +464,7 @@ func (a *Reader) ExtractAllTar(ctx context.Context, gzipFormat bool, archiveNode
 	var inputStream io.ReadCloser
 	var openErr error
 	var archiveSize, uncompressed int64
-	maxRatio := config.Get("defaults", "archiveMaxRatio").Default(UnCompressThreshold).Int64()
+	maxRatio := config.Get(ctx, "defaults", "archiveMaxRatio").Default(UnCompressThreshold).Int64()
 	if localFolder := archiveNode.GetStringMeta(common.MetaNamespaceNodeTestLocalFolder); localFolder != "" {
 		inputStream, openErr = os.Open(filepath.Join(localFolder, archiveNode.Uuid))
 		s, e := os.Stat(filepath.Join(localFolder, archiveNode.Uuid))
@@ -513,13 +511,13 @@ func (a *Reader) ExtractAllTar(ctx context.Context, gzipFormat bool, archiveNode
 				return e
 			}
 			if len(logChannels) > 0 {
-				logChannels[0] <- "Creating directory " + strings.TrimSuffix(fName, "/")
+				logChannels[0] <- "Creating directory " + path.Base(strings.TrimSuffix(fName, "/"))
 			}
 		} else {
 			uncompressed += file.Size
 			if uncompressed/archiveSize > maxRatio {
 				log.Auditer(ctx).Error("Decompression of archive " + archiveNode.GetPath() + " was interrupted because compression ratio seems too high. It could be a tar bomb. You can set the defaults/archiveMaxRatio value to override default threshold (100).")
-				return fmt.Errorf("interrupting archive decompression: ratio seems too high, it could be a zip-bomb.")
+				return errors.New("interrupting archive decompression: ratio seems too high, it could be a zip-bomb.")
 			}
 			_, err = a.Router.PutObject(ctx, &tree.Node{Path: pa}, tarReader, &models.PutRequestData{Size: file.Size})
 			if nodes.Is403(err) {
@@ -529,7 +527,7 @@ func (a *Reader) ExtractAllTar(ctx context.Context, gzipFormat bool, archiveNode
 				return err
 			}
 			if len(logChannels) > 0 {
-				logChannels[0] <- "Writing file " + strings.TrimSuffix(fName, "/")
+				logChannels[0] <- "Extracting file " + path.Base(strings.TrimSuffix(fName, "/"))
 			}
 		}
 

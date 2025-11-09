@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
+ * Copyright (c) 2024. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
  *
  * Pydio Cells is free software: you can redistribute it and/or modify
@@ -23,54 +23,74 @@ package grpc
 import (
 	"context"
 	"fmt"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"io"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/broker/log"
-	"github.com/pydio/cells/v4/common"
-	log2 "github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	proto "github.com/pydio/cells/v4/common/proto/log"
-	"github.com/pydio/cells/v4/common/proto/sync"
-	"github.com/pydio/cells/v4/common/service/errors"
+	"github.com/pydio/cells/v5/broker/log"
+	"github.com/pydio/cells/v5/common/client/commons/jobsc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	proto "github.com/pydio/cells/v5/common/proto/log"
+	"github.com/pydio/cells/v5/common/proto/sync"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/storage/indexer"
+	log2 "github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 // Handler is the gRPC interface for the log service.
 type Handler struct {
 	sync.UnimplementedSyncEndpointServer
 	proto.UnimplementedLogRecorderServer
-	RuntimeCtx  context.Context
-	Repo        log.MessageRepository
-	HandlerName string
+	HandlerName    string
+	ResolveOptions []manager.ResolveOption
 }
 
 func (h *Handler) Name() string {
 	return h.HandlerName
 }
 
+func (h *Handler) OneLog(ctx context.Context, line *proto.Log) error {
+	repo, err := manager.Resolve[log.MessageRepository](ctx, h.ResolveOptions...)
+	if err != nil {
+		return err
+	}
+	return repo.PutLog(ctx, line)
+}
+
 // PutLog retrieves the log messages from the proto stream and stores them in the index.
 func (h *Handler) PutLog(stream proto.LogRecorder_PutLogServer) error {
 
-	var logCount int32
+	ctx := stream.Context()
+	repo, err := manager.Resolve[log.MessageRepository](ctx, h.ResolveOptions...)
+	if err != nil {
+		return errors.Tag(err, errors.LogDAOResolver)
+	}
+	batch, err := repo.NewBatch(ctx, indexer.WithErrorHandler(func(err error) {
+		log2.Logger(ctx).Error("error while processing logs", zap.Error(err))
+	}))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = batch.Flush()
+	}()
+
 	for {
-		line, err := stream.Recv()
-		if err == io.EOF {
-			return nil
+		line, er := stream.Recv()
+		if er != nil {
+			if errors.IsStreamFinished(er) {
+				return nil
+			}
+			return er
 		}
-
-		if err != nil {
-			return err
+		if er := batch.Insert(line); er != nil {
+			log2.Logger(ctx).Warn("error while putting log", zap.Error(er))
 		}
-		logCount++
-
-		h.Repo.PutLog(line)
 	}
 }
 
@@ -80,18 +100,24 @@ func (h *Handler) ListLogs(req *proto.ListLogRequest, stream proto.LogRecorder_L
 	q := req.GetQuery()
 	p := req.GetPage()
 	s := req.GetSize()
+	ctx := stream.Context()
 
-	r, err := h.Repo.ListLogs(q, p, s)
+	repo, err := manager.Resolve[log.MessageRepository](ctx, h.ResolveOptions...)
+	if err != nil {
+		return err
+	}
 
+	r, err := repo.ListLogs(stream.Context(), q, p, s)
 	if err != nil {
 		return err
 	}
 
 	for rr := range r {
-
-		stream.Send(&proto.ListLogResponse{
+		if er := stream.Send(&proto.ListLogResponse{
 			LogMessage: rr.LogMessage,
-		})
+		}); er != nil {
+			return er
+		}
 	}
 	return nil
 }
@@ -99,7 +125,12 @@ func (h *Handler) ListLogs(req *proto.ListLogRequest, stream proto.LogRecorder_L
 // DeleteLogs removes logs based on a ListLogRequest
 func (h *Handler) DeleteLogs(ctx context.Context, req *proto.ListLogRequest) (*proto.DeleteLogsResponse, error) {
 
-	d, e := h.Repo.DeleteLogs(req.Query)
+	repo, err := manager.Resolve[log.MessageRepository](ctx, h.ResolveOptions...)
+	if err != nil {
+		return nil, err
+	}
+
+	d, e := repo.DeleteLogs(ctx, req.Query)
 	if e != nil {
 		return nil, e
 	}
@@ -111,21 +142,25 @@ func (h *Handler) DeleteLogs(ctx context.Context, req *proto.ListLogRequest) (*p
 
 // AggregatedLogs retrieves aggregated figures from the indexer to generate charts and reports.
 func (h *Handler) AggregatedLogs(req *proto.TimeRangeRequest, stream proto.LogRecorder_AggregatedLogsServer) error {
-	return errors.InternalServerError("not.implemented", "cannot aggregate syslogs")
+	return errors.WithStack(errors.StatusNotImplemented)
 }
 
 // TriggerResync uses the request.Path as parameter. If nothing is passed, it reads all the logs from index and
 // reconstructs a new index entirely. If truncate/{int64} is passed, it truncates the log to the given size (or closer)
 func (h *Handler) TriggerResync(ctx context.Context, request *sync.ResyncRequest) (*sync.ResyncResponse, error) {
 
+	repo, err := manager.Resolve[log.MessageRepository](ctx, h.ResolveOptions...)
+	if err != nil {
+		return nil, err
+	}
+
 	var l log2.ZapLogger
-	var closeTask func(e error)
+	var closeTask func(ct context.Context, e error)
 	if request.Task != nil {
 		l = log2.TasksLogger(ctx)
 		theTask := request.Task
 		theTask.StartTime = int32(time.Now().Unix())
-		closeTask = func(e error) {
-			taskClient := jobs.NewJobServiceClient(grpc.GetClientConnFromCtx(h.RuntimeCtx, common.ServiceJobs))
+		closeTask = func(ct context.Context, e error) {
 			theTask.EndTime = int32(time.Now().Unix())
 			if e != nil {
 				theTask.StatusMessage = "Error " + e.Error()
@@ -134,30 +169,30 @@ func (h *Handler) TriggerResync(ctx context.Context, request *sync.ResyncRequest
 				theTask.StatusMessage = "Done"
 				theTask.Status = jobs.TaskStatus_Finished
 			}
-			_, err := taskClient.PutTask(context.Background(), &jobs.PutTaskRequest{Task: theTask})
+			_, err := jobsc.JobServiceClient(ct).PutTask(ct, &jobs.PutTaskRequest{Task: theTask})
 			if err != nil {
 				fmt.Println("Cannot post task!", err)
 			}
 		}
 	} else {
-		closeTask = func(e error) {}
+		closeTask = func(ct context.Context, e error) {}
 	}
 
 	if strings.HasPrefix(request.Path, "truncate/") {
 		strSize := strings.TrimPrefix(request.Path, "truncate/")
 		var er error
 		if maxSize, e := strconv.ParseInt(strSize, 10, 64); e == nil {
-			er = h.Repo.Truncate(ctx, maxSize, l)
+			er = repo.Truncate(ctx, maxSize, l)
 		} else {
-			er = fmt.Errorf("wrong format for truncate (use bytesize)")
+			er = errors.New("wrong format for truncate (use bytesize)")
 		}
-		closeTask(er)
+		closeTask(ctx, er)
 		return &sync.ResyncResponse{}, er
 	}
 
-	c := servicecontext.WithServiceName(context.Background(), servicecontext.GetServiceName(ctx))
+	c := runtime.WithServiceName(propagator.ForkedBackgroundWithMeta(ctx), runtime.GetServiceName(ctx))
 	go func() {
-		e := h.Repo.Resync(c, l)
+		e := repo.Resync(c, l)
 		if e != nil {
 			if l != nil {
 				l.Error("Error while resyncing: ", zap.Error(e))
@@ -165,7 +200,7 @@ func (h *Handler) TriggerResync(ctx context.Context, request *sync.ResyncRequest
 				fmt.Println("Error while resyncing: " + e.Error())
 			}
 		}
-		closeTask(e)
+		closeTask(c, e)
 	}()
 
 	return &sync.ResyncResponse{}, nil

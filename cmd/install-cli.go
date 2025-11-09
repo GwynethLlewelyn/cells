@@ -33,17 +33,13 @@ import (
 	p "github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
-	"github.com/pydio/cells/v4/common/runtime"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/discovery/install/lib"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/runtime"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/discovery/install/lib"
 )
-
-type CellsCliPromptStep struct {
-	Step   string
-	Prompt func(*install.InstallConfig) error
-}
 
 var (
 	emailRegexp       = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
@@ -55,22 +51,22 @@ func cliInstall(cmd *cobra.Command, proxyConfig *install.ProxyConfig) (*install.
 	cliConfig := lib.GenerateDefaultConfig()
 	cliConfig.ProxyConfig = proxyConfig
 
-	if e := applyAdditionalPrompt("boot", cliConfig); e != nil {
+	if e := applyAdditionalPrompt(cmd.Context(), "boot", cliConfig); e != nil {
 		return nil, e
 	}
 
 	fmt.Println("\n\033[1m## Database Connection\033[0m")
-	adminRequired, e := promptDB(cliConfig)
+	adminRequired, e := promptDB(cmd.Context(), cliConfig)
 	if e != nil {
 		return nil, e
 	}
 
-	if e := applyAdditionalPrompt("post-db", cliConfig); e != nil {
+	if e := applyAdditionalPrompt(cmd.Context(), "post-db", cliConfig); e != nil {
 		return nil, e
 	}
 
 	applyDocumentsDSN := ""
-	if e := promptAdditionalMongoDSN(cliConfig, false); e != nil {
+	if e := promptAdditionalMongoDSN(cmd.Context(), cliConfig, false); e != nil {
 		return nil, e
 	} else if cliConfig.DocumentsDSN != "" {
 		// Copy DSN and apply it later on, or it will trigger configs warning
@@ -78,35 +74,33 @@ func cliInstall(cmd *cobra.Command, proxyConfig *install.ProxyConfig) (*install.
 		cliConfig.DocumentsDSN = ""
 	}
 
-	e = lib.Install(context.Background(), cliConfig, lib.InstallDb, func(event *lib.InstallProgressEvent) {
+	e = lib.Install(cmd.Context(), cliConfig, lib.InstallDb, func(event *lib.InstallProgressEvent) {
 		fmt.Println(p.Styler(p.FGFaint)("... " + event.Message))
 	})
 	if e != nil {
 		return nil, fmt.Errorf("could not perform installation: %s", e.Error())
 	}
 
-	// TODO initConfig()
-
 	fmt.Println("\n\033[1m## Administrative User Configuration\033[0m")
 	if e := promptFrontendAdmin(cliConfig, adminRequired); e != nil {
 		return nil, e
 	}
 
-	if e := applyAdditionalPrompt("post-admin", cliConfig); e != nil {
+	if e := applyAdditionalPrompt(cmd.Context(), "post-admin", cliConfig); e != nil {
 		return nil, e
 	}
 
 	fmt.Println("\n\033[1m## Default storage location\033[0m")
-	if e := promptAdvanced(cliConfig); e != nil {
+	if e := promptAdvanced(cmd.Context(), cliConfig); e != nil {
 		return nil, e
 	}
 
-	if e := applyAdditionalPrompt("post-advanced", cliConfig); e != nil {
+	if e := applyAdditionalPrompt(cmd.Context(), "post-advanced", cliConfig); e != nil {
 		return nil, e
 	}
 
 	fmt.Println("\n\033[1m## Applying configuration\033[0m")
-	e = lib.Install(context.Background(), cliConfig, lib.InstallAll, func(event *lib.InstallProgressEvent) {
+	e = lib.Install(cmd.Context(), cliConfig, lib.InstallAll, func(event *lib.InstallProgressEvent) {
 		fmt.Println(p.Styler(p.FGFaint)("... " + event.Message))
 	})
 	if e != nil {
@@ -117,7 +111,7 @@ func cliInstall(cmd *cobra.Command, proxyConfig *install.ProxyConfig) (*install.
 	if applyDocumentsDSN != "" {
 		cliConfig.DocumentsDSN = applyDocumentsDSN
 		cliConfig.UseDocumentsDSN = true
-		e = lib.Install(context.Background(), cliConfig, lib.InstallDb, func(event *lib.InstallProgressEvent) {
+		e = lib.Install(cmd.Context(), cliConfig, lib.InstallDb, func(event *lib.InstallProgressEvent) {
 			fmt.Println(p.Styler(p.FGFaint)("... " + event.Message))
 		})
 		fmt.Println(p.IconGood + " Documents DSN set up")
@@ -126,7 +120,7 @@ func cliInstall(cmd *cobra.Command, proxyConfig *install.ProxyConfig) (*install.
 	fmt.Println("\n\033[1m## Software is ready to run!\033[0m")
 
 	fmt.Println(p.Styler(p.FGFaint)("Cells will be accessible through the following URLs:"))
-	ss, _ := config.LoadSites()
+	ss, _ := routing.LoadSites(cmd.Context())
 	var urls []string
 	for _, s := range ss {
 		for _, u := range s.GetExternalUrls() {
@@ -150,14 +144,20 @@ func cliInstall(cmd *cobra.Command, proxyConfig *install.ProxyConfig) (*install.
 
 }
 
-func promptDB(c *install.InstallConfig) (adminRequired bool, err error) {
+func promptDB(ctx context.Context, c *install.InstallConfig) (adminRequired bool, err error) {
 
 	connType := p.Select{
 		Label: "Database Connection Type",
-		Items: []string{"TCP", "Socket", "Manual"},
+		Items: []string{
+			"MySQL/MariaDB - TCP",
+			"PostgreSQL    - TCP",
+			"MySQL/MariaDB - Socket",
+			"PostgreSQL    - Socket",
+			"SQLite 	   - File",
+			"Manual DSN",
+		},
 	}
 	dbTcpHost := p.Prompt{Label: "Database Hostname", Validate: notEmpty, Default: c.DbTCPHostname, AllowEdit: true}
-	dbTcpPort := p.Prompt{Label: "Database Port", Validate: validPortNumber, Default: c.DbTCPPort, AllowEdit: true}
 
 	dbName := p.Prompt{Label: "Database Name", Validate: notEmpty, Default: c.DbTCPName, AllowEdit: true}
 	dbUser := p.Prompt{Label: "Database User", Validate: notEmpty, Default: c.DbTCPUser, AllowEdit: true}
@@ -167,25 +167,43 @@ func promptDB(c *install.InstallConfig) (adminRequired bool, err error) {
 	dbDSN := p.Prompt{Label: "Manual DSN", Validate: notEmpty}
 
 	uConnIdx, _, er := connType.Run()
-	if er == p.ErrInterrupt {
+	if errors.Is(er, p.ErrInterrupt) {
 		return false, er
 	}
 	var e error
-	if uConnIdx == 2 {
+	if uConnIdx == 5 {
+		c.DbConnectionType = "manual"
 		if c.DbManualDSN, e = dbDSN.Run(); e != nil {
 			return false, e
 		}
+	} else if uConnIdx == 4 {
+		dbSocketFile = p.Prompt{Label: "Path to sqlite DB file", Validate: notEmpty}
+		sf, _ := dbSocketFile.Run()
+		c.DbConnectionType = "sqlite"
+		c.DbSocketFile = sf
 	} else {
-		if uConnIdx == 0 {
-			c.DbConnectionType = "tcp"
+		tcp := uConnIdx == 0 || uConnIdx == 1
+		socket := uConnIdx == 2 || uConnIdx == 3
+		if tcp {
+			if uConnIdx == 0 {
+				c.DbConnectionType = "mysql_tcp"
+			} else {
+				c.DbConnectionType = "pg_tcp"
+				c.DbTCPPort = "5432" // Replace with PG default
+			}
+			dbTcpPort := p.Prompt{Label: "Database Port", Validate: validPortNumber, Default: c.DbTCPPort, AllowEdit: true}
 			if c.DbTCPHostname, e = dbTcpHost.Run(); e != nil {
 				return false, e
 			}
 			if c.DbTCPPort, e = dbTcpPort.Run(); e != nil {
 				return false, e
 			}
-		} else if uConnIdx == 1 {
-			c.DbConnectionType = "socket"
+		} else if socket {
+			if uConnIdx == 2 {
+				c.DbConnectionType = "mysql_socket"
+			} else {
+				c.DbConnectionType = "pg_socket"
+			}
 			if c.DbSocketFile, e = dbSocketFile.Run(); e != nil {
 				return false, e
 			}
@@ -200,7 +218,7 @@ func promptDB(c *install.InstallConfig) (adminRequired bool, err error) {
 		if pass, e = dbPass.Run(); e != nil {
 			return false, e
 		}
-		if uConnIdx == 0 {
+		if tcp {
 			c.DbTCPName = name
 			c.DbTCPUser = user
 			c.DbTCPPassword = pass
@@ -211,9 +229,9 @@ func promptDB(c *install.InstallConfig) (adminRequired bool, err error) {
 		}
 	}
 	adminRequired = true
-	if res, e := lib.PerformCheck(context.Background(), "DB", c); e != nil {
+	if res, e := lib.PerformCheck(ctx, "DB", c); e != nil {
 		fmt.Println(p.IconBad + " Cannot connect to database, please review the parameters: " + e.Error())
-		return promptDB(c)
+		return promptDB(ctx, c)
 	} else {
 		var info map[string]interface{}
 		var existConfirm string
@@ -227,9 +245,9 @@ func promptDB(c *install.InstallConfig) (adminRequired bool, err error) {
 		}
 		if existConfirm != "" {
 			confirm := p.Prompt{Label: p.IconWarn + " " + existConfirm + " Do you want to continue", IsConfirm: true}
-			if _, e := confirm.Run(); e != nil && e != p.ErrInterrupt {
-				return promptDB(c)
-			} else if e == p.ErrInterrupt {
+			if _, e = confirm.Run(); e != nil && !errors.Is(e, p.ErrInterrupt) {
+				return promptDB(ctx, c)
+			} else if errors.Is(e, p.ErrInterrupt) {
 				return false, e
 			}
 		}
@@ -238,7 +256,7 @@ func promptDB(c *install.InstallConfig) (adminRequired bool, err error) {
 	return
 }
 
-func promptAdditionalMongoDSN(c *install.InstallConfig, loop bool) error {
+func promptAdditionalMongoDSN(ctx context.Context, c *install.InstallConfig, loop bool) error {
 
 	if !loop {
 		_, e := (&p.Prompt{
@@ -261,16 +279,19 @@ func promptAdditionalMongoDSN(c *install.InstallConfig, loop bool) error {
 	host, port, _ := net.SplitHostPort(targetUrl.Host)
 	dbName := strings.TrimLeft(targetUrl.Path, "/")
 	dsnHost := p.Prompt{
-		Label:   "Server host",
-		Default: host,
+		Label:     "Server host",
+		Default:   host,
+		AllowEdit: true,
 	}
 	dsnPort := p.Prompt{
-		Label:   "Server port",
-		Default: port,
+		Label:     "Server port (leave empty and set srvScheme=true to switch to mongo+srv)",
+		Default:   port,
+		AllowEdit: true,
 	}
 	dsnDB := p.Prompt{
-		Label:   "Database Name",
-		Default: dbName,
+		Label:     "Database Name",
+		Default:   dbName,
+		AllowEdit: true,
 	}
 
 	if host, e = dsnHost.Run(); e != nil {
@@ -282,10 +303,14 @@ func promptAdditionalMongoDSN(c *install.InstallConfig, loop bool) error {
 	if dbName, e = dsnDB.Run(); e != nil {
 		return e
 	}
-	targetUrl.Host = net.JoinHostPort(host, port)
+	if port != "" {
+		targetUrl.Host = net.JoinHostPort(host, port)
+	} else {
+		targetUrl.Host = host
+	}
 	targetUrl.Path = "/" + dbName
 	dsnAuth := p.Prompt{
-		Label:     "Do you wish to setup authentication?",
+		Label:     "Do you wish to setup authentication",
 		IsConfirm: true,
 		Default:   "y",
 	}
@@ -315,7 +340,42 @@ func promptAdditionalMongoDSN(c *install.InstallConfig, loop bool) error {
 		}
 		targetUrl.User = url.UserPassword(user, pass)
 		if authDB != "" {
-			targetUrl.Query().Set("authSource", authDB)
+			qu := targetUrl.Query()
+			qu.Set("authSource", authDB)
+			targetUrl.RawQuery = qu.Encode()
+		}
+	}
+
+	for {
+		fmt.Println("Current Query String is: " + targetUrl.RawQuery)
+		dsnQuery := p.Prompt{
+			Label:     "Do you wish to append other query parameters",
+			IsConfirm: true,
+			Default:   "N",
+		}
+		if _, er := dsnQuery.Run(); er != nil {
+			break
+		}
+		dsnQueryKey := p.Prompt{
+			Label:   "Parameter Name (use srvScheme to switch mongo+srv://)",
+			Default: "",
+		}
+		dsnQueryValue := p.Prompt{
+			Label:   "Parameter Value",
+			Default: "",
+		}
+		q, e := dsnQueryKey.Run()
+		if e != nil {
+			break
+		}
+		v, e := dsnQueryValue.Run()
+		if e != nil {
+			break
+		}
+		if q != "" && v != "" {
+			initialQuery := targetUrl.Query()
+			initialQuery.Set(q, v)
+			targetUrl.RawQuery = initialQuery.Encode()
 		}
 	}
 
@@ -323,17 +383,17 @@ func promptAdditionalMongoDSN(c *install.InstallConfig, loop bool) error {
 
 	fmt.Println("")
 	fmt.Println("Performing test connection to " + targetUrl.Redacted())
-	if _, er := lib.PerformCheck(context.Background(), "MONGO", c); er != nil {
+	if _, er := lib.PerformCheck(ctx, "MONGO", c); er != nil {
 		fmt.Println(p.IconBad + " " + er.Error())
 		fmt.Println(p.IconBad + " Cannot connect, please review your parameters!")
-		return promptAdditionalMongoDSN(c, true)
+		return promptAdditionalMongoDSN(ctx, c, true)
 	}
 
 	return nil
 
 }
 
-func promptDocumentsDSN(c *install.InstallConfig) error {
+func promptDocumentsDSN(ctx context.Context, c *install.InstallConfig) error {
 	driverType := p.Select{
 		Label: "Select driver type",
 		Items: []string{"mongodb", "boltdb", "bleve"},
@@ -364,7 +424,7 @@ func promptDocumentsDSN(c *install.InstallConfig) error {
 		}
 		c.DocumentsDSN = driver + "://" + fpath
 	default:
-		return fmt.Errorf("unsupported driver type")
+		return errors.New("unsupported driver type")
 	}
 	return nil
 }
@@ -373,14 +433,14 @@ func promptFrontendAdmin(c *install.InstallConfig, adminRequired bool) error {
 
 	login := p.Prompt{Label: "Admin Login (leave empty if you want to use existing admin)", Default: "", Validate: func(s string) error {
 		if s != "" && strings.ToLower(s) != s {
-			return fmt.Errorf("Use lowercase characters only for login")
+			return errors.New("Use lowercase characters only for login")
 		}
 		return nil
 	}}
 	pwd := p.Prompt{Label: "Admin Password", Mask: '*'}
 	pwd2 := p.Prompt{Label: "Confirm Password", Mask: '*', Validate: func(s string) error {
 		if c.FrontendPassword != s {
-			return fmt.Errorf("Passwords differ! Change confirmation or hit Ctrl+C to change first value.")
+			return errors.New("Passwords differ! Change confirmation or hit Ctrl+C to change first value.")
 		}
 		return nil
 	}}
@@ -414,7 +474,7 @@ func promptFrontendAdmin(c *install.InstallConfig, adminRequired bool) error {
 
 }
 
-func promptAdvanced(c *install.InstallConfig) error {
+func promptAdvanced(ctx context.Context, c *install.InstallConfig) error {
 
 	dsType := p.Select{
 		Label: "Your files will be stored on local filesystem under '" + c.DsFolder + "'. Do you want to change this?",
@@ -438,13 +498,13 @@ func promptAdvanced(c *install.InstallConfig) error {
 	} else if i == 2 {
 		// CHECK S3 CONNECTION
 		c.DsType = "S3"
-		buckets, canCreate, err := setupS3Connection(c)
+		buckets, canCreate, err := setupS3Connection(ctx, c)
 		if err != nil {
 			return err
 		}
 		fmt.Println(p.IconGood + fmt.Sprintf(" Successfully connected to S3, listed %d buckets, ability to create: %v", len(buckets), canCreate))
 		// NOW SET UP BUCKETS
-		usedBuckets, created, err := setupS3Buckets(c, buckets, canCreate)
+		usedBuckets, created, err := setupS3Buckets(ctx, c, buckets, canCreate)
 		if err != nil {
 			return err
 		}
@@ -458,33 +518,51 @@ func promptAdvanced(c *install.InstallConfig) error {
 }
 
 /* VARIOUS HELPERS */
-func setupS3Connection(c *install.InstallConfig) (buckets []string, canCreate bool, e error) {
+func setupS3Connection(ctx context.Context, c *install.InstallConfig) (buckets []string, canCreate bool, e error) {
 
-	pr := p.Prompt{Label: "For S3 compatible storage, please provide storage URL (leave empty for Amazon)", Default: c.DsS3Custom, AllowEdit: true}
-	if s3Custom, e := pr.Run(); e != nil {
-		return buckets, canCreate, e
-	} else if s3Custom != "" {
-		c.DsS3Custom = strings.Trim(s3Custom, " ")
+	srvType := p.Select{
+		Label: "Select S3 storage type",
+		Items: []string{
+			"Amazon S3",
+			"Minio Server",
+			"Other S3-compatible service",
+		},
 	}
-	pr = p.Prompt{Label: "Provide storage custom region (leave empty for default)", Default: c.DsS3CustomRegion, AllowEdit: true}
+	i, _, er := srvType.Run()
+	if er != nil {
+		e = er
+		return
+	}
+	if i > 0 {
+		pr := p.Prompt{Label: "Please provide storage URL", Default: c.DsS3Custom, AllowEdit: true}
+		if s3Custom, e := pr.Run(); e != nil {
+			return buckets, canCreate, e
+		} else if s3Custom != "" {
+			c.DsS3Custom = strings.TrimSpace(s3Custom)
+			if i == 1 {
+				c.DsS3Custom += "?minio=true"
+			}
+		}
+	}
+	pr := p.Prompt{Label: "Provide storage custom region (leave empty for default)", Default: c.DsS3CustomRegion, AllowEdit: true}
 	if s3CustomRegion, e := pr.Run(); e != nil {
 		return buckets, canCreate, e
 	} else if s3CustomRegion != "" {
-		c.DsS3CustomRegion = strings.Trim(s3CustomRegion, " ")
+		c.DsS3CustomRegion = strings.TrimSpace(s3CustomRegion)
 	}
 	pr = p.Prompt{Label: "Please enter S3 Api Key", Validate: notEmpty}
 	if apiKey, e := pr.Run(); e != nil {
 		return buckets, canCreate, e
 	} else {
-		c.DsS3ApiKey = strings.Trim(apiKey, " ")
+		c.DsS3ApiKey = strings.TrimSpace(apiKey)
 	}
 	pr = p.Prompt{Label: "Please enter S3 Api Secret", Validate: notEmpty, Mask: '*'}
 	if apiSecret, e := pr.Run(); e != nil {
 		return buckets, canCreate, e
 	} else {
-		c.DsS3ApiSecret = strings.Trim(apiSecret, " ")
+		c.DsS3ApiSecret = strings.TrimSpace(apiSecret)
 	}
-	check, _ := lib.PerformCheck(context.Background(), "S3_KEYS", c)
+	check, _ := lib.PerformCheck(ctx, "S3_KEYS", c)
 	var res map[string]interface{}
 	e = json.Unmarshal([]byte(check.JsonResult), &res)
 	if e != nil {
@@ -505,8 +583,8 @@ func setupS3Connection(c *install.InstallConfig) (buckets []string, canCreate bo
 		fmt.Println(p.IconBad+" Could not connect to S3: ", check.JsonResult)
 		retry := p.Prompt{Label: "Do you want to retry with different keys", IsConfirm: true}
 		if _, e := retry.Run(); e == nil {
-			return setupS3Connection(c)
-		} else if e == p.ErrInterrupt {
+			return setupS3Connection(ctx, c)
+		} else if errors.Is(e, p.ErrInterrupt) {
 			return buckets, canCreate, e
 		} else {
 			return buckets, canCreate, e
@@ -514,13 +592,18 @@ func setupS3Connection(c *install.InstallConfig) (buckets []string, canCreate bo
 	}
 }
 
-func setupS3Buckets(c *install.InstallConfig, knownBuckets []string, canCreate bool) (used []string, created []string, e error) {
+func setupS3Buckets(ctx context.Context, c *install.InstallConfig, knownBuckets []string, canCreate bool) (used []string, created []string, e error) {
 	var pref string
-	prefPrompt := p.Prompt{Label: "Select a unique prefix for this installation buckets.", Default: "cells-"}
+	prefPrompt := p.Prompt{
+		Label:     "Select a unique prefix for this installation buckets.",
+		Default:   "cells-",
+		AllowEdit: true,
+	}
 	pref, e = prefPrompt.Run()
 	if e != nil {
 		return
 	}
+	pref = strings.TrimSpace(pref)
 	used = []string{
 		pref + "pydiods1",
 		pref + "personal",
@@ -557,8 +640,8 @@ func setupS3Buckets(c *install.InstallConfig, knownBuckets []string, canCreate b
 		fmt.Printf(p.IconBad+" The following buckets do not exists: %s, and you are not allowed to create them with the current credentials. Please create them first or change the prefix.\n", strings.Join(toCreate, ", "))
 		retry := p.Prompt{Label: "Do you want to retry with different keys", IsConfirm: true}
 		if _, e := retry.Run(); e == nil {
-			return setupS3Buckets(c, knownBuckets, canCreate)
-		} else if e == p.ErrInterrupt {
+			return setupS3Buckets(ctx, c, knownBuckets, canCreate)
+		} else if errors.Is(e, p.ErrInterrupt) {
 			return used, []string{}, e
 		} else {
 			return used, []string{}, e
@@ -567,11 +650,11 @@ func setupS3Buckets(c *install.InstallConfig, knownBuckets []string, canCreate b
 		fmt.Printf(p.IconWarn+" The following buckets will be created: %s\n", strings.Join(toCreate, ", "))
 		retry := p.Prompt{Label: "Do you wish to continue or to use a different prefix", IsConfirm: true, Default: "y"}
 		if _, e = retry.Run(); e != nil {
-			return setupS3Buckets(c, knownBuckets, canCreate)
-		} else if e == p.ErrInterrupt {
+			return setupS3Buckets(ctx, c, knownBuckets, canCreate)
+		} else if errors.Is(e, p.ErrInterrupt) {
 			return used, []string{}, e
 		} else {
-			check, er := lib.PerformCheck(context.Background(), "S3_BUCKETS", c)
+			check, er := lib.PerformCheck(ctx, "S3_BUCKETS", c)
 			if !check.Success {
 				return used, []string{}, fmt.Errorf("Error while creating buckets: %s", er.Error())
 			}
@@ -586,14 +669,10 @@ func setupS3Buckets(c *install.InstallConfig, knownBuckets []string, canCreate b
 	}
 }
 
-func RegisterAdditionalPrompt(step CellsCliPromptStep) {
-	additionalPrompts = append(additionalPrompts, step)
-}
-
-func applyAdditionalPrompt(step string, i *install.InstallConfig) error {
+func applyAdditionalPrompt(ctx context.Context, step string, i *install.InstallConfig) error {
 	for _, s := range additionalPrompts {
 		if s.Step == step {
-			return s.Prompt(i)
+			return s.Prompt(ctx, i)
 		}
 	}
 	return nil
@@ -601,14 +680,14 @@ func applyAdditionalPrompt(step string, i *install.InstallConfig) error {
 
 func validateMailFormat(input string) error {
 	if !emailRegexp.MatchString(input) {
-		return fmt.Errorf("Please enter a valid e-mail address!")
+		return errors.New("Please enter a valid e-mail address!")
 	}
 	return nil
 }
 
 func notEmpty(input string) error {
 	if len(input) == 0 {
-		return fmt.Errorf("Field cannot be empty!")
+		return errors.New("Field cannot be empty!")
 	}
 	return nil
 }
@@ -619,7 +698,7 @@ func validHostPort(input string) error {
 	}
 	parts := strings.Split(input, ":")
 	if len(parts) != 2 {
-		return fmt.Errorf("Please use an [IP|DOMAIN]:[PORT] string")
+		return errors.New("Please use an [IP|DOMAIN]:[PORT] string")
 	}
 	if e := validPortNumber(parts[1]); e != nil {
 		return e
@@ -635,7 +714,7 @@ func validScheme(input string) error {
 
 	u, err := url.Parse(input)
 	if err != nil {
-		return fmt.Errorf("could not parse URL")
+		return errors.New("could not parse URL")
 	}
 
 	if len(u.Scheme) > 0 && len(u.Host) > 0 {
@@ -645,13 +724,13 @@ func validScheme(input string) error {
 		return fmt.Errorf("scheme %s is not supported (only http/https are supported)", u.Scheme)
 	}
 
-	return fmt.Errorf("Please use a [SCHEME]://[IP|DOMAIN] string")
+	return errors.New("Please use a [SCHEME]://[IP|DOMAIN] string")
 }
 
 func validPortNumber(input string) error {
 	port, e := strconv.ParseInt(input, 10, 64)
 	if e == nil && port == 0 {
-		return fmt.Errorf("Please use a non empty port!")
+		return errors.New("Please use a non empty port!")
 	}
 	return e
 }

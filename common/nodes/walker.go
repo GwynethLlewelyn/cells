@@ -22,11 +22,15 @@ package nodes
 
 import (
 	"context"
+	"fmt"
+	"path"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 // HandlerListNodesWithCallback is a generic implementation of ListNodesWithCallback for any Handler. Used by Client, Handler and HandlerMock
@@ -81,4 +85,76 @@ loop:
 // WalkFilterSkipPydioHiddenFile is a preset filter ignoring PydioSyncHiddenFile entries
 func WalkFilterSkipPydioHiddenFile(_ context.Context, node *tree.Node) bool {
 	return !strings.HasSuffix(node.Path, common.PydioSyncHiddenFile)
+}
+
+// SuffixPathIfNecessary finds the next available path on targetNode
+// It directly modifies the targetNode.Path property
+func SuffixPathIfNecessary(ctx context.Context, cli Handler, targetNode *tree.Node, targetIsFolder bool, knownLocks ...string) error {
+	// Look for registered child locks : children that are currently in creation
+	searchNode := &tree.Node{Path: path.Dir(targetNode.Path)}
+	excludes := make(map[string]struct{})
+	for _, lock := range knownLocks {
+		excludes[lock] = struct{}{}
+	}
+	//t := time.Now()
+
+	ext := ""
+	if !targetIsFolder {
+		ext = path.Ext(targetNode.Path)
+	}
+	noExt := strings.TrimSuffix(targetNode.Path, ext)
+	noExtBaseQuoted := regexp.QuoteMeta(path.Base(noExt))
+
+	// List basenames with regexp "(?i)^(toto-[[:digit:]]*|toto).txt$" to look for same name or same base-DIGIT.ext (case-insensitive)
+	searchNode.MustSetMeta(tree.MetaFilterForceGrep, "(?i)^("+noExtBaseQuoted+"\\-[[:digit:]]*|"+noExtBaseQuoted+")"+ext+"$")
+	listReq := &tree.ListNodesRequest{Node: searchNode, Recursive: false, StatFlags: []uint32{tree.StatFlagMetaMinimal}}
+	_ = cli.ListNodesWithCallback(ctx, listReq, func(ctx context.Context, node *tree.Node, err error) error {
+		if node.Path == searchNode.Path {
+			return nil
+		}
+		basename := strings.ToLower(path.Base(node.Path))
+		excludes[basename] = struct{}{}
+		return nil
+	}, true)
+
+	//fmt.Println("TOOK", time.Now().Sub(t), excludes)
+	exists := func(node *tree.Node) bool {
+		_, ok := excludes[strings.ToLower(path.Base(node.Path))]
+		return ok
+	}
+	i := 1
+	for {
+		if exists(targetNode) {
+			targetNode.Path = fmt.Sprintf("%s-%d%s", noExt, i, ext)
+			targetNode.MustSetMeta(common.MetaNamespaceNodeName, path.Base(targetNode.Path))
+			i++
+		} else {
+			break
+		}
+	}
+	return nil
+}
+
+// FindNodeByInsensitiveName performs a ListRequest with a MetaFilterGrep on node name
+// to find node with same basename in a case-insensitive way.
+func FindNodeByInsensitiveName(ctx context.Context, cli Handler, testNode *tree.Node) (res *tree.Node, err error) {
+	dir, baseName := path.Split(testNode.Path)
+	searchNode := &tree.Node{Path: dir}
+	searchNode.MustSetMeta(tree.MetaFilterGrep, "(?i)^"+baseName+"$")
+	listReq := &tree.ListNodesRequest{Node: searchNode, Recursive: false, StatFlags: []uint32{tree.StatFlagMetaMinimal}}
+	err = cli.ListNodesWithCallback(ctx, listReq, func(ctx context.Context, node *tree.Node, err error) error {
+		// ListNode returns the parent folder as first node, make sure to ignore it
+		if strings.Trim(node.Path, "/") == strings.Trim(dir, "/") {
+			return nil
+		}
+		res = node
+		return nil
+	}, true)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		err = errors.WithMessage(errors.NodeNotFound, "node not found")
+	}
+	return
 }

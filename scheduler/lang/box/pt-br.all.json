@@ -23,6 +23,15 @@
   "Jobs.Default.ArchiveJobs": {
     "other": "Arquivamento automático do serviço de mudanças"
   },
+  "Jobs.Default.CleanUserData": {
+    "other": "Limpar ou transferir dados de usuário ao excluir"
+  },
+  "Jobs.Default.CleanOrphanFiles": {
+    "other": "Limpar arquivos órfãos após 24h"
+  },
+  "Jobs.Default.CleanExpiredACLs": {
+    "other": "Limpar ACLs expiradas após 10 dias"
+  },
   "Jobs.User.Compress": {
     "other": "Seleção de Compressão..."
   },
@@ -54,7 +63,7 @@
     "other": "Movendo para a lixeira em segundo plano..."
   },
   "Jobs.User.ResyncDS": {
-    "other": "Reindexando a fonte de dados {{.DsName}}..."
+    "other": "Sincronizar a fonte de dados {{.DsName}} e então gerar hash de novos arquivos"
   },
   "Jobs.User.Wget": {
     "other": "Baixando arquivo em segundo plano..."

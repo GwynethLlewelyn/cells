@@ -23,19 +23,21 @@ package nodes
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/openurl"
 )
 
 type Option func(options *RouterOptions)
+
 type Adapter interface {
 	Adapt(h Handler, options RouterOptions) Handler
 }
 
 // RouterOptions holds configuration flags to pass to a router constructor easily.
 type RouterOptions struct {
-	Context context.Context
+	//Context context.Context
 
-	CoreClient func(pool SourcesPool) Handler
+	CoreClient Handler
 
 	AdminView     bool
 	WatchRegistry bool
@@ -47,19 +49,24 @@ type RouterOptions struct {
 	AuditEvent       bool
 	SynchronousCache bool
 	SynchronousTasks bool
+	HashesAsETags    bool
+	PermanentPrefix  string
+
+	UuidExternalPath bool
 
 	Wrappers []Adapter
-	Pool     SourcesPool
+	Pool     *openurl.Pool[SourcesPool]
 }
 
 func WithContext(ctx context.Context) Option {
 	return func(options *RouterOptions) {
-		options.Context = ctx
+		//options.Context = ctx
 	}
 }
-func WithCore(init func(pool SourcesPool) Handler) Option {
+
+func WithCore(h Handler) Option {
 	return func(options *RouterOptions) {
-		options.CoreClient = init
+		options.CoreClient = h
 	}
 }
 
@@ -96,6 +103,18 @@ func WithSynchronousCaching() Option {
 func WithSynchronousTasks() Option {
 	return func(o *RouterOptions) {
 		o.SynchronousTasks = true
+	}
+}
+
+func WithHashesAsETags() Option {
+	return func(o *RouterOptions) {
+		o.HashesAsETags = true
+	}
+}
+
+func WithPermanentPrefix(p string) Option {
+	return func(options *RouterOptions) {
+		options.PermanentPrefix = p
 	}
 }
 

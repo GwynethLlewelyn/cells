@@ -25,8 +25,36 @@ import "net"
 type Option func(*Options)
 
 type Options struct {
+	Scheme   string
+	Name     string
 	Addr     string
+	JwtAuth  bool
+	Secure   bool
 	Listener net.Listener
+}
+
+func WithScheme(scheme string) Option {
+	return func(o *Options) {
+		o.Scheme = scheme
+	}
+}
+
+func WithAuth() Option {
+	return func(o *Options) {
+		o.JwtAuth = true
+	}
+}
+
+func WithSecure() Option {
+	return func(o *Options) {
+		o.Secure = true
+	}
+}
+
+func WithName(name string) Option {
+	return func(o *Options) {
+		o.Name = name
+	}
 }
 
 func WithAddr(addr string) Option {

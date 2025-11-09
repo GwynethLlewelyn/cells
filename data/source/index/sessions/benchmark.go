@@ -23,16 +23,19 @@ package sessions
 import (
 	"context"
 	"fmt"
-	"google.golang.org/protobuf/proto"
 	"os"
 	"time"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/data/source/index"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/data/source/index"
 )
 
 var benchOutput = "index-%d"
+
 var benchBatcher SessionBatcher
+
 var benchMeasures []map[string]time.Duration
 
 type BenchBatcher struct {
@@ -65,7 +68,7 @@ func (bb *BenchBatcher) Flush(ctx context.Context, dao index.DAO) {
 			for i := range benchMeasures {
 				m := benchMeasures[i]
 				d := m["duration"]
-				file.Write([]byte(fmt.Sprintf("%15d\n", d)))
+				file.WriteString(fmt.Sprintf("%15d\n", d))
 			}
 		} else {
 			log.Logger(ctx).Error("Failed to save benchmark results.")

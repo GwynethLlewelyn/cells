@@ -21,7 +21,7 @@
 // Package tree provides default implementation for tree related tasks.
 package tree
 
-import "github.com/pydio/cells/v4/scheduler/actions"
+import "github.com/pydio/cells/v5/scheduler/actions"
 
 func init() {
 
@@ -39,4 +39,15 @@ func init() {
 		return &MetaAction{}
 	})
 
+	manager.Register(cellsHashActionName, func() actions.ConcreteAction {
+		return &CellsHashAction{}
+	})
+
+	manager.Register(datasourceAttributeActionName, func() actions.ConcreteAction {
+		return &datasourceAttributeAction{}
+	})
+
+	manager.Register(middlewareMetaActionName, func() actions.ConcreteAction {
+		return &middlewareMetaAction{}
+	})
 }

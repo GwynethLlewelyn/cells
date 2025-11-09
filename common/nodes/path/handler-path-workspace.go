@@ -22,23 +22,22 @@ package path
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/service/errors"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/middleware/keys"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 func WithWorkspace() nodes.Option {
@@ -86,14 +85,14 @@ func (a *WorkspaceHandler) extractWs(ctx context.Context, node *tree.Node) (*idm
 		parts := strings.Split(strings.Trim(node.Path, "/"), "/")
 		if len(parts) > 0 && len(parts[0]) > 0 {
 			// Find by slug
-			for _, ws := range accessList.Workspaces {
+			for _, ws := range accessList.GetWorkspaces() {
 				if ws.Slug == parts[0] {
 					node.Path = strings.Join(parts[1:], "/")
 					return ws, true, nil
 				}
 			}
 			// There is a workspace in path, but it is not in the ACL!
-			return nil, false, errors.NotFound("workspace.not.found", fmt.Sprintf("Workspace %s is not found", parts[0]))
+			return nil, false, errors.WithMessagef(errors.WorkspaceNotFound, "Workspace %s is not found in accessList", parts[0])
 		} else {
 			// Root without workspace part
 			return nil, false, nil
@@ -104,7 +103,7 @@ func (a *WorkspaceHandler) extractWs(ctx context.Context, node *tree.Node) (*idm
 }
 
 func (a *WorkspaceHandler) updateBranchInfo(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
-	if info, alreadySet := nodes.GetBranchInfo(ctx, identifier); alreadySet && info.Client != nil {
+	if info, er := nodes.GetBranchInfo(ctx, identifier); er == nil && info.Client != nil {
 		return ctx, node, nil
 	}
 	branchInfo := nodes.BranchInfo{}
@@ -114,9 +113,11 @@ func (a *WorkspaceHandler) updateBranchInfo(ctx context.Context, node *tree.Node
 		return ctx, node, err
 	} else if ok {
 		branchInfo.Workspace = proto.Clone(ws).(*idm.Workspace)
-		ctx = metadata.WithAdditionalMetadata(ctx, map[string]string{
-			servicecontext.CtxWorkspaceUuid: ws.UUID,
-		})
+		if _, ok := propagator.CanonicalMeta(ctx, keys.CtxWorkspaceUuid); !ok { // do not override if already set
+			ctx = propagator.WithAdditionalMetadata(ctx, map[string]string{
+				keys.CtxWorkspaceUuid: ws.UUID,
+			})
+		}
 		return nodes.WithBranchInfo(ctx, identifier, branchInfo), out, nil
 	}
 	return ctx, node, noWorkspaceInPath{}
@@ -124,7 +125,7 @@ func (a *WorkspaceHandler) updateBranchInfo(ctx context.Context, node *tree.Node
 
 func (a *WorkspaceHandler) updateOutputBranch(ctx context.Context, node *tree.Node, identifier string) (context.Context, *tree.Node, error) {
 	// Prepend Slug to path
-	if info, set := nodes.GetBranchInfo(ctx, identifier); set && info.UUID != "ROOT" {
+	if info, er := nodes.GetBranchInfo(ctx, identifier); er == nil && info.UUID != "ROOT" {
 		out := node.Clone()
 		out.Path = info.Slug + "/" + node.Path
 		return ctx, out, nil
@@ -156,13 +157,13 @@ func (a *WorkspaceHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequ
 		// List user workspaces here
 		accessList, ok := acl.FromContext(ctx)
 		if !ok {
-			return nil, nodes.ErrCannotFindACL()
+			return nil, errors.WithStack(errors.BranchInfoACLMissing)
 		}
 		streamer := nodes.NewWrappingStreamer(ctx)
 		go func() {
 			defer streamer.CloseSend()
-			wss := accessList.Workspaces
-			for wsId, wsPermissions := range accessList.GetAccessibleWorkspaces(ctx) {
+			wss := accessList.GetWorkspaces()
+			for wsId, wsPermissions := range accessList.DetectedWsRights(ctx) {
 				ws, o := wss[wsId]
 				if !o {
 					// This is the case if wsId is "settings" or "homepage" => ignore!
@@ -176,7 +177,7 @@ func (a *WorkspaceHandler) ListNodes(ctx context.Context, in *tree.ListNodesRequ
 					}
 					// Pass workspace data along in node MetaStore
 					node.MustSetMeta(common.MetaFlagWorkspaceScope, ws.Scope.String())
-					node.MustSetMeta(common.MetaFlagWorkspacePermissions, wsPermissions)
+					node.MustSetMeta(common.MetaFlagWorkspacePermissions, wsPermissions.String())
 					node.MustSetMeta(common.MetaFlagWorkspaceLabel, ws.Label)
 					node.MustSetMeta(common.MetaFlagWorkspaceDescription, ws.Description)
 					node.MustSetMeta(common.MetaFlagWorkspaceSlug, ws.Slug)

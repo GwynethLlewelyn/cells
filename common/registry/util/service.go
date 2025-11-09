@@ -22,17 +22,18 @@ package util
 
 import (
 	"errors"
-	"strings"
 
-	"github.com/pydio/cells/v4/common"
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/merger"
+	"golang.org/x/exp/maps"
+
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/merger"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
 func ToProtoService(s registry.Service) *pb.Service {
 	if ss, ok := s.(*service); ok {
-		return ss.s
+		return ss.S
 	}
 
 	return &pb.Service{
@@ -43,31 +44,35 @@ func ToProtoService(s registry.Service) *pb.Service {
 }
 
 func ToService(i *pb.Item, s *pb.Service) registry.Service {
-	return &service{i: i, s: s}
+	return &service{I: i, S: s}
 }
 
 type service struct {
-	i *pb.Item
-	s *pb.Service
+	I *pb.Item
+	S *pb.Service
 }
 
 func (s *service) ID() string {
-	return s.i.Id
+	return s.I.Id
 }
 
 func (s *service) Name() string {
-	return s.i.Name
+	return s.I.Name
 }
 
 func (s *service) Version() string {
-	return s.s.Version
+	return s.S.Version
 }
 
 func (s *service) Metadata() map[string]string {
-	if s.i.Metadata == nil {
+	if s.I.Metadata == nil {
 		return map[string]string{}
 	}
-	return s.i.Metadata
+	return maps.Clone(s.I.Metadata)
+}
+
+func (s *service) SetMetadata(meta map[string]string) {
+	s.I.Metadata = meta
 }
 
 func (s *service) Start(oo ...registry.RegisterOption) error {
@@ -79,17 +84,7 @@ func (s *service) Stop(oo ...registry.RegisterOption) error {
 }
 
 func (s *service) Tags() []string {
-	return s.s.Tags
-}
-
-func (s *service) ServerScheme() string {
-	if strings.HasPrefix(s.i.Name, common.ServiceGrpcNamespace_) {
-		return "grpc://"
-	} else if strings.HasPrefix(s.i.Name, common.ServiceRestNamespace_) {
-		return "http://"
-	} else {
-		return "generic://"
-	}
+	return s.S.Tags
 }
 
 func (s *service) As(i interface{}) bool {
@@ -124,4 +119,13 @@ func (s *service) GetUniqueId() string {
 func (s *service) Merge(differ merger.Differ, params map[string]string) (merger.Differ, error) {
 	// Return target
 	return differ, nil
+}
+
+func (d *service) Clone() interface{} {
+	clone := &service{}
+
+	clone.I = std.DeepClone(d.I)
+	clone.S = std.DeepClone(d.S)
+
+	return clone
 }

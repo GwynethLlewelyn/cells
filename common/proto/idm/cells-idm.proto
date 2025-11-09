@@ -2,11 +2,14 @@ syntax = "proto3";
 
 import "cells-service.proto";
 import "cells-tree.proto";
-import "github.com/mwitkow/go-proto-validators/validator.proto";
+import "orm.proto";
+import "cells-setter.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/descriptor.proto";
 
 package idm;
 
-option go_package="github.com/pydio/cells/common/proto/idm";
+option go_package="github.com/pydio/cells/v5/common/proto/idm";
 
 // *****************************************************************************
 //  Services
@@ -52,43 +55,45 @@ message CountRoleResponse {
 
 // Role represents a generic set of permissions that can be applied to any users or groups.
 message Role {
+    option (orm.ormPolicy).enabled = true;
+
     // Unique identifier of this role
-    string Uuid = 1;
+    string Uuid = 1                 [(orm.orm).gorm = {column: "uuid"; type: "varchar(255)"; notNull: true; primaryKey: true;}];
     // Label of this role
-    string Label = 2;
+    string Label = 2                [(orm.orm).gorm = {column: "label"; type: "varchar(500)"; notNull: true;}];
     // Whether this role represents a user team or not
-    bool IsTeam = 3;
+    bool IsTeam = 3                 [(orm.orm).gorm = {column: "team_role"; type: "smallint"; serializer: "bool_int" }];
     // Whether this role is attached to a Group object
-    bool GroupRole = 4;
+    bool GroupRole = 4              [(orm.orm).gorm = {column: "group_role"; type: "smallint"; serializer: "bool_int" }];
     // Whether this role is attached to a User object
-    bool UserRole = 5;
+    bool UserRole = 5               [(orm.orm).gorm = {column: "user_role"; type: "smallint"; serializer: "bool_int" }];
     // Last modification date of the role
-    int32 LastUpdated = 6;
+    int32 LastUpdated = 6           [(orm.orm).gorm = {column: "last_updated"; type: "int"}];
     // List of profiles (standard, shared, admin) on which the role will be automatically applied
-    repeated string AutoApplies = 7;
+    repeated string AutoApplies = 7 [(orm.orm).gorm = {column: "auto_applies"; type:"varchar(500)"; serializer: "json"}];
     // List of policies for securing this role access
     repeated service.ResourcePolicy Policies = 8;
     // Whether the policies resolve into an editable state
     bool PoliciesContextEditable = 9;
     // Is used in a stack of roles, this one will always be applied last.
-    bool ForceOverride = 10;
+    bool ForceOverride = 10         [(orm.orm).gorm = {column: "override"; type: "smallint" serializer: "bool_int"}];
 }
 
 // RoleSingleQuery is the basic unit for building queries to Roles.
 message RoleSingleQuery {
     // Look for roles by Uuid
     repeated string Uuid = 1;
-    // Look for roles by label, eventually using wildchar
+    // Look for roles by label, eventually using "wildchar"
     string Label = 2;
-    // Look for team roles only
+    // Look up for roles associated with a Team
     bool IsTeam = 3;
-    // Look for group roles only
+    // Look for roles associated with a Group
     bool IsGroupRole = 4;
-    // Look for user roles only
+    // Look for roles associated with a User
     bool IsUserRole = 5;
     // Look for roles that have any value in the autoApplies field
     bool HasAutoApply = 6;
-    // Negate the query
+    // Internal - Negate the query
     bool not = 7;
 }
 
@@ -103,6 +108,7 @@ service UserService {
     rpc BindUser (BindUserRequest) returns (BindUserResponse) {};
 
     rpc CountUser (SearchUserRequest) returns (CountUserResponse) {};
+    rpc SearchOne(SearchUserRequest) returns (SearchUserResponse) {};
     rpc SearchUser (SearchUserRequest) returns (stream SearchUserResponse) {};
     rpc StreamUser (stream SearchUserRequest) returns (stream SearchUserResponse) {};
 
@@ -148,6 +154,13 @@ message CountUserResponse {
     int32 Count = 1;
 }
 
+message TreeUser {
+    option (orm.ormPolicy).enabled = true;
+
+    tree.TreeNode node = 1 [(orm.orm).gorm = {embedded: true}];;
+    User user = 2;
+}
+
 // User can represent either a User or a Group
 message User {
     // User unique identifier
@@ -187,30 +200,35 @@ enum NodeType {
 }
 
 message UserSingleQuery {
-
+    // Lookup a user by its Uuid
     string Uuid = 11;
-
+    // Lookup a user by Login
     string Login = 1;
+    // Lookup by hashed password, probably never used
     string Password = 2;
-    // Search on group path, and if so, search recursively
+    // List users below a specific on group path
     string GroupPath = 3;
+    // When searching on group path, load all users and groups recursively
     bool Recursive = 4;
-    // Search a specific group by path
+    // Search one specific Group by its path
     string FullPath = 12;
 
-    // Search on attribute
+    // Search on attribute, to be combined with AttributeValue
     string AttributeName = 5;
+    // Value used for comparison
     string AttributeValue = 6;
+    // Search for the existence of the AttributeName, whatever its value
     bool AttributeAnyValue = 7;
-    // Search on roles
+    // Search users having a specific role UUID
     string HasRole = 8;
+    // Filter/Search by NodeType (generally user or group)
     NodeType NodeType = 9;
 
-    // Shortcut for pydio:profile attribute
+    // Lookup by profile name (e.g. admin, standard, shared). This is a shortcut for searching on the pydio:profile attribute
     string HasProfile = 13;
-    // Compare to last connection date, starting with > or <
+    // Lookup by last connection date. Must be a timestamp with a leading comparison symbol ('<' or '>')
     string ConnectedSince = 14;
-
+    // Internal - Negate the query/filter result
     bool not = 10;
 }
 
@@ -260,22 +278,24 @@ enum WorkspaceScope{
 
 // A Workspace is composed of a set of nodes UUIDs and is used to provide accesses to the tree via ACLs.
 message Workspace {
+    option (orm.ormPolicy).enabled = true;
+
     // Unique identifier of the workspace
-    string UUID = 1;
+    string UUID = 1                               [(orm.orm).gorm = {column: "uuid"; type:"varchar(128)"; primaryKey: true;}];
     // Label of the workspace (max length 500)
-    string Label = 2 [(validator.field) = {length_lt: 500}];
+    string Label = 2                              [(orm.orm).gorm = {column: "label"; type:"varchar(500)";}, (buf.validate.field).string.max_len = 500];
     // Description of the workspace (max length 1000)
-    string Description = 3 [(validator.field) = {length_lt: 1000}];
+    string Description = 3                        [(orm.orm).gorm = {column: "description"; type:"varchar(1000)";}, (buf.validate.field).string.max_len = 1000];
     // Slug is an url-compatible form of the workspace label, or can be freely modified (max length 500)
-    string Slug = 4 [(validator.field) = {length_lt: 500}];
+    string Slug = 4                               [(orm.orm).gorm = {column: "slug"; type:"varchar(500)"; unique: true;}, (buf.validate.field).string.max_len = 500];
     // Scope can be ADMIN, ROOM (=CELL) or LINK
-    WorkspaceScope Scope = 5;
+    WorkspaceScope Scope = 5                      [(orm.orm).gorm = {column: "scope";}];
     // Last modification time
-    int32 LastUpdated = 6;
+    int32 LastUpdated = 6                         [(orm.orm).gorm = {column: "last_updated";}];
     // Policies for securing access
     repeated service.ResourcePolicy Policies = 7;
     // JSON-encoded list of attributes
-    string Attributes = 8;
+    string Attributes = 8                         [(orm.orm).gorm = {column: "attributes"; type:"varchar(2000)";}];
     // Quick list of the RootNodes uuids
     repeated string RootUUIDs = 9;
     // List of the Root Nodes in the tree that compose this workspace
@@ -285,15 +305,25 @@ message Workspace {
 }
 
 message WorkspaceSingleQuery {
+    // Lookup by workspace Uuid
     string uuid  = 1;
+    // Lookup by workspace Label
     string label = 2;
+    // Lookup by description
     string description = 3;
+    // Select workspace by slug
     string slug  = 4;
+    // Restrict to a specific workspace type
     WorkspaceScope scope = 5;
+    // Compared to workspace update date (Golang duration with a leading comparator < or >)
     string LastUpdated = 7;
+    // Lookup for the presence of a specific attribute, whatever its value
     string HasAttribute = 8;
+    // Lookup for an attribute, to be used in combination with AttributeValue
     string AttributeName = 9;
+    // Value used for comparison
     string AttributeValue = 10;
+    // Internal - Negate the query result
     bool not = 6;
 }
 
@@ -301,11 +331,18 @@ message WorkspaceSingleQuery {
 //  ACL Services
 // *****************************************************************************
 service ACLService {
+    // Insert a new ACL
     rpc CreateACL (CreateACLRequest) returns (CreateACLResponse) {};
+    // Set an expiration date that invalidates an ACL without deleting it
     rpc ExpireACL (ExpireACLRequest) returns (ExpireACLResponse) {};
+    // Definitely delete an ACL
     rpc DeleteACL (DeleteACLRequest) returns (DeleteACLResponse) {};
+    // Search ACLs by Query or Expiration period
     rpc SearchACL (SearchACLRequest) returns (stream SearchACLResponse) {};
+    // Stream version of Search ACL
     rpc StreamACL (stream SearchACLRequest) returns (stream SearchACLResponse) {};
+    // Restore ACLs based on Query and Expiration period
+    rpc RestoreACL (RestoreACLRequest) returns (RestoreACLResponse) {};
 }
 
 // *****************************************************************************
@@ -314,10 +351,13 @@ service ACLService {
 message CreateACLRequest{
     ACL ACL = 1;
     int64 ExpiresIn = 2;
+    repeated ACL Batch = 3;
+    bool IgnoreDuplicates = 4;
 }
 
 message CreateACLResponse{
     ACL ACL = 1;
+    repeated ACL Batch = 2;
 }
 
 message ExpireACLRequest{
@@ -331,6 +371,8 @@ message ExpireACLResponse{
 
 message DeleteACLRequest{
     service.Query Query = 1;
+    int64 ExpiredAfter = 2;
+    int64 ExpiredBefore = 3;
 }
 
 message DeleteACLResponse{
@@ -339,14 +381,30 @@ message DeleteACLResponse{
 
 message SearchACLRequest{
     service.Query Query = 1;
+    int64 ExpiredAfter = 2;
+    int64 ExpiredBefore = 3;
 }
 
 message SearchACLResponse{
     ACL ACL = 1;
 }
 
+message RestoreACLRequest{
+    service.Query Query = 1;
+    int64 ExpiredAfter = 2;
+    int64 ExpiredBefore = 3;
+}
+
+message RestoreACLResponse{
+    int64 Rows = 1;
+}
+
+
+
 message ACLAction{
+    // ACL Action name, most frequent values are "read" or "write"
     string Name = 1;
+    // ACL Action value
     string Value = 2;
 }
 
@@ -366,10 +424,15 @@ message ACL {
 }
 
 message ACLSingleQuery {
+    // List of Actions to lookup
     repeated ACLAction Actions = 1;
+    // Filter by one or more role UUID
     repeated string RoleIDs = 2;
+    // Filter by one or more workspace UUID
     repeated string WorkspaceIDs = 3;
+    // Filter by one or more node UUID
     repeated string NodeIDs = 4;
+    // Internal - Negate query
     bool not = 5;
 }
 
@@ -498,6 +561,7 @@ service PolicyEngineService {
     rpc IsAllowed (PolicyEngineRequest) returns (PolicyEngineResponse) {};
     rpc StorePolicyGroup(StorePolicyGroupRequest) returns (StorePolicyGroupResponse) {};
     rpc ListPolicyGroups(ListPolicyGroupsRequest) returns (ListPolicyGroupsResponse) {};
+    rpc StreamPolicyGroups(ListPolicyGroupsRequest) returns (stream PolicyGroup) {};
     rpc DeletePolicyGroup(DeletePolicyGroupRequest) returns (DeletePolicyGroupResponse) {};
 }
 
@@ -535,34 +599,99 @@ message PolicyCondition {
 }
 
 message Policy {
-    string id = 1 [json_name="id"];
-    string description = 2 [json_name="description"];
-    repeated string subjects = 3 [json_name="subjects"];
-    repeated string resources = 4 [json_name="resources"];
-    repeated string actions = 5 [json_name="actions"];
-    PolicyEffect effect = 6 [json_name="effect"];
-    map <string,PolicyCondition> conditions = 7 [json_name="conditions"];
+    option (orm.ormPolicy).enabled = true;
+
+    string ID = 1                               [(orm.orm).gorm = {column:"id"; type: "varchar(255)"; primaryKey: true; notNull: true}, json_name="id"];
+    string Description = 2                      [(orm.orm).gorm = {column:"description";}, json_name="description"];
+    repeated string Subjects = 3                [json_name="subjects"];
+    repeated string Resources = 4               [json_name="resources"];
+    repeated string Actions = 5                 [json_name="actions"];
+    repeated PolicySubject OrmSubjects = 8      [(orm.orm).gorm = {many2many:"policy_subject_rel"; foreignKey:"ID";joinForeignKey:"Policy";references:"ID";joinReferences:"Subject";constraint:"OnDelete:CASCADE";}];
+    repeated PolicyResource OrmResources = 9    [(orm.orm).gorm = {many2many:"policy_resource_rel"; foreignKey:"ID";joinForeignKey:"Policy";references:"ID";joinReferences:"Resource";constraint:"OnDelete:CASCADE";}];
+    repeated PolicyAction OrmActions = 10       [(orm.orm).gorm = {many2many:"policy_action_rel"; foreignKey:"ID";joinForeignKey:"Policy";references:"ID";joinReferences:"Action";constraint:"OnDelete:CASCADE";}];
+    PolicyEffect Effect = 6                     [(orm.orm).gorm = {column:"effect";}, json_name="effect"];
+    map <string,PolicyCondition> Conditions = 7 [(orm.orm).gorm = {column:"conditions"; serializer:"json";}, json_name="conditions"];
+}
+
+message PolicySubject {
+    option (setter.all_fields) = true;
+    option (orm.ormPolicy).enabled = true;
+
+    string ID = 1        [(orm.orm).gorm = {column:"id"; type: "varchar(64)"; primaryKey: true; notNull: true}];
+    bool HasRegex = 2    [(orm.orm).gorm = {column:"has_regex";index:',composite:regex'}];
+    string Compiled = 3  [(orm.orm).gorm = {column:"compiled";type: "varchar(511)";unique: true; index:',composite:compiled' }];
+    string Template = 4  [(orm.orm).gorm = {column:"template";type: "varchar(511)";unique: true;}];
+}
+
+message PolicyResource {
+    option (setter.all_fields) = true;
+    option (orm.ormPolicy).enabled = true;
+
+    string ID = 1        [(orm.orm).gorm = {column:"id"; type: "varchar(64)"; primaryKey: true; notNull: true}];
+    bool HasRegex = 2    [(orm.orm).gorm = {column:"has_regex";index:',composite:regex'}];
+    string Compiled = 3  [(orm.orm).gorm = {column:"compiled";type: "varchar(511)";unique: true; index:',composite:compiled' }];
+    string Template = 4  [(orm.orm).gorm = {column:"template";type: "varchar(511)";unique: true;}];
+}
+
+message PolicyAction {
+    option (setter.all_fields) = true;
+    option (orm.ormPolicy).enabled = true;
+
+    string ID = 1        [(orm.orm).gorm = {column:"id"; type: "varchar(64)"; primaryKey: true; notNull: true}];
+    bool HasRegex = 2    [(orm.orm).gorm = {column:"has_regex"; index:',composite:regex'}];
+    string Compiled = 3  [(orm.orm).gorm = {column:"compiled";type: "varchar(511)";unique: true; index:',composite:compiled' }];
+    string Template = 4  [(orm.orm).gorm = {column:"template";type: "varchar(511)";unique: true;}];
+}
+
+message PolicyResourceRel {
+    option (orm.ormPolicy).enabled = true;
+    string Policy   = 1 [(orm.orm).gorm = {column:"policy"; primaryKey: true; index:',composite:res'}];
+    string Resource = 2 [(orm.orm).gorm = {column:"resource"; primaryKey: true;}];
+}
+
+message PolicySubjectRel {
+    option (orm.ormPolicy).enabled = true;
+
+    string Policy  = 1  [(orm.orm).gorm = {column:"policy"; primaryKey: true; index:',composite:sub'}];
+    string Subject = 2  [(orm.orm).gorm = {column:"subject"; primaryKey: true;}];
+}
+
+message PolicyActionRel {
+    option (orm.ormPolicy).enabled = true;
+
+    string Policy = 1   [(orm.orm).gorm = {column:"policy"; primaryKey: true; index:',composite:ac'}];
+    string Action = 2   [(orm.orm).gorm = {column:"action"; primaryKey: true;}];
+}
+
+message PolicyRel {
+    option (orm.ormPolicy).enabled = true;
+
+    int64 ID = 1          [(orm.orm).gorm = {column:"id"; primaryKey: true; autoIncrement: true;}];
+    string GroupUUID = 2  [(orm.orm).gorm = {column:"group_uuid"; type:"varchar(255)"; notNull: true; index:',composite:group'}];
+    string PolicyID = 3   [(orm.orm).gorm = {column:"policy_id"; type:"varchar(255)"; notNull: true; index:',composite:pol'}];
 }
 
 message PolicyGroup {
-    string Uuid = 1;
-    string Name = 2;
-    string Description = 3;
-    string OwnerUuid = 4;
-    PolicyResourceGroup ResourceGroup = 5;
-    int32 LastUpdated = 6;
-    repeated Policy Policies = 7;
+    option (orm.ormPolicy).enabled = true;
+
+    string Uuid = 1                       [(orm.orm).gorm = {column: "uuid"; type:"varchar(255)"; primaryKey: true}, (buf.validate.field).required = true];
+    string Name = 2                       [(orm.orm).gorm = {column: "name";}];
+    string Description = 3                [(orm.orm).gorm = {column: "description";}];;
+    string OwnerUuid = 4                  [(orm.orm).gorm = {column: "owner_uuid";}];;
+    PolicyResourceGroup ResourceGroup = 5 [(orm.orm).gorm = {column: "resource_group";}];;
+    int32 LastUpdated = 6                 [(orm.orm).gorm = {column: "last_updated";}];;
+    repeated Policy Policies = 7          [(orm.orm).gorm = {many2many: "policy_rel"; foreignKey: "Uuid"; joinForeignKey: "GroupUUID"; references: "ID"; joinReferences: "PolicyID";}];;
 }
 
 // Request / Response Messages
 message StorePolicyGroupRequest{
-    PolicyGroup PolicyGroup = 1;
+    PolicyGroup PolicyGroup = 1 [(buf.validate.field).required = true];
 }
 message StorePolicyGroupResponse{
     PolicyGroup PolicyGroup = 1;
 }
 message DeletePolicyGroupRequest{
-    PolicyGroup PolicyGroup = 1;
+    PolicyGroup PolicyGroup = 1 [(buf.validate.field).required = true];
 }
 message DeletePolicyGroupResponse{
     bool Success = 1;

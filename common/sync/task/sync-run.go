@@ -24,14 +24,18 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/sync/merger"
-	"github.com/pydio/cells/v4/common/sync/model"
+	"github.com/pydio/cells/v5/common/sync/merger"
+	"github.com/pydio/cells/v5/common/sync/model"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 func (s *Sync) run(ctx context.Context, dryRun bool, force bool) (model.Stater, error) {
@@ -42,18 +46,24 @@ func (s *Sync) run(ctx context.Context, dryRun bool, force bool) (model.Stater, 
 		return nil, e
 	}
 
+	// Create a background-based context as sessionContext will be used inside the patch processor.
+	sessionCtx := context.WithoutCancel(ctx)
+	if mm, ok := propagator.FromContextCopy(ctx); ok {
+		sessionCtx = propagator.NewContext(sessionCtx, mm)
+	}
+
 	if s.Direction == model.DirectionBi {
 
 		// INIT BI PATCH
 		bb := merger.NewBidirectionalPatch(ctx, s.Source, s.Target)
-		bb.SetSessionData(ctx, false)
+		bb.SetSessionData(sessionCtx, false)
 		bb.SetupChannels(s.statuses, s.runDone, s.cmd)
 
 		if e := s.runBi(ctx, bb, dryRun, force, rootsInfo); e != nil || dryRun {
 			bb.Done(bb)
 
 			return bb, e
-		} else {
+		} else if s.patchChan != nil {
 			s.patchChan <- bb
 		}
 
@@ -70,7 +80,7 @@ func (s *Sync) run(ctx context.Context, dryRun bool, force bool) (model.Stater, 
 		}
 		patch.SkipFilterToTarget(true)
 		patch.SetupChannels(s.statuses, s.runDone, s.cmd)
-		patch.SetSessionData(ctx, true)
+		patch.SetSessionData(sessionCtx, true)
 
 		// RUN SYNC ON SELECTED ROOTS
 		if len(s.Roots) == 0 {
@@ -85,7 +95,7 @@ func (s *Sync) run(ctx context.Context, dryRun bool, force bool) (model.Stater, 
 		} else if dryRun {
 			patch.Done(patch)
 			return patch, nil
-		} else {
+		} else if s.patchChan != nil {
 			s.patchChan <- patch
 		}
 		return patch, nil
@@ -98,15 +108,24 @@ func (s *Sync) runUni(ctx context.Context, patch merger.Patch, rootPath string, 
 	source, _ := model.AsPathSyncSource(s.Source)
 	targetAsSource, _ := model.AsPathSyncSource(s.Target)
 
+	defer func() {
+		debug.FreeOSMemory()
+		//printMem("UNI - Mem - finished ")
+	}()
+
+	//printMem("UNI - Mem - starting ")
+
 	// Compute Diff
-	diff := merger.NewDiff(ctx, source, targetAsSource)
+	diff := merger.NewDiff(source, targetAsSource)
 	lock := s.monitorDiff(ctx, diff, rootsInfo)
-	if e := diff.Compute(rootPath, lock, rootsInfo, s.Ignores...); e != nil {
-		return patch.SetPatchError(e)
+	if e := diff.Compute(ctx, rootPath, lock, rootsInfo, s.Ignores...); e != nil {
+		return patch.SetPatchError(errors.Wrap(e, "error happened during diff.Compute"))
 	}
 
+	//printMem("UNI - Mem - diff loaded ")
+
 	// Feed Patch from Diff
-	err := diff.ToUnidirectionalPatch(s.Direction, patch)
+	err := diff.ToUnidirectionalPatch(ctx, s.Direction, patch)
 	if err != nil {
 		return err
 	}
@@ -131,7 +150,7 @@ func (s *Sync) runUni(ctx context.Context, patch merger.Patch, rootPath string, 
 					n, er := ep.LoadNode(ctx, op.GetRefPath())
 					if er == nil || n != nil {
 						// This is not normal - this node should not exist
-						return fmt.Errorf("detected delete of existing node " + op.GetRefPath())
+						return errors.New("detected delete of existing node " + op.GetRefPath())
 					}
 				}
 			}
@@ -199,9 +218,9 @@ func (s *Sync) runBi(ctx context.Context, bb *merger.BidirectionalPatch, dryRun 
 
 		log.Logger(ctx).Info("Computing patches from Sources")
 		for _, r := range roots {
-			diff := merger.NewDiff(ctx, source, targetAsSource)
-			if e := diff.Compute(r, s.monitorDiff(ctx, diff, rootsInfo), rootsInfo, s.Ignores...); e != nil {
-				return bb.SetPatchError(e)
+			diff := merger.NewDiff(source, targetAsSource)
+			if e := diff.Compute(ctx, r, s.monitorDiff(ctx, diff, rootsInfo), rootsInfo, s.Ignores...); e != nil {
+				return bb.SetPatchError(errors.Wrap(e, "error happened during diff.Compute"))
 			}
 			if dryRun {
 				return nil
@@ -209,7 +228,7 @@ func (s *Sync) runBi(ctx context.Context, bb *merger.BidirectionalPatch, dryRun 
 
 			sourceAsTarget, _ := model.AsPathSyncTarget(s.Source)
 			target, _ := model.AsPathSyncTarget(s.Target)
-			if err := diff.ToBidirectionalPatch(sourceAsTarget, target, bb); err != nil {
+			if err := diff.ToBidirectionalPatch(ctx, sourceAsTarget, target, bb); err != nil {
 				return bb.SetPatchError(err)
 			}
 
@@ -260,14 +279,14 @@ func (s *Sync) patchesFromSnapshot(ctx context.Context, name string, source mode
 	}
 	patches := make(map[string]merger.Patch, len(roots))
 	for _, r := range roots {
-		diff := merger.NewDiff(ctx, source, snap)
-		er = diff.Compute(r, s.monitorDiff(ctx, diff, rootsInfo), rootsInfo, s.Ignores...)
+		diff := merger.NewDiff(source, snap)
+		er = diff.Compute(ctx, r, s.monitorDiff(ctx, diff, rootsInfo), rootsInfo, s.Ignores...)
 		if er != nil {
 			return nil, nil, er
 		}
 		// We want to apply changes from source onto snapshot
 		patch := merger.NewPatch(source, snap.(model.PathSyncTarget), merger.PatchOptions{MoveDetection: true})
-		er := diff.ToUnidirectionalPatch(model.DirectionRight, patch)
+		er := diff.ToUnidirectionalPatch(ctx, model.DirectionRight, patch)
 		if er != nil {
 			return nil, nil, er
 		}
@@ -327,13 +346,13 @@ func (s *Sync) monitorDiff(ctx context.Context, diff merger.Diff, rootsInfo map[
 	return finished
 }
 
-func (s *Sync) computeIndexProgress(input model.Status, rootInfo *model.EndpointRootStat) (output model.Status, emit bool) {
+func (s *Sync) computeIndexProgress(input model.Status, rootInfo *model.EndpointRootStat) (out model.Status, emit bool) {
 	if input.Node() == nil {
 		rootInfo.PgChildren++
 	} else if input.Node().IsLeaf() {
 		rootInfo.PgChildren++
 		rootInfo.PgFiles++
-		rootInfo.PgSize += input.Node().Size
+		rootInfo.PgSize += input.Node().GetSize()
 	} else {
 		rootInfo.PgChildren++
 		rootInfo.PgFolders++
@@ -364,4 +383,15 @@ func (s *Sync) computeIndexProgress(input model.Status, rootInfo *model.Endpoint
 		return output, true
 	}
 	return
+}
+
+func printMem(s string) {
+	fmt.Println(s)
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	// For info on each, see: https://golang.org/pkg/runtime/#MemStats
+	fmt.Printf("Alloc = %v kB", m.Alloc/1024)
+	fmt.Printf("\tTotalAlloc = %v kB", m.TotalAlloc/1024)
+	fmt.Printf("\tSys = %v kB", m.Sys/1024)
+	fmt.Printf("\tNumGC = %v\n", m.NumGC)
 }

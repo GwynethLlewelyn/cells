@@ -21,16 +21,28 @@
 package put
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"hash"
+	"io"
+	"math"
+	"os"
 	"strings"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/utils/hasher"
+	"github.com/pydio/cells/v5/common/utils/kv"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func testMkFileResources() (*Handler, context.Context, *nodes.HandlerMock) {
@@ -44,15 +56,22 @@ func testMkFileResources() (*Handler, context.Context, *nodes.HandlerMock) {
 		}},
 	}
 	tw := &tree.NodeReceiverMock{}
-	pool := nodes.MakeFakeClientsPool(tc, tw)
+	preset := nodes.MakeFakeClientsPool(tc, tw)
+	nodes.SetSourcesPoolOpener(func(ctx context.Context) *openurl.Pool[nodes.SourcesPool] {
+		return nodes.NewTestPool(ctx, preset)
+	})
 
 	// create dummy handler
 	h := &Handler{}
 	mock := nodes.NewHandlerMock()
 	h.Next = mock
-	h.SetClientsPool(pool)
 
 	ctx := context.Background()
+	store, _ := openurl.OpenPool(ctx, []string{""}, func(context.Context, string) (config.Store, error) {
+		return kv.NewStore(), nil
+	})
+
+	ctx = propagator.With(ctx, config.ContextKey, store)
 
 	return h, ctx, mock
 }
@@ -96,6 +115,55 @@ func TestHandler_PutObject(t *testing.T) {
 		size, err := h.PutObject(ctx, &tree.Node{Path: "/path/node"}, strings.NewReader(""), &models.PutRequestData{})
 		So(err, ShouldBeNil)
 		So(size, ShouldBeZeroValue)
+
+	})
+
+}
+
+func TestHandler_TestMultipartHash(t *testing.T) {
+	file := "../testdata/actions.zip"
+	blockSize := 500 * 1024
+	partSize := blockSize * 2
+	hFunc := func() hash.Hash {
+		return hasher.NewBlockHash(md5.New(), blockSize)
+	}
+	Convey("Test block hash in multipart context", t, func() {
+		data, e := os.ReadFile(file)
+		So(e, ShouldBeNil)
+		bh := hFunc()
+		_, e = io.Copy(bh, bytes.NewBuffer(data))
+		So(e, ShouldBeNil)
+		hx := hex.EncodeToString(bh.Sum(nil))
+		t.Log("Found hx", hx)
+		// Create parts
+		var parts [][]byte
+		cursor := 0
+		for cursor < len(data) {
+			last := math.Min(float64(cursor+partSize), float64(len(data)))
+			part := data[cursor:int(last)]
+			cursor += len(part)
+			parts = append(parts, part)
+		}
+		t.Logf("We have %d parts", len(parts))
+
+		partsHasher := md5.New()
+		for _, part := range parts {
+			r := hasher.Tee(bytes.NewBuffer(part), hFunc, "hashMetaName", func(s string, hashes [][]byte) {
+				t.Log("Tee complete", s, len(hashes))
+				for _, h := range hashes {
+					partsHasher.Write(h)
+				}
+			})
+			_, e := io.Copy(bh, r)
+			So(e, ShouldBeNil)
+			mm, ok := r.(common.ReaderMetaExtractor).ExtractedMeta()
+			So(ok, ShouldBeTrue)
+			So(mm["hashMetaName"], ShouldNotBeEmpty)
+
+		}
+		hx2 := hex.EncodeToString(partsHasher.Sum(nil))
+		t.Log("Found hx2", hx2)
+		So(hx2, ShouldEqual, hx)
 
 	})
 

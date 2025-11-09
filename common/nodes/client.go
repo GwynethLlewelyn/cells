@@ -33,8 +33,15 @@ package nodes
 
 import (
 	"context"
+	"strings"
+	"sync"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"go.uber.org/zap"
+
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 const (
@@ -51,7 +58,7 @@ type Client interface {
 	WrapCallback(provider CallbackFunc) error
 	BranchInfoForNode(ctx context.Context, node *tree.Node) (branch BranchInfo, err error)
 	CanApply(ctx context.Context, operation *tree.NodeChangeEvent) (*tree.NodeChangeEvent, error)
-	GetClientsPool() SourcesPool
+	GetClientsPool(ctx context.Context) SourcesPool
 }
 
 var (
@@ -60,3 +67,49 @@ var (
 	// otherwise times out.
 	IsUnitTestEnv = false
 )
+
+var metaClient tree.NodeReceiverClient
+
+var mcOnce sync.Once
+
+// CoreMetaWriter lazily loads a ServiceMeta grpc client
+func CoreMetaWriter(ctx context.Context) tree.NodeReceiverClient {
+	mcOnce.Do(func() {
+		metaClient = tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC))
+	})
+	return metaClient
+}
+
+// CoreMetaSet directly saves a core metadata associated with a node UUID
+func CoreMetaSet(ctx context.Context, n *tree.Node, metaKey, metaValue string, internalDS bool) error {
+	node := &tree.Node{
+		Uuid:      n.GetUuid(),
+		Type:      n.GetType(),
+		Size:      n.GetSize(),
+		MTime:     n.GetMTime(),
+		MetaStore: map[string]string{},
+	}
+	node.MustSetMeta(metaKey, metaValue)
+	if internalDS {
+		node.MustSetMeta(common.MetaNamespaceDatasourceInternal, true)
+	}
+	for k, v := range n.MetaStore {
+		if strings.HasPrefix(k, common.MetaNamespaceUserspacePrefix) {
+			node.MetaStore[k] = v
+		}
+	}
+	_, e := CoreMetaWriter(ctx).CreateNode(ctx, &tree.CreateNodeRequest{Node: node, UpdateIfExists: true})
+	return e
+}
+
+// MustCoreMetaSet saves a core metadata without returning errors
+func MustCoreMetaSet(ctx context.Context, node *tree.Node, metaKey, metaValue string, internalDS bool) {
+	if node.GetUuid() == "" {
+		log.Logger(ctx).Error("Error while trying to set Meta " + metaKey + " to " + metaValue + ": nodeUUID is empty!")
+	} else if e := CoreMetaSet(ctx, node, metaKey, metaValue, internalDS); e == nil {
+		log.Logger(ctx).Debug("Set Meta " + metaKey + " to " + metaValue)
+	} else {
+		log.Logger(ctx).Error("Error while trying to set Meta "+metaKey+" to "+metaValue, zap.Error(e))
+	}
+
+}

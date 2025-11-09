@@ -23,7 +23,7 @@ package registry
 import (
 	"errors"
 
-	pb "github.com/pydio/cells/v4/common/proto/registry"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
 )
 
 type watcher struct {
@@ -62,6 +62,7 @@ func (m *watcher) actionMatches(event, filter pb.ActionType) bool {
 }
 
 func (m *watcher) Next() (Result, error) {
+
 	for {
 		select {
 		case r := <-m.res:
@@ -72,12 +73,23 @@ func (m *watcher) Next() (Result, error) {
 			}
 
 			// Return everything
-			if len(m.wo.Names) == 0 && len(m.wo.Types) == 0 && len(m.wo.Filters) == 0 {
+			if len(m.wo.IDs) == 0 && len(m.wo.Names) == 0 && len(m.wo.Types) == 0 && len(m.wo.Filters) == 0 {
 				return r, nil
 			}
 
 			var items []Item
 			for _, item := range r.Items() {
+				foundID := false
+				for _, id := range m.wo.IDs {
+					if id == item.ID() {
+						foundID = true
+						break
+					}
+				}
+				if len(m.wo.IDs) > 0 && !foundID {
+					continue
+				}
+
 				foundName := false
 				for _, name := range m.wo.Names {
 					if name == item.Name() {
@@ -94,6 +106,12 @@ func (m *watcher) Next() (Result, error) {
 			L:
 				for _, itemType := range m.wo.Types {
 					switch itemType {
+					case pb.ItemType_NODE:
+						var node Node
+						if item.As(&node) {
+							foundType = true
+							break L
+						}
 					case pb.ItemType_SERVICE:
 						var service Service
 						if item.As(&service) {
@@ -122,6 +140,9 @@ func (m *watcher) Next() (Result, error) {
 						var generic Generic
 						if item.As(&generic) &&
 							(itemType == pb.ItemType_GENERIC || itemType == generic.Type()) {
+							foundType = true
+							break L
+						} else {
 							foundType = true
 							break L
 						}
@@ -155,6 +176,8 @@ func (m *watcher) Next() (Result, error) {
 				action: r.Action(),
 				items:  items,
 			}, nil
+		case <-m.wo.Context.Done():
+			return nil, errors.New("context done")
 		case <-m.exit:
 			return nil, errors.New("watcher stopped")
 		}

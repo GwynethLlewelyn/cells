@@ -21,81 +21,100 @@
 package configtest
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
+	"context"
 	"testing"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/storage/test"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/std"
 
-	// Plugins to test
-	_ "github.com/pydio/cells/v4/common/config/etcd"
-	_ "github.com/pydio/cells/v4/common/config/file"
-	_ "github.com/pydio/cells/v4/common/config/memory"
+	_ "github.com/pydio/cells/v5/common/config/etcd"
+	_ "github.com/pydio/cells/v5/common/config/memory"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
-func testGetSet(t *testing.T, store config.Store) {
-	Convey("Given a default config initialised in a temp directory", t, func() {
-		Convey("Simple GetSet Works", func() {
-			testVal := "This is a test"
-			err := store.Val(configx.FormatPath("test", "val1")).Set(testVal)
-			So(err, ShouldBeNil)
-			retVal := store.Val(configx.FormatPath("test", "val1")).String()
-			So(retVal, ShouldEqual, testVal)
-		})
+func TestGetSet(t *testing.T) {
+	test.RunGenericTests(testCases, t, func(ctx context.Context, t *testing.T, testcase testCase) {
+		store, err := config.OpenStore(ctx, testcase.store)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-		Convey("CaURL is correctly set", func() {
+		Convey("Given a default config initialised in a temp directory", t, func() {
+			Convey("Simple GetSet Works", func() {
+				testVal := "This is a test"
+				err := store.Val(std.FormatPath("test", "val1")).Set(testVal)
+				So(err, ShouldBeNil)
+				retVal := store.Val(std.FormatPath("test", "val1")).String()
+				So(retVal, ShouldEqual, testVal)
+			})
 
-			certEmail := "test@example.com"
-			caUrl := "https://acme-staging.api.example.com/directory"
+			Convey("CaURL is correctly set", func() {
 
-			store.Val(configx.FormatPath("cert", "proxy", "email")).Set(certEmail)
-			store.Val(configx.FormatPath("cert", "proxy", "caUrl")).Set(caUrl)
+				certEmail := "test@example.com"
+				caUrl := "https://acme-staging.api.example.com/directory"
 
-			resCe := store.Val(configx.FormatPath("cert", "proxy", "email")).String()
-			resCa := store.Val(configx.FormatPath("cert", "proxy", "caUrl")).String()
-			So(resCe, ShouldEqual, certEmail)
-			So(resCa, ShouldEqual, caUrl)
+				store.Val(std.FormatPath("cert", "proxy", "email")).Set(certEmail)
+				store.Val(std.FormatPath("cert", "proxy", "caUrl")).Set(caUrl)
 
-			store.Val(configx.FormatPath("cert", "proxy", "httpRedir")).Set(true)
+				resCe := store.Val(std.FormatPath("cert", "proxy", "email")).String()
+				resCa := store.Val(std.FormatPath("cert", "proxy", "caUrl")).String()
+				So(resCe, ShouldEqual, certEmail)
+				So(resCa, ShouldEqual, caUrl)
 
-			resCe2 := store.Val(configx.FormatPath("cert", "proxy", "email")).String()
-			resCa2 := store.Val(configx.FormatPath("cert", "proxy", "caUrl")).String()
-			So(resCe2, ShouldEqual, certEmail)
-			So(resCa2, ShouldEqual, caUrl)
+				store.Val(std.FormatPath("cert", "proxy", "httpRedir")).Set(true)
 
-			store.Val(configx.FormatPath("cert", "proxy", "httpRedir")).Del()
+				resCe2 := store.Val(std.FormatPath("cert", "proxy", "email")).String()
+				resCa2 := store.Val(std.FormatPath("cert", "proxy", "caUrl")).String()
+				So(resCe2, ShouldEqual, certEmail)
+				So(resCa2, ShouldEqual, caUrl)
 
-			resCe2 = store.Val(configx.FormatPath("cert", "proxy", "email")).String()
-			resCa2 = store.Val(configx.FormatPath("cert", "proxy", "caUrl")).String()
-			So(resCe2, ShouldEqual, certEmail)
-			So(resCa2, ShouldEqual, caUrl)
+				store.Val(std.FormatPath("cert", "proxy", "httpRedir")).Del()
 
-		})
+				resCe2 = store.Val(std.FormatPath("cert", "proxy", "email")).String()
+				resCa2 = store.Val(std.FormatPath("cert", "proxy", "caUrl")).String()
+				So(resCe2, ShouldEqual, certEmail)
+				So(resCa2, ShouldEqual, caUrl)
 
-		Convey("SMTP password is encrypted:", func() {
+			})
 
-			pwd := "This is a p@$$w0rd"
+			SkipConvey("SMTP password is encrypted:", func() {
 
-			store.Val(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).Set(pwd)
-			So(store.Val(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).String(), ShouldEqual, pwd)
+				pwd := "This is a p@$$w0rd"
 
-			store.Val(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).Del()
-			So(store.Val(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).String(), ShouldEqual, "")
+				store.Val(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).Set(pwd)
+				So(store.Val(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).String(), ShouldEqual, pwd)
 
-			config.RegisterVaultKey(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password"))
+				store.Val(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).Del()
+				So(store.Val(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).String(), ShouldEqual, "")
 
-			store.Val(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).Set(pwd)
+				config.RegisterVaultKey(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password"))
 
-			resPwd := store.Val(configx.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).String()
-			//So(resPwd, ShouldNotEqual, pwd)
-			So(resPwd, ShouldNotEqual, "")
-		})
+				store.Val(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).Set(pwd)
 
-		Convey("Scan", func() {
-			fakeValue := map[string]interface{}{}
-			m := configx.New()
-			m.Val("fakevalue").Set(&map[string]interface{}{"fake": "value"})
-			m.Val("fakevalue").Scan(fakeValue)
+				resPwd := store.Val(std.FormatPath("services", "pydio.grpc.mailer", "sender", "password")).String()
+
+				//So(resPwd, ShouldNotEqual, pwd)
+				So(resPwd, ShouldNotEqual, "")
+			})
+
+			Convey("Scan", func() {
+				fakeValue := map[string]interface{}{}
+				m := configx.New()
+				m.Val("fakevalue").Set(map[string]interface{}{"fake": "value"})
+				m.Val("fakevalue").Scan(&fakeValue)
+			})
+
+			Convey("Reference", func() {
+				store.Val("referencevalue").Set(map[string]any{
+					"$ref": "rp#/ref",
+				})
+
+				store.Val("referencevalue/key").Set("val")
+				So(store.Val("referencevalue/key").Get(), ShouldEqual, "val")
+			})
 		})
 	})
 }

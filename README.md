@@ -4,31 +4,29 @@
 [Issue-Tracker](https://github.com/pydio/cells/issues)
 
 [![License Badge](https://img.shields.io/badge/License-AGPL%203%2B-blue.svg)](LICENSE)
-[![GoDoc](https://godoc.org/github.com/pydio/cells/v4?status.svg)](https://godoc.org/github.com/pydio/cells/v4)
-[![Go Report Card](https://goreportcard.com/badge/github.com/pydio/cells/v4?rand=4)](https://goreportcard.com/report/github.com/pydio/cells/v4)
+[![GoDoc](https://godoc.org/github.com/pydio/cells/v5?status.svg)](https://godoc.org/github.com/pydio/cells/v5)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pydio/cells/v5?rand=6)](https://goreportcard.com/report/github.com/pydio/cells/v5)
 
-> **IMPORTANT NEWS - March 2022: the main git branch switched from `master` to `main`!**
-> 
-> A milestone on the road to Cells v4: we have fully rewritten the codebase to **support gomodules** at last.
-> It is not 100% stable yet, so make sure to use official binaries or the `v3` branch if you need production ready version.
-
+**-------------**  
+**WORK IN PROGRESS - CELLS V5 - USE THIS BRANCH AT YOUR OWN RISKS**  
+**-------------**
 
 Pydio Cells is the nextgen file sharing platform for organizations. It is a full rewrite of the Pydio project using the Go language following a micro-service architecture.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/pydio/cells-dist/master/resources/v3.0.0/home.png" width="600" style="border: 3px solid #e0e0e0; border-radius: 5px;"/>
+  <img src="https://raw.githubusercontent.com/pydio/cells-dist/master/resources/v4.0.0/home.png" width="600" style="border: 3px solid #e0e0e0; border-radius: 5px;"/>
 </p>
 
 ## Getting Started
 
-These instructions will get you a copy of the project up and running on your local machine for **development** and testing purposes. See the [Deployment section below](#deployment) for notes on how to deploy the project on a live system.
+These instructions will get you a copy of the project up and running on your local machine for **development** and testing purposes. See the [Deployment section below](#pre-built-binaries) for notes on how to deploy the project on a live system.
 
 ### A - Prerequisites
 
 The following elements are required to compile and run Pydio Cells on your machine:
 
-- Go language v1.17 or higher and a [correctly configured](https://golang.org/doc/install#testing) Go toolchain,
-- MySQL database 5.6 or higher (or MariaDB equivalent). The new MySQL 8 authentication method is supported starting at Cells 1.4.1.
+- Go language **v1.21** or higher and a [correctly configured](https://golang.org/doc/install#testing) Go toolchain,
+- MySQL database 5.6 or higher (or MariaDB equivalent).
 
 _Note: We have developed and tested Pydio Cells on macOS, Ubuntu, Debian and CentOS. Windows version might still have unknown glitches and is not yet supported._
 
@@ -50,7 +48,7 @@ make dev
 To have the environment running, you must also:
 
 - Create a database in your chosen DB server,
-- Run the Pydio Cells installer that will guide you through the necessary steps: you might refer to the [official documentation](https://pydio.com/en/docs/cells/v2/cells-installation) for additional information.
+- Run the Pydio Cells installer that will guide you through the necessary steps: you might refer to the [official documentation](https://docs.pydio.com/cells-v4/admin-guide/quick-start/cells-installation/index/) for additional information.
 
 
 ```sh
@@ -73,17 +71,20 @@ To run the tests, simply do
 go test -v ./...
 ```
 
+## Running with live reload
+First install [air](https://github.com/air-verse/air)
+`go install github.com/air-verse/air@latest`
+Run with live reload
+```sh
+air -c .air.toml
+```
+
 Please read the [CONTRIBUTING.md](CONTRIBUTING.md) document if you wish to add more tests or contribute to the code.
 
 ## Pre-built Binaries
 
-Binaries are currently provided for [Linux, macOS and Windows distributions](https://pydio.com/en/download). To deploy them on a live system, please see the [Installation Guide](https://pydio.com/en/docs/cells/v2/cells-installation) instructions.
+Binaries are currently provided for [Linux, macOS and Windows distributions](https://pydio.com/en/download). To deploy them on a live system, please see the [Installation Guide](https://docs.pydio.com/cells-v4/admin-guide/quick-start/cells-installation/index/) instructions.
 
-## Built With
-
-Pydio Cells uses many open-source Golang libraries. The most important ones are listed below, please see [DEPENDENCIES](DEPENDENCIES) for an exhaustive list of other libs and their licenses.
-
-- [Minio](https://github.com/minio/minio) - Objects server implementing s3 protocol
 
 ## Contributing
 
@@ -91,6 +92,8 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduc
 
 We are also looking for help to translate the Cells interface in various languages.
 It is really easy to participate: just navigate to [our page in the Crowdin translation tool](https://crowdin.com/project/pydio-cells), create an account and get started.
+
+Pydio Cells uses many open-source libraries. The most important ones are listed below, please see [DEPENDENCIES](DEPENDENCIES) for an exhaustive list of other libs and their licenses.
 
 ## Versioning & Branches
 
@@ -100,8 +103,9 @@ We use [Semantic Versioning](http://semver.org/). For all available versions, se
 
 ## Authors
 
-See the list of [contributors](https://github.com/pydio/cells/graphs/contributors) who participated in this project. Pydio Cells is also a continuation of the Pydio project and many contributions were ported from [pydio-core](https://github.com/pydio/pydio-core) to the code that can be found under `frontend/front-srv/assets`.
+See the list of [contributors](https://github.com/pydio/cells/graphs/contributors) who participated in this project. Pydio Cells is also a continuation of the Pydio project and many contributions were ported from [pydio-core](https://github.com/pydio/pydio-core) to the code that can be found under `frontend/assets`.
 
 ## License
 
 This project is licensed under the AGPLv3 License - see the [LICENSE](LICENSE) file for more details.
+

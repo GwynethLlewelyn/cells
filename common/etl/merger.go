@@ -30,10 +30,12 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/etl/models"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/utils/merger"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/etl/models"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/merger"
 )
 
 type Merger struct {
@@ -124,7 +126,7 @@ func (m *Merger) diffUsers(extUsers map[string]*idm.User, apiUsers map[string]*i
 			}
 			userToDelete[extUserId] = false
 			if len(ExtUser.Roles) > 0 {
-				log.Logger(context.Background()).Info("External has roles", zap.Int("length", len(ExtUser.Roles)))
+				log.Logger(runtime.CoreBackground()).Info("External has roles", zap.Int("length", len(ExtUser.Roles)))
 			}
 			if ExtUser.IsMergeable(apiUser) {
 				user, err, shouldBeUpdated := ExtUser.Merge(apiUser, m.Options)
@@ -441,7 +443,7 @@ func (m *Merger) Create(ctx context.Context, obj interface{}) error {
 		return m.Target.PutShare(ctx, v)
 	}
 
-	return fmt.Errorf("Type not creatable")
+	return errors.New("Type not creatable")
 }
 
 func (m *Merger) Update(ctx context.Context, obj interface{}) error {
@@ -450,7 +452,7 @@ func (m *Merger) Update(ctx context.Context, obj interface{}) error {
 		return m.Target.PutACL(ctx, v)
 	}
 
-	return fmt.Errorf("Type not updateable")
+	return errors.New("Type not updateable")
 }
 
 func (m *Merger) Delete(ctx context.Context, obj interface{}) error {
@@ -459,7 +461,7 @@ func (m *Merger) Delete(ctx context.Context, obj interface{}) error {
 		return m.Target.DeleteACL(ctx, v)
 	}
 
-	return fmt.Errorf("Type not deletable")
+	return errors.New("Type not deletable")
 }
 
 func (m *Merger) Save(ctx context.Context, diff merger.Diff, progress chan MergeOperation) {
@@ -574,7 +576,7 @@ func (m *Merger) SaveShares(ctx context.Context, diff *models.ShareDiff, progres
 		if !ok {
 			continue
 		}
-		log.Logger(ctx).Info("Cross Loading Share", zap.Any("s", s))
+		log.Logger(ctx).Info("Cross Loading Share", zap.Any("s", *s))
 		e := m.Source.CrossLoadShare(ctx, s, m.Target, params)
 		if e == nil {
 			progress <- MergeOperation{

@@ -23,21 +23,28 @@ package grpc
 import (
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	service "github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	service "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/idm/acl"
 )
 
 // ReadNodeStream implements method to be a MetaProvider
 func (h *Handler) ReadNodeStream(stream tree.NodeProviderStreamer_ReadNodeStreamServer) error {
 
 	ctx := stream.Context()
-	workspaceClient := idm.NewWorkspaceServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceWorkspace))
+	workspaceClient := idmc.WorkspaceServiceClient(ctx)
+
+	dao, err := manager.Resolve[acl.DAO](ctx)
+	if err != nil {
+		return err
+	}
 
 	for {
 		req, er := stream.Recv()
@@ -59,7 +66,7 @@ func (h *Handler) ReadNodeStream(stream tree.NodeProviderStreamer_ReadNodeStream
 				permissions.AclPolicy,
 			},
 		})
-		if e := h.dao.Search(&service.Query{SubQueries: []*anypb.Any{q}}, acls); e != nil {
+		if e := dao.Search(ctx, &service.Query{SubQueries: []*anypb.Any{q}}, acls, nil); e != nil {
 			return e
 		}
 		var contentLock string

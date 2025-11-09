@@ -22,28 +22,27 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth/claim"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	errors2 "github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/auth"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type ProviderType int
 
 const (
-	ProviderTypeOry ProviderType = iota
-	ProviderTypeGrpc
+	ProviderTypeGrpc ProviderType = iota
 	ProviderTypePAT
 )
 
@@ -65,12 +64,12 @@ type Exchanger interface {
 
 // TokenOption is an AuthCodeOption is passed to Config.AuthCodeURL.
 type TokenOption interface {
-	setValue(url.Values)
+	SetValue(url.Values)
 }
 
 type setParam struct{ k, v string }
 
-func (p setParam) setValue(m url.Values) { m.Set(p.k, p.v) }
+func (p setParam) SetValue(m url.Values) { m.Set(p.k, p.v) }
 
 // SetChallenge builds a TokenOption which passes key/value parameters
 // to a provider's token exchange endpoint.
@@ -97,7 +96,7 @@ type PasswordCredentialsCodeExchanger interface {
 }
 
 type LoginChallengeCodeExchanger interface {
-	LoginChallengeCode(context.Context, claim.Claims, ...TokenOption) (string, error)
+	LoginChallengeCode(context.Context, claim.Claims, ...TokenOption) (*auth.GetLoginResponse, string, error)
 }
 
 type LogoutProvider interface {
@@ -136,13 +135,14 @@ type JWTVerifier struct {
 // DefaultJWTVerifier creates a ready to use JWTVerifier
 func DefaultJWTVerifier() *JWTVerifier {
 	return &JWTVerifier{
-		types: []ProviderType{ProviderTypeOry, ProviderTypeGrpc, ProviderTypePAT},
+		types: []ProviderType{ProviderTypeGrpc, ProviderTypePAT},
 	}
 }
 
-func LocalJWTVerifier() *JWTVerifier {
+// PATOnlyVerifier will only enlist PAT type
+func PATOnlyVerifier() *JWTVerifier {
 	return &JWTVerifier{
-		types: []ProviderType{ProviderTypeOry, ProviderTypePAT},
+		types: []ProviderType{ProviderTypePAT},
 	}
 }
 
@@ -178,13 +178,13 @@ func (j *JWTVerifier) loadClaims(ctx context.Context, token IDToken, claims *cla
 	if claims.Subject != "" {
 		if u, err := permissions.SearchUniqueUser(ctx, "", claims.Subject); err == nil {
 			user = u
-		} else if errors2.FromError(err).Code != 404 {
+		} else if !errors.Is(err, errors.UserNotFound) {
 			return err
 		}
 	} else if claims.Name != "" {
 		if u, err := permissions.SearchUniqueUser(ctx, claims.Name, ""); err == nil {
 			user = u
-		} else if errors2.FromError(err).Code != 404 {
+		} else if !errors.Is(err, errors.UserNotFound) {
 			return err
 		}
 	}
@@ -199,22 +199,22 @@ func (j *JWTVerifier) loadClaims(ctx context.Context, token IDToken, claims *cla
 		}
 	}
 	if user == nil {
-		return errors2.NotFound("user.not.found", "user not found neither by name or email")
+		return errors.WithMessage(errors.UserNotFound, "user not found neither by name or email")
 	}
 
-	// Check if User is locked
+	// Check underlying verifiers
 	if e := VerifyContext(ctx, user); e != nil {
-		return errors2.Unauthorized("user.context", e.Error())
+		return errors.Tag(e, errors.StatusUnauthorized) // errors2.Unauthorized("user.context", e.Error())
 	}
 
-	displayName, ok := user.Attributes["displayName"]
+	displayName, ok := user.Attributes[idm.UserAttrDisplayName]
 	if !ok {
 		displayName = ""
 	}
 
-	profile, ok := user.Attributes["profile"]
+	profile, ok := user.Attributes[idm.UserAttrProfile]
 	if !ok {
-		profile = "standard"
+		profile = common.PydioProfileStandard
 	}
 
 	var roles []string
@@ -225,6 +225,7 @@ func (j *JWTVerifier) loadClaims(ctx context.Context, token IDToken, claims *cla
 	claims.Name = user.Login
 	claims.DisplayName = displayName
 	claims.Profile = profile
+	claims.Public = profile == common.PydioProfileShared && user.IsHidden()
 	claims.Roles = strings.Join(roles, ",")
 	claims.GroupPath = user.GroupPath
 
@@ -233,32 +234,48 @@ func (j *JWTVerifier) loadClaims(ctx context.Context, token IDToken, claims *cla
 
 func (j *JWTVerifier) verifyTokenWithRetry(ctx context.Context, rawIDToken string, isRetry bool) (IDToken, error) {
 
-	var idToken IDToken
-	var err error
+	pp := j.getProviders()
+	var errs []error
+	var validToken IDToken
+	wg := &sync.WaitGroup{}
+	wg.Add(len(pp))
+	ct, ca := context.WithCancel(ctx)
+	defer ca()
 
-	for _, provider := range j.getProviders() {
-		verifier, ok := provider.(Verifier)
-		if !ok {
-			continue
+	for _, provider := range pp {
+		go func() {
+			defer wg.Done()
+			verifier, ok := provider.(Verifier)
+			if !ok {
+				return
+			}
+
+			idToken, err := verifier.Verify(ct, rawIDToken)
+			if err == nil {
+				validToken = idToken
+				ca() // Cancel other go-routines
+				return
+			} else {
+				errs = append(errs, err)
+			}
+		}()
+	}
+	wg.Wait()
+	/*
+		TODO - Is this still necessary ?
+		if validToken == nil && !isRetry {
+			return j.verifyTokenWithRetry(ctx, rawIDToken, true)
 		}
+	*/
 
-		idToken, err = verifier.Verify(ctx, rawIDToken)
-		if err == nil {
-			break
+	if validToken == nil {
+		if len(errs) > 0 {
+			log.Logger(ctx).Debug("jwt rawIdToken verify: failed", zap.Errors("errors", errs))
 		}
-
-		log.Logger(ctx).Debug("jwt rawIdToken verify: failed, trying next", zap.Error(err))
+		return nil, errors.WithStack(errors.EmptyIDToken)
 	}
 
-	if (idToken == nil || err != nil) && !isRetry {
-		return j.verifyTokenWithRetry(ctx, rawIDToken, true)
-	}
-
-	if idToken == nil {
-		return nil, errors.New("empty idToken")
-	}
-
-	return idToken, nil
+	return validToken, nil
 }
 
 // Exchange retrieves an oauth2 Token from a code.
@@ -302,7 +319,7 @@ func (j *JWTVerifier) Verify(ctx context.Context, rawIDToken string) (context.Co
 		return ctx, *claims, err
 	}
 
-	ctx = ContextFromClaims(ctx, *claims)
+	ctx = claim.ToContext(ctx, *claims)
 
 	return ctx, *claims, nil
 }
@@ -326,15 +343,18 @@ func (j *JWTVerifier) PasswordCredentialsToken(ctx context.Context, userName str
 		}
 	}
 	if token == nil {
-		err = errors2.Unauthorized("empty.token", "could not validate password credentials")
+		if err == nil {
+			err = errors.WithStack(errors.EmptyIDToken) // errors2.Unauthorized("empty.token", "could not validate password credentials")
+		}
 	}
 	return token, err
 }
 
 // LoginChallengeCode will perform an implicit flow
 // to get a valid code from given claims and challenge
-func (j *JWTVerifier) LoginChallengeCode(ctx context.Context, claims claim.Claims, opts ...TokenOption) (string, error) {
+func (j *JWTVerifier) LoginChallengeCode(ctx context.Context, claims claim.Claims, opts ...TokenOption) (*auth.GetLoginResponse, string, error) {
 
+	var resp *auth.GetLoginResponse
 	var code string
 	var err error
 
@@ -344,13 +364,13 @@ func (j *JWTVerifier) LoginChallengeCode(ctx context.Context, claims claim.Claim
 			continue
 		}
 
-		code, err = p.LoginChallengeCode(ctx, claims, opts...)
+		resp, code, err = p.LoginChallengeCode(ctx, claims, opts...)
 		if err == nil {
 			break
 		}
 	}
 
-	return code, err
+	return resp, code, err
 }
 
 // PasswordCredentialsCode will perform an implicit flow
@@ -393,7 +413,7 @@ func (j *JWTVerifier) Logout(ctx context.Context, url, subject, sessionID string
 
 // WithImpersonate Add a fake Claims in context to impersonate a user.
 func WithImpersonate(ctx context.Context, user *idm.User) context.Context {
-	roles := make([]string, len(user.Roles))
+	roles := make([]string, 0, len(user.Roles))
 	for _, r := range user.Roles {
 		roles = append(roles, r.Uuid)
 	}
@@ -417,12 +437,12 @@ func WithImpersonate(ctx context.Context, user *idm.User) context.Context {
 		if dn, o := user.Attributes[idm.UserAttrDisplayName]; o {
 			c.DisplayName = dn
 		}
+		c.Public = user.IsHidden()
 	}
-	ctx = metadata.WithAdditionalMetadata(ctx, map[string]string{common.PydioContextUserKey: user.Login})
-	return context.WithValue(ctx, claim.ContextKey, c)
+	return claim.ToContext(ctx, c)
 }
 
-func addProvider(p Provider) {
+func RegisterProvider(p Provider) {
 	providers = append(providers, p)
 	sortProviders()
 }

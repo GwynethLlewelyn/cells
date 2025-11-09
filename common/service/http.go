@@ -23,45 +23,62 @@ package service
 import (
 	"context"
 	"fmt"
-	"github.com/pydio/cells/v4/common/server"
+
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/server"
 )
 
 // WithHTTP adds a http micro service handler to the current service
-func WithHTTP(f func(context.Context, server.HttpMux) error) ServiceOption {
+func WithHTTP(f func(context.Context, routing.RouteRegistrar) error) ServiceOption {
 	return func(o *ServiceOptions) {
 		o.serverType = server.TypeHttp
-		o.serverStart = func() error {
-			var mux server.HttpMux
+		o.serverStart = func(c context.Context) error {
+			var mux routing.RouteRegistrar
 			if !o.Server.As(&mux) {
 				return fmt.Errorf("server %s is not a mux ", o.Name)
 			}
 
-			return f(o.Context, mux)
+			return f(c, mux)
 		}
 	}
 }
 
-func WithHTTPStop(f func(context.Context, server.HttpMux) error) ServiceOption {
+// WithHTTPOptions adds a http microservice handler to the current service, passing ServiceOptions to initializer
+func WithHTTPOptions(f func(context.Context, routing.RouteRegistrar, *ServiceOptions) error) ServiceOption {
 	return func(o *ServiceOptions) {
-		o.serverStop = func() error {
-			var mux server.HttpMux
+		o.serverType = server.TypeHttp
+		o.serverStart = func(c context.Context) error {
+			var mux routing.RouteRegistrar
+			if !o.Server.As(&mux) {
+				return fmt.Errorf("server %s is not a mux ", o.Name)
+			}
+
+			return f(c, mux, o)
+		}
+	}
+}
+
+func WithHTTPStop(f func(context.Context, routing.RouteRegistrar) error) ServiceOption {
+	return func(o *ServiceOptions) {
+		o.serverStop = func(c context.Context) error {
+			var mux routing.RouteRegistrar
 			o.Server.As(&mux)
-			return f(o.Context, mux)
+			return f(c, mux)
 		}
 	}
 }
 
 // WithPureHTTP adds a http micro service handler to the current service
-func WithPureHTTP(f func(context.Context, server.HttpMux) error) ServiceOption {
+func WithPureHTTP(f func(context.Context, routing.RouteRegistrar) error) ServiceOption {
 	return func(o *ServiceOptions) {
 		o.serverType = server.TypeHttpPure
-		o.serverStart = func() error {
-			var mux server.HttpMux
+		o.serverStart = func(c context.Context) error {
+			var mux routing.RouteRegistrar
 			if !o.Server.As(&mux) {
 				return fmt.Errorf("server %s is not a mux ", o.Name)
 			}
 
-			return f(o.Context, mux)
+			return f(c, mux)
 		}
 	}
 }

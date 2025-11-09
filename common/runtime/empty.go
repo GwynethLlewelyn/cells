@@ -23,6 +23,10 @@ package runtime
 // emptyRuntime is used as default for runtime
 type emptyRuntime struct{}
 
+func (e *emptyRuntime) AllSettings() map[string]interface{} {
+	return map[string]interface{}{}
+}
+
 func (e *emptyRuntime) GetBool(key string) bool {
 	return false
 }
@@ -37,6 +41,10 @@ func (e *emptyRuntime) GetStringSlice(key string) []string {
 
 func (e *emptyRuntime) IsSet(key string) bool {
 	return false
+}
+
+func (e *emptyRuntime) Set(key string, value interface{}) {
+
 }
 
 func (e *emptyRuntime) SetDefault(key string, value interface{}) {

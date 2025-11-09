@@ -25,7 +25,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/pydio/cells/v4/common/log"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func handleSignals(args []string) {
@@ -41,7 +41,7 @@ func handleSignals(args []string) {
 				fallthrough
 			case syscall.SIGINT:
 				// Stopping the main context will trigger the stop of all services
-				log.Info("Cancelling main context")
+				log.Debug("Cancelling main context")
 				cancel()
 
 				//log.Info("Disconnecting broker")

@@ -24,12 +24,13 @@ import (
 	"context"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common/proto/jobs/bleveimpl"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/proto/jobs/bleveimpl"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func init() {
@@ -50,23 +51,23 @@ func TestNodesSelector_Filter(t *testing.T) {
 	Convey("Basic Filters", t, func() {
 
 		n := &NodesSelector{} // Empty Filter
-		output, _, _ := n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ := n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes, ShouldHaveLength, 0)
 
 		n = &NodesSelector{All: true} // All : True
-		output, _, _ = n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ = n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes[0], ShouldResemble, node)
 
 		n = &NodesSelector{Pathes: []string{
 			"/root/node/filename.jpg",
 		}}
-		output, _, _ = n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ = n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes[0], ShouldResemble, node)
 
 		n = &NodesSelector{Pathes: []string{
 			"/root/other/filename.jpg",
 		}}
-		output, _, _ = n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ = n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes, ShouldBeEmpty)
 
 	})
@@ -87,7 +88,7 @@ func TestNodesSelector_Filter(t *testing.T) {
 				SubQueries: []*anypb.Any{marshalled},
 			},
 		}
-		output, _, _ := n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ := n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes[0], ShouldResemble, node)
 
 	})
@@ -112,7 +113,7 @@ func TestNodesSelector_Filter(t *testing.T) {
 		input := ActionMessage{
 			Nodes: []*tree.Node{node},
 		}
-		output, _, _ := n.Filter(bg, ActionMessage{
+		output, _, _ := n.Filter(bg, &ActionMessage{
 			Nodes: []*tree.Node{node},
 		})
 
@@ -143,7 +144,7 @@ func TestNodesSelector_Filter(t *testing.T) {
 				Operation:  service.OperationType_AND,
 			},
 		}
-		output, _, _ := n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ := n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes[0], ShouldResemble, node)
 
 		// One condition is false
@@ -156,12 +157,12 @@ func TestNodesSelector_Filter(t *testing.T) {
 		marshalled3, _ := anypb.New(q3)
 
 		n.Query.SubQueries = []*anypb.Any{marshalled, marshalled3}
-		output, _, _ = n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ = n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes, ShouldBeEmpty)
 
 		// Switch to OR
 		n.Query.Operation = service.OperationType_OR
-		output, _, _ = n.Filter(bg, ActionMessage{Nodes: []*tree.Node{node}})
+		output, _, _ = n.Filter(bg, &ActionMessage{Nodes: []*tree.Node{node}})
 		So(output.Nodes, ShouldNotBeNil)
 
 	})
@@ -176,27 +177,28 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 		MTime: 1505470065,
 		Type:  tree.NodeType_LEAF,
 	}
+	ctx := context.Background()
 
 	Convey("Empty Query", t, func() {
 
-		res := evaluateSingleQuery(&tree.Query{}, node)
+		res := evaluateSingleQuery(ctx, &tree.Query{}, node)
 		So(res, ShouldBeTrue)
 
 	})
 
 	Convey("PathPrefixes", t, func() {
 
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			PathPrefix: []string{"/root/node"},
 		}, node)
 		So(res, ShouldBeTrue)
 
-		res2 := evaluateSingleQuery(&tree.Query{
+		res2 := evaluateSingleQuery(ctx, &tree.Query{
 			PathPrefix: []string{"/root/anothernode"},
 		}, node)
 		So(res2, ShouldBeFalse)
 
-		res3 := evaluateSingleQuery(&tree.Query{
+		res3 := evaluateSingleQuery(ctx, &tree.Query{
 			PathPrefix: []string{"/root/anothernode", "/root/node"},
 		}, node)
 		So(res3, ShouldBeTrue)
@@ -205,12 +207,12 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 
 	Convey("NodeType", t, func() {
 
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			Type: tree.NodeType_LEAF,
 		}, node)
 		So(res, ShouldBeTrue)
 
-		res2 := evaluateSingleQuery(&tree.Query{
+		res2 := evaluateSingleQuery(ctx, &tree.Query{
 			Type: tree.NodeType_COLLECTION,
 		}, node)
 		So(res2, ShouldBeFalse)
@@ -219,17 +221,17 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 
 	Convey("Extension", t, func() {
 
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			Extension: "jpg",
 		}, node)
 		So(res, ShouldBeTrue)
 
-		res3 := evaluateSingleQuery(&tree.Query{
+		res3 := evaluateSingleQuery(ctx, &tree.Query{
 			Extension: "jpg,gif",
 		}, node)
 		So(res3, ShouldBeTrue)
 
-		res2 := evaluateSingleQuery(&tree.Query{
+		res2 := evaluateSingleQuery(ctx, &tree.Query{
 			Extension: "gif",
 		}, node)
 		So(res2, ShouldBeFalse)
@@ -238,42 +240,42 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 
 	Convey("FileName", t, func() {
 
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "filename.jpg",
 		}, node)
 		So(res, ShouldBeTrue)
 
-		res2 := evaluateSingleQuery(&tree.Query{
+		res2 := evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "filename",
 		}, node)
 		So(res2, ShouldBeFalse)
 
-		res3 := evaluateSingleQuery(&tree.Query{
+		res3 := evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "filenam*",
 		}, node)
 		So(res3, ShouldBeTrue)
 
-		res4 := evaluateSingleQuery(&tree.Query{
+		res4 := evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "*nam*",
 		}, node)
 		So(res4, ShouldBeTrue)
 
-		res4 = evaluateSingleQuery(&tree.Query{
+		res4 = evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "*anything*",
 		}, node)
 		So(res4, ShouldBeFalse)
 
-		res5 := evaluateSingleQuery(&tree.Query{
+		res5 := evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "*.jpg",
 		}, node)
 		So(res5, ShouldBeTrue)
 
-		res5 = evaluateSingleQuery(&tree.Query{
+		res5 = evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "*zobi",
 		}, node)
 		So(res5, ShouldBeFalse)
 
-		res6 := evaluateSingleQuery(&tree.Query{
+		res6 := evaluateSingleQuery(ctx, &tree.Query{
 			FileName: "*.java",
 		}, node)
 		So(res6, ShouldBeFalse)
@@ -282,22 +284,22 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 
 	Convey("Size", t, func() {
 
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			MinSize: 500,
 		}, node)
 		So(res, ShouldBeTrue)
 
-		res2 := evaluateSingleQuery(&tree.Query{
+		res2 := evaluateSingleQuery(ctx, &tree.Query{
 			MinSize: 5000,
 		}, node)
 		So(res2, ShouldBeFalse)
 
-		res3 := evaluateSingleQuery(&tree.Query{
+		res3 := evaluateSingleQuery(ctx, &tree.Query{
 			MaxSize: 5000,
 		}, node)
 		So(res3, ShouldBeTrue)
 
-		res4 := evaluateSingleQuery(&tree.Query{
+		res4 := evaluateSingleQuery(ctx, &tree.Query{
 			MaxSize: 3000,
 		}, node)
 		So(res4, ShouldBeFalse)
@@ -307,22 +309,22 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 	Convey("Date", t, func() {
 
 		ref := int64(1505470065)
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			MinDate: ref - 10,
 		}, node)
 		So(res, ShouldBeTrue)
 
-		res2 := evaluateSingleQuery(&tree.Query{
+		res2 := evaluateSingleQuery(ctx, &tree.Query{
 			MinDate: ref + 10,
 		}, node)
 		So(res2, ShouldBeFalse)
 
-		res3 := evaluateSingleQuery(&tree.Query{
+		res3 := evaluateSingleQuery(ctx, &tree.Query{
 			MaxDate: ref + 10,
 		}, node)
 		So(res3, ShouldBeTrue)
 
-		res4 := evaluateSingleQuery(&tree.Query{
+		res4 := evaluateSingleQuery(ctx, &tree.Query{
 			MaxDate: ref - 10,
 		}, node)
 		So(res4, ShouldBeFalse)
@@ -332,7 +334,7 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 	Convey("Multiple", t, func() {
 
 		ref := int64(1505470065)
-		res := evaluateSingleQuery(&tree.Query{
+		res := evaluateSingleQuery(ctx, &tree.Query{
 			FileName:   "file*",
 			Extension:  "jpg,gif",
 			Type:       tree.NodeType_LEAF,
@@ -345,7 +347,7 @@ func TestNodesSelector_EvaluateQuery(t *testing.T) {
 		So(res, ShouldBeTrue)
 
 		// One is wrong
-		res = evaluateSingleQuery(&tree.Query{
+		res = evaluateSingleQuery(ctx, &tree.Query{
 			FileName:   "wrongname*",
 			Extension:  "jpg,gif",
 			Type:       tree.NodeType_LEAF,

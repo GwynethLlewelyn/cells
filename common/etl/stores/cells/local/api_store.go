@@ -29,22 +29,22 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/etl/models"
-	"github.com/pydio/cells/v4/common/etl/stores"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/idm/share"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/etl/models"
+	"github.com/pydio/cells/v5/common/etl/stores"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/idm/share"
 )
 
 func init() {
@@ -78,7 +78,7 @@ func NewAPIStore(runtime context.Context) *ApiStore {
 // sql, pydio, api
 
 func (apiStore *ApiStore) CreateUser(ctx context.Context, identity *idm.User) (*idm.User, error) {
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 
 	if identity.Attributes == nil {
 		identity.Attributes = make(map[string]string)
@@ -91,11 +91,11 @@ func (apiStore *ApiStore) CreateUser(ctx context.Context, identity *idm.User) (*
 
 	if resp, e := userClient.CreateUser(ctx, &idm.CreateUserRequest{User: identity}); e == nil {
 
-		builder := service.NewResourcePoliciesBuilder()
+		builder := permissions.NewResourcePoliciesBuilder()
 		builder = builder.WithOwner(resp.User.Uuid)
 		builder = builder.WithProfileWrite(common.PydioProfileAdmin)
-		builder = builder.WithUserRead(identity.Login)
-		builder = builder.WithUserWrite(identity.Login)
+		builder = builder.WithSubjectRead(identity.Uuid)
+		builder = builder.WithSubjectWrite(identity.Uuid)
 
 		// Create role associated
 		associatedRole := idm.Role{
@@ -104,7 +104,7 @@ func (apiStore *ApiStore) CreateUser(ctx context.Context, identity *idm.User) (*
 			UserRole: true,
 			Policies: builder.Policies(),
 		}
-		roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceRole))
+		roleClient := idm.NewRoleServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceRoleGRPC))
 		roleClient.CreateRole(ctx, &idm.CreateRoleRequest{Role: &associatedRole})
 
 		return resp.User, nil
@@ -115,7 +115,7 @@ func (apiStore *ApiStore) CreateUser(ctx context.Context, identity *idm.User) (*
 
 // UpdateUser creates a user with the old identity
 func (apiStore *ApiStore) UpdateUser(ctx context.Context, identity *idm.User) (*idm.User, error) {
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 	if resp, e := userClient.CreateUser(ctx, &idm.CreateUserRequest{User: identity}); e == nil {
 		return resp.User, nil
 	} else {
@@ -124,7 +124,7 @@ func (apiStore *ApiStore) UpdateUser(ctx context.Context, identity *idm.User) (*
 }
 
 func (apiStore *ApiStore) DeleteUser(ctx context.Context, identity *idm.User) error {
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 	singleQ, _ := anypb.New(&idm.UserSingleQuery{Uuid: identity.Uuid})
 	q := &service.Query{SubQueries: []*anypb.Any{singleQ}}
 	_, e := userClient.DeleteUser(ctx, &idm.DeleteUserRequest{Query: q})
@@ -135,7 +135,7 @@ func (apiStore *ApiStore) DeleteUser(ctx context.Context, identity *idm.User) er
 
 func (apiStore *ApiStore) GetUser(ctx context.Context, id string) (*idm.User, error) {
 
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 
 	singleQ, _ := anypb.New(&idm.UserSingleQuery{Uuid: id})
 	q := &service.Query{
@@ -153,13 +153,13 @@ func (apiStore *ApiStore) GetUser(ctx context.Context, id string) (*idm.User, er
 		}
 		return resp.User, nil
 	}
-	return nil, errors.NotFound("user.not.found", "User "+id+" not found")
+	return nil, errors.WithMessage(errors.UserNotFound, "User "+id+" not found")
 }
 
 func (apiStore *ApiStore) ListUsers(ctx context.Context, params map[string]interface{}, progress chan float32) (map[string]*idm.User, error) {
 
 	results := make(map[string]*idm.User)
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 
 	offset := int64(0)
 	limit := int64(100)
@@ -222,13 +222,13 @@ func (apiStore *ApiStore) PutGroup(ctx context.Context, identity *idm.User) erro
 	// Changing the group path to go around a small oddity of the grpc user service
 	identity.GroupPath = strings.TrimSuffix(identity.GroupPath, "/") + "/" + identity.GroupLabel
 
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 	if resp, e := userClient.CreateUser(ctx, &idm.CreateUserRequest{User: (*idm.User)(identity)}); e == nil {
-		builder := service.NewResourcePoliciesBuilder()
+		builder := permissions.NewResourcePoliciesBuilder()
 		builder = builder.WithOwner(resp.User.Uuid)
 		builder = builder.WithProfileWrite(common.PydioProfileAdmin)
-		builder = builder.WithUserRead(identity.Login)
-		builder = builder.WithUserWrite(identity.Login)
+		builder = builder.WithSubjectRead(identity.Uuid)
+		builder = builder.WithSubjectWrite(identity.Uuid)
 
 		// Create role associated
 		associatedRole := idm.Role{
@@ -237,7 +237,7 @@ func (apiStore *ApiStore) PutGroup(ctx context.Context, identity *idm.User) erro
 			GroupRole: true,
 			Policies:  builder.Policies(),
 		}
-		roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceRole))
+		roleClient := idm.NewRoleServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceRoleGRPC))
 		roleClient.CreateRole(ctx, &idm.CreateRoleRequest{Role: &associatedRole})
 
 		return nil
@@ -247,7 +247,7 @@ func (apiStore *ApiStore) PutGroup(ctx context.Context, identity *idm.User) erro
 }
 
 func (apiStore *ApiStore) DeleteGroup(ctx context.Context, identity *idm.User) error {
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 	singleQ, _ := anypb.New(&idm.UserSingleQuery{Uuid: identity.Uuid})
 	q := &service.Query{SubQueries: []*anypb.Any{singleQ}}
 	_, e := userClient.DeleteUser(ctx, &idm.DeleteUserRequest{Query: q})
@@ -257,7 +257,7 @@ func (apiStore *ApiStore) DeleteGroup(ctx context.Context, identity *idm.User) e
 func (apiStore *ApiStore) ListGroups(ctx context.Context, params map[string]interface{}) ([]*idm.User, error) {
 
 	var results []*idm.User
-	userClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	userClient := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 
 	offset := int64(0)
 	limit := int64(100)
@@ -298,7 +298,7 @@ func (apiStore *ApiStore) ListGroups(ctx context.Context, params map[string]inte
 
 func (apiStore *ApiStore) PutACL(ctx context.Context, acl *idm.ACL) error {
 
-	aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceAcl))
+	aclClient := idm.NewACLServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceAclGRPC))
 	if _, e := aclClient.CreateACL(ctx, &idm.CreateACLRequest{ACL: acl}); e == nil {
 		return nil
 	} else {
@@ -308,7 +308,7 @@ func (apiStore *ApiStore) PutACL(ctx context.Context, acl *idm.ACL) error {
 
 func (apiStore *ApiStore) DeleteACL(ctx context.Context, acl *idm.ACL) error {
 
-	aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceAcl))
+	aclClient := idm.NewACLServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceAclGRPC))
 	singleQ, _ := anypb.New(&idm.ACLSingleQuery{RoleIDs: []string{acl.RoleID}, WorkspaceIDs: []string{acl.WorkspaceID}, NodeIDs: []string{acl.NodeID}})
 	q := &service.Query{SubQueries: []*anypb.Any{singleQ}}
 	_, e := aclClient.DeleteACL(ctx, &idm.DeleteACLRequest{Query: q})
@@ -318,7 +318,7 @@ func (apiStore *ApiStore) DeleteACL(ctx context.Context, acl *idm.ACL) error {
 func (apiStore *ApiStore) ListACLs(ctx context.Context, params map[string]interface{}) ([]*idm.ACL, error) {
 
 	var results []*idm.ACL
-	aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceAcl))
+	aclClient := idm.NewACLServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceAclGRPC))
 
 	// List user with pagination
 	q := &service.Query{
@@ -348,7 +348,7 @@ func (apiStore *ApiStore) PutRole(ctx context.Context, identity *idm.Role) (*idm
 	if identity.Label == "" {
 		identity.Label = identity.Uuid
 	}
-	roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceRole))
+	roleClient := idm.NewRoleServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceRoleGRPC))
 	if resp, e := roleClient.CreateRole(ctx, &idm.CreateRoleRequest{Role: identity}); e == nil {
 		return resp.Role, nil
 	} else {
@@ -357,7 +357,7 @@ func (apiStore *ApiStore) PutRole(ctx context.Context, identity *idm.Role) (*idm
 }
 
 func (apiStore *ApiStore) DeleteRole(ctx context.Context, identity *idm.Role) error {
-	roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceRole))
+	roleClient := idm.NewRoleServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceRoleGRPC))
 	singleQ, _ := anypb.New(&idm.RoleSingleQuery{Uuid: []string{identity.Uuid}})
 	q := &service.Query{SubQueries: []*anypb.Any{singleQ}}
 	_, e := roleClient.DeleteRole(ctx, &idm.DeleteRoleRequest{Query: q})
@@ -367,7 +367,7 @@ func (apiStore *ApiStore) DeleteRole(ctx context.Context, identity *idm.Role) er
 func (apiStore *ApiStore) ListRoles(ctx context.Context, userStore models.ReadableStore, params map[string]interface{}) ([]*idm.Role, error) {
 
 	var results []*idm.Role
-	roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceRole))
+	roleClient := idm.NewRoleServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceRoleGRPC))
 
 	// Skip Users & Groups Roles
 	var queries []*anypb.Any
@@ -438,7 +438,7 @@ func (apiStore *ApiStore) PutShare(ctx context.Context, s *models.SyncShare) err
 }
 
 func (apiStore *ApiStore) CrossLoadShare(ctx context.Context, syncShare *models.SyncShare, target models.ReadableStore, params map[string]interface{}) error {
-	return fmt.Errorf("not implemented")
+	return errors.New("not implemented")
 }
 
 func (apiStore *ApiStore) GetUserInfo(ctx context.Context, userName string, params map[string]interface{}) (u *idm.User, aclCtxt context.Context, e error) {
@@ -464,7 +464,7 @@ func (apiStore *ApiStore) GetUserInfo(ctx context.Context, userName string, para
 
 func (apiStore *ApiStore) GetGroupInfo(ctx context.Context, groupPath string, params map[string]interface{}) (u *idm.User, e error) {
 
-	cl := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceUser))
+	cl := idm.NewUserServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceUserGRPC))
 	q, _ := anypb.New(&idm.UserSingleQuery{
 		FullPath: groupPath,
 	})
@@ -480,7 +480,7 @@ func (apiStore *ApiStore) GetGroupInfo(ctx context.Context, groupPath string, pa
 		return resp.User, nil
 	}
 	log.Logger(ctx).Debug("Corresponding group not found " + groupPath)
-	return nil, fmt.Errorf("not found")
+	return nil, errors.New("not found")
 
 }
 
@@ -515,10 +515,10 @@ func (apiStore *ApiStore) createShareLink(ctx context.Context, ownerUser *idm.Us
 	var workspace *idm.Workspace
 	var user *idm.User
 	var err error
-	aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceAcl))
-	shareClient := share.NewClient(apiStore.runtime)
+	aclClient := idm.NewACLServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceAclGRPC))
+	shareClient := share.NewClient(nil)
 
-	workspace, _, err = shareClient.GetOrCreateWorkspace(ctx, ownerUser, "", idm.WorkspaceScope_LINK, link.Label, link.Description, false)
+	workspace, _, err = shareClient.GetOrCreateWorkspace(ctx, ownerUser, "", idm.WorkspaceScope_LINK, link.Label, "", link.Description, false)
 	if err != nil {
 		return err
 	}
@@ -545,11 +545,11 @@ func (apiStore *ApiStore) createShareLink(ctx context.Context, ownerUser *idm.Us
 	// Update Workspace Policies to make sure it's readable by the new user
 	workspace.Policies = append(workspace.Policies, &service.ResourcePolicy{
 		Resource: workspace.UUID,
-		Subject:  fmt.Sprintf("user:%s", user.Login),
+		Subject:  fmt.Sprintf("subject:%s", user.Uuid),
 		Action:   service.ResourcePolicyAction_READ,
 		Effect:   service.ResourcePolicy_allow,
 	})
-	wsClient := idm.NewWorkspaceServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceWorkspace))
+	wsClient := idm.NewWorkspaceServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceWorkspaceGRPC))
 	wsClient.CreateWorkspace(ctx, &idm.CreateWorkspaceRequest{Workspace: workspace})
 
 	err = shareClient.UpdateACLsForHiddenUser(ctx, user.Uuid, workspace.UUID, link.RootNodes, link.Permissions, "", false)
@@ -573,14 +573,14 @@ func (apiStore *ApiStore) createShareLink(ctx context.Context, ownerUser *idm.Us
 
 func (apiStore *ApiStore) createCell(ctx context.Context, ownerUser *idm.User, cell *rest.Cell) error {
 
-	shareClient := share.NewClient(apiStore.runtime)
-	workspace, _, err := shareClient.GetOrCreateWorkspace(ctx, ownerUser, "", idm.WorkspaceScope_ROOM, cell.Label, cell.Description, false)
+	shareClient := share.NewClient(nil)
+	workspace, _, err := shareClient.GetOrCreateWorkspace(ctx, ownerUser, "", idm.WorkspaceScope_ROOM, cell.Label, "", cell.Description, false)
 	if err != nil {
 		return err
 	}
 
 	// Now set ACLs on Workspace
-	aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceAcl))
+	aclClient := idm.NewACLServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceAclGRPC))
 
 	// New workspace, create "workspace-path" ACLs
 	for _, node := range cell.RootNodes {
@@ -609,7 +609,7 @@ func (apiStore *ApiStore) createCell(ctx context.Context, ownerUser *idm.User, c
 
 	// Now update workspace
 	log.Logger(ctx).Debug("Updating workspace", zap.Any("workspace", workspace))
-	wsClient := idm.NewWorkspaceServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceWorkspace))
+	wsClient := idm.NewWorkspaceServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceWorkspaceGRPC))
 	if _, err := wsClient.CreateWorkspace(ctx, &idm.CreateWorkspaceRequest{Workspace: workspace}); err != nil {
 		return err
 	}
@@ -631,7 +631,7 @@ func (apiStore *ApiStore) loadWorkspacesSlugs(ctx context.Context) (map[string]s
 		return apiStore.slugsCache, nil
 	}
 
-	cl := idm.NewWorkspaceServiceClient(grpc.GetClientConnFromCtx(apiStore.runtime, common.ServiceWorkspace))
+	cl := idm.NewWorkspaceServiceClient(grpc.ResolveConn(apiStore.runtime, common.ServiceWorkspaceGRPC))
 	var queries []*anypb.Any
 	query, _ := anypb.New(&idm.WorkspaceSingleQuery{
 		Scope: idm.WorkspaceScope_ADMIN,
@@ -657,7 +657,7 @@ func (apiStore *ApiStore) loadWorkspacesSlugs(ctx context.Context) (map[string]s
 
 func (apiStore *ApiStore) getRouter() nodes.Client {
 	if apiStore.router == nil {
-		apiStore.router = compose.PathClient(apiStore.runtime)
+		apiStore.router = compose.PathClient()
 	}
 	return apiStore.router
 }

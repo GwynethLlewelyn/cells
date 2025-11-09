@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nicksnyder/go-i18n/i18n"
+	"github.com/pydio/cells/v5/common/utils/i18n"
 )
 
 type FormField struct {
@@ -39,29 +39,44 @@ type FormField struct {
 	ChoiceJsonList   string
 }
 
-func (b *FormField) Serialize(T i18n.TranslateFunc) (params []*SerialFormParam) {
-
+func (b *FormField) StringDefault() string {
 	defaultValue := ""
 	if b.Default != nil {
 		switch b.Type {
 		case ParamHidden, ParamString, ParamTextarea, ParamSelect, ParamAutoComplete, ParamAutoCompleteTree:
-			defaultValue = b.Default.(string)
+			if s, ok := b.Default.(string); ok {
+				defaultValue = s
+			} else {
+				fmt.Println("[WARNING] Wrong Default Format, expected string, got", b.Default)
+			}
 		case ParamBool:
 			defaultValue = "false"
-			if b.Default.(bool) {
-				defaultValue = "true"
+			if bo, ok := b.Default.(bool); ok {
+				if bo {
+					defaultValue = "true"
+				}
+			} else {
+				fmt.Println("[WARNING] Wrong Default Format, expected bool, got", b.Default, " for field ", b.Name, b.Label)
 			}
-		case ParamInteger:
-			defaultValue = fmt.Sprintf("%v", b.Default.(int))
+		case ParamInteger, ParamIntegerBytes:
+			if in, ok := b.Default.(int); ok {
+				defaultValue = fmt.Sprintf("%v", in)
+			} else {
+				fmt.Println("[WARNING] Wrong Default Format, expected integer, got", b.Default)
+			}
 		}
 	}
+	return defaultValue
+}
+
+func (b *FormField) Serialize(T i18n.TranslateFunc) (params []*SerialFormParam) {
 
 	s := &SerialFormParam{
 		Name:        b.Name,
 		Label:       T(b.Label),
 		Description: T(b.Description),
 		Type:        string(b.Type),
-		Default:     defaultValue,
+		Default:     b.StringDefault(),
 		Mandatory:   b.Mandatory,
 		Editable:    b.Editable,
 	}

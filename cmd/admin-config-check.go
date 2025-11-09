@@ -21,12 +21,14 @@
 package cmd
 
 import (
-	"github.com/manifoldco/promptui"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/spf13/cobra"
 	"os"
 	"strings"
+
+	"github.com/manifoldco/promptui"
+	"github.com/spf13/cobra"
+
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/runtime"
 )
 
 var (
@@ -65,7 +67,7 @@ EXAMPLE
 			configCheckURL += "?readOnly=true"
 		}
 		cmd.Println("Checking config at " + configCheckURL)
-		s, e := config.OpenStore(ctx, configCheckURL)
+		s, e := config.OpenStore(cmd.Context(), configCheckURL)
 		if e != nil {
 			cmd.Println(promptui.IconBad + " Cannot open config: " + e.Error())
 			os.Exit(1)

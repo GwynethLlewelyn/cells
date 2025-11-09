@@ -4,12 +4,21 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/compose"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
+	hashiversion "github.com/hashicorp/go-version"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type TreeHandler struct {
@@ -19,9 +28,9 @@ type TreeHandler struct {
 	tree.UnimplementedNodeReceiverStreamServer
 	tree.UnimplementedNodeProviderStreamerServer
 
-	runtimeCtx context.Context
-	router     nodes.Handler
-	name       string
+	router nodes.Handler
+	rOnce  sync.Once
+	name   string
 }
 
 func (t *TreeHandler) Name() string {
@@ -35,6 +44,23 @@ func (t *TreeHandler) fixMode(n *tree.Node) {
 		n.Mode = int32(os.ModePerm & os.ModeDir)
 		n.Size = 0
 		n.MTime = time.Now().Unix()
+	}
+}
+
+// syncAgentVersion tries to find User-Agent in context and parse a version like {appName}/X.X.X
+func (t *TreeHandler) syncAgentVersion(ctx context.Context, appName string) (*hashiversion.Version, bool) {
+	mm, o1 := propagator.FromContextRead(ctx)
+	if !o1 {
+		return nil, false
+	}
+	ua, o2 := mm["UserAgent"]
+	if !o2 {
+		return nil, false
+	}
+	if v, er := hashiversion.NewVersion(strings.TrimPrefix(ua, appName+"/")); er == nil {
+		return v, true
+	} else {
+		return nil, false
 	}
 }
 
@@ -92,11 +118,11 @@ func (t *TreeHandler) CreateNodeStream(s tree.NodeReceiverStream_CreateNodeStrea
 }
 
 func (t *TreeHandler) UpdateNodeStream(tree.NodeReceiverStream_UpdateNodeStreamServer) error {
-	return errors.BadRequest("not.implemented", "UpdateNodeStream not implemented yet")
+	return errors.WithMessage(errors.StatusNotImplemented, "UpdateNodeStream not implemented yet")
 }
 
 func (t *TreeHandler) DeleteNodeStream(tree.NodeReceiverStream_DeleteNodeStreamServer) error {
-	return errors.BadRequest("not.implemented", "DeleteNodeStream not implemented yet")
+	return errors.WithMessage(errors.StatusNotImplemented, "DeleteNodeStream not implemented yet")
 }
 
 // ReadNode forwards to router
@@ -116,7 +142,44 @@ func (t *TreeHandler) ReadNode(ctx context.Context, request *tree.ReadNodeReques
 // ListNodes forwards to router
 func (t *TreeHandler) ListNodes(request *tree.ListNodesRequest, stream tree.NodeProvider_ListNodesServer) error {
 
-	st, e := t.getRouter().ListNodes(stream.Context(), request)
+	ctx := stream.Context()
+	ro := t.getRouter()
+
+	var expectedHashing string
+	if v, o := t.syncAgentVersion(ctx, "cells-sync"); o {
+		ref, _ := hashiversion.NewVersion("0.9.2")
+		if v.GreaterThan(ref) {
+			expectedHashing = "v4"
+		}
+	}
+
+	checkHashing := func(n *tree.Node) error {
+		rr, er := ro.ReadNode(ctx, &tree.ReadNodeRequest{Node: n})
+		if er != nil {
+			return er
+		}
+		nodeHashing := rr.GetNode().GetStringMeta(common.MetaFlagHashingVersion)
+		if nodeHashing != expectedHashing {
+			log.Logger(ctx).Error("WARNING - Sync Client with wrong hashing constraints (client was " + expectedHashing + ", node " + rr.GetNode().GetPath() + " is " + nodeHashing + ")")
+			if nodeHashing == "v4" { // server is v4, require app update
+				return status.Errorf(codes.FailedPrecondition, "hashing formats differ, please make sure to update the sync application")
+			} else {
+				return status.Errorf(codes.FailedPrecondition, "hashing formats differ, please contact admin to rehash the datasource")
+			}
+		}
+		return nil
+	}
+
+	isRoot := strings.Trim(request.GetNode().GetPath(), "/") == ""
+
+	if !isRoot {
+		// Check if requested node has expected hashing version
+		if err := checkHashing(request.GetNode()); err != nil {
+			return err
+		}
+	}
+
+	st, e := ro.ListNodes(ctx, request)
 	if e != nil {
 		return e
 	}
@@ -129,6 +192,13 @@ func (t *TreeHandler) ListNodes(request *tree.ListNodesRequest, stream tree.Node
 		}
 		if e != nil {
 			return e
+		}
+		if isRoot {
+			// When browsing root we are listing the workspaces, check their hashing version (based on their parent datasource)
+			if err := checkHashing(r.GetNode()); err != nil {
+				log.Logger(ctx).Warn("Ignoring node " + r.GetNode().GetPath() + " as hashing differs from expected")
+				continue
+			}
 		}
 		stream.Send(r)
 	}
@@ -195,9 +265,8 @@ func (t *TreeHandler) DeleteNode(ctx context.Context, req *tree.DeleteNodeReques
 }
 
 func (t *TreeHandler) getRouter() nodes.Handler {
-	if t.router != nil {
-		return t.router
-	}
-	t.router = compose.PathClient(t.runtimeCtx, nodes.WithSynchronousTasks())
+	t.rOnce.Do(func() {
+		t.router = compose.PathClient(nodes.WithSynchronousTasks(), nodes.WithHashesAsETags())
+	})
 	return t.router
 }

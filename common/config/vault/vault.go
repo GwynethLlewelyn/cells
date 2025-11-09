@@ -25,11 +25,14 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	vault "github.com/hashicorp/vault/api"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/watch"
 )
 
 func init() {
@@ -39,11 +42,16 @@ func init() {
 
 type URLOpener struct{}
 
-func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (config.Store, error) {
+func (o *URLOpener) Open(ctx context.Context, urlstr string, base config.Store) (config.Store, error) {
+	u, err := url.Parse(urlstr)
+	if err != nil {
+		return nil, err
+	}
+
 	storePath := strings.TrimLeft(u.Path, "/")
 	key := u.Query().Get("key")
 	if key == "" {
-		return nil, fmt.Errorf("please provide a keyname for storing data inside this config")
+		return nil, errors.New("please provide a keyname for storing data inside this config")
 	}
 	rootToken := u.Query().Get("rootToken")
 	if rootToken != "" {
@@ -74,6 +82,7 @@ func New(u *url.URL, storePath, key, rootToken string, opts ...configx.Option) (
 		cli:       client,
 		storePath: strings.Trim(storePath, "/"),
 		keyName:   key,
+		locker:    &sync.RWMutex{},
 	}, nil
 
 }
@@ -83,7 +92,12 @@ type store struct {
 	keyName   string
 	cli       *vault.Client
 	v         configx.Values
+	locker    *sync.RWMutex
 }
+
+func (s *store) Reset() {}
+
+func (s *store) Flush() {}
 
 func (s *store) read() {
 	sec, er := s.cli.Logical().Read(s.storePath + "/data/" + s.keyName)
@@ -105,7 +119,22 @@ func (s *store) read() {
 	}
 }
 
-func (s *store) Get() configx.Value {
+func (s *store) Context(ctx context.Context) configx.Values {
+	return &val{
+		Values: s.v.Context(ctx),
+		store:  s,
+	}
+}
+
+func (s *store) Options() *configx.Options {
+	return s.v.Options()
+}
+
+func (s *store) Key() []string {
+	return s.v.Key()
+}
+
+func (s *store) Get() any {
 	s.read()
 	return s.v
 }
@@ -132,8 +161,22 @@ func (s *store) Val(path ...string) configx.Values {
 	return &val{Values: v, store: s}
 }
 
-func (s *store) Watch(opts ...configx.WatchOption) (configx.Receiver, error) {
-	return nil, fmt.Errorf("vault.watch is not implemented")
+func (s *store) Default(def any) configx.Values {
+	return &val{Values: s.v.Default(def), store: s}
+}
+
+func (s *store) Watch(opts ...watch.WatchOption) (watch.Receiver, error) {
+	return nil, errors.New("vault.watch is not implemented")
+}
+
+func (s *store) As(out any) bool { return false }
+
+func (s *store) Close(_ context.Context) error {
+	return nil
+}
+
+func (s *store) Done() <-chan struct{} {
+	return nil
 }
 
 func (s *store) Save(s3 string, s2 string) error {
@@ -144,9 +187,17 @@ func (s *store) Save(s3 string, s2 string) error {
 	return nil
 }
 
-func (s *store) Lock() {}
+func (s *store) Lock() {
+	s.locker.Lock()
+}
 
-func (s *store) Unlock() {}
+func (s *store) Unlock() {
+	s.locker.Unlock()
+}
+
+func (s *store) NewLocker(name string) sync.Locker {
+	return &sync.RWMutex{}
+}
 
 // val wraps configx.Values to trigger save on any update
 type val struct {

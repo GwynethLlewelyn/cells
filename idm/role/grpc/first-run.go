@@ -23,21 +23,23 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
+	grpc2 "google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	service "github.com/pydio/cells/v4/common/proto/service"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/std"
-	"github.com/pydio/cells/v4/idm/role"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/idm/role"
 )
 
 type insertRole struct {
@@ -45,35 +47,13 @@ type insertRole struct {
 	Acls []*idm.ACL
 }
 
-var (
-	rootPolicies = []*service.ResourcePolicy{
-		{
-			Action:  service.ResourcePolicyAction_READ,
-			Subject: "*",
-			Effect:  service.ResourcePolicy_allow,
-		},
-		{
-			Action:  service.ResourcePolicyAction_WRITE,
-			Subject: "profile:" + common.PydioProfileAdmin,
-			Effect:  service.ResourcePolicy_allow,
-		},
-	}
-	externalPolicies = []*service.ResourcePolicy{
-		{
-			Action:  service.ResourcePolicyAction_READ,
-			Subject: "*",
-			Effect:  service.ResourcePolicy_allow,
-		},
-		{
-			Action:  service.ResourcePolicyAction_WRITE,
-			Subject: "profile:" + common.PydioProfileStandard,
-			Effect:  service.ResourcePolicy_allow,
-		},
-	}
-)
-
 func InitRoles(ctx context.Context) error {
-	lang := config.Get("frontend", "plugin", "core.pydio", "DEFAULT_LANGUAGE").Default("en-us").String()
+	dao, er := manager.Resolve[role.DAO](ctx)
+	if er != nil {
+		return er
+	}
+
+	lang := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginCorePydio, config.KeyFrontDefaultLanguage)...).Default("en-us").String()
 	langJ, _ := json.Marshal(lang)
 	scopeAll := permissions.FrontWsScopeAll
 	scopeShared := permissions.FrontWsScopeShared
@@ -87,8 +67,10 @@ func InitRoles(ctx context.Context) error {
 				Policies:  rootPolicies,
 			},
 			Acls: []*idm.ACL{
-				{RoleID: "ROOT_GROUP", Action: permissions.AclRead, WorkspaceID: "homepage", NodeID: "homepage-ROOT"},
-				{RoleID: "ROOT_GROUP", Action: permissions.AclWrite, WorkspaceID: "homepage", NodeID: "homepage-ROOT"},
+				{RoleID: "ROOT_GROUP", Action: permissions.AclRead, WorkspaceID: common.IdmWsInternalHomepageID, NodeID: "homepage-ROOT"},
+				{RoleID: "ROOT_GROUP", Action: permissions.AclWrite, WorkspaceID: common.IdmWsInternalHomepageID, NodeID: "homepage-ROOT"},
+				{RoleID: "ROOT_GROUP", Action: permissions.AclRead, WorkspaceID: common.IdmWsInternalDirectoryID, NodeID: "directory-ROOT"},
+				{RoleID: "ROOT_GROUP", Action: permissions.AclWrite, WorkspaceID: common.IdmWsInternalDirectoryID, NodeID: "directory-ROOT"},
 				{RoleID: "ROOT_GROUP", Action: &idm.ACLAction{Name: "parameter:core.conf:lang", Value: string(langJ)}, WorkspaceID: scopeAll},
 			},
 		},
@@ -100,8 +82,8 @@ func InitRoles(ctx context.Context) error {
 				Policies:    rootPolicies,
 			},
 			Acls: []*idm.ACL{
-				{RoleID: "ADMINS", Action: permissions.AclRead, WorkspaceID: "settings", NodeID: "settings-ROOT"},
-				{RoleID: "ADMINS", Action: permissions.AclWrite, WorkspaceID: "settings", NodeID: "settings-ROOT"},
+				{RoleID: "ADMINS", Action: permissions.AclRead, WorkspaceID: common.IdmWsInternalSettingsID, NodeID: "settings-ROOT"},
+				{RoleID: "ADMINS", Action: permissions.AclWrite, WorkspaceID: common.IdmWsInternalSettingsID, NodeID: "settings-ROOT"},
 			},
 		},
 		{
@@ -112,12 +94,14 @@ func InitRoles(ctx context.Context) error {
 				Policies:    externalPolicies,
 			},
 			Acls: []*idm.ACL{
-				{RoleID: "EXTERNAL_USERS", Action: permissions.AclDeny, WorkspaceID: "homepage", NodeID: "homepage-ROOT"},
+				{RoleID: "EXTERNAL_USERS", Action: permissions.AclDeny, WorkspaceID: common.IdmWsInternalHomepageID, NodeID: "homepage-ROOT"},
+				{RoleID: "EXTERNAL_USERS", Action: permissions.AclDeny, WorkspaceID: common.IdmWsInternalDirectoryID, NodeID: "directory-ROOT"},
 				{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "action:action.share:share", Value: "false"}, WorkspaceID: scopeAll},
 				{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "action:action.share:share-edit-shared", Value: "false"}, WorkspaceID: scopeAll},
 				{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "action:action.share:open_user_shares", Value: "false"}, WorkspaceID: scopeAll},
 				{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "action:action.user:open_address_book", Value: "false"}, WorkspaceID: scopeAll},
 				{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "parameter:core.auth:USER_CREATE_CELLS", Value: "false"}, WorkspaceID: scopeAll},
+				{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "parameter:core.auth:USER_CREATE_USERS", Value: "false"}, WorkspaceID: scopeAll},
 			},
 		},
 		{
@@ -129,6 +113,8 @@ func InitRoles(ctx context.Context) error {
 			Acls: []*idm.ACL{
 				{RoleID: "MINISITE", Action: &idm.ACLAction{Name: "action:action.share:share", Value: "false"}, WorkspaceID: scopeShared},
 				{RoleID: "MINISITE", Action: &idm.ACLAction{Name: "action:action.share:share-edit-shared", Value: "false"}, WorkspaceID: scopeShared},
+				{RoleID: "MINISITE", Action: &idm.ACLAction{Name: "action:core.activitystreams:toggle_watch", Value: "false"}, WorkspaceID: scopeShared},
+				{RoleID: "MINISITE", Action: &idm.ACLAction{Name: "action:gui.ajax:bookmark_on", Value: "false"}, WorkspaceID: scopeShared},
 			},
 		},
 		{
@@ -146,9 +132,8 @@ func InitRoles(ctx context.Context) error {
 
 	var e error
 	for _, insert := range insertRoles {
-		dao := servicecontext.GetDAO(ctx).(role.DAO)
 		var update bool
-		_, update, e = dao.Add(insert.Role)
+		_, update, e = dao.Add(ctx, insert.Role)
 		if e != nil {
 			break
 		}
@@ -156,29 +141,35 @@ func InitRoles(ctx context.Context) error {
 			continue
 		}
 		log.Logger(ctx).Info(fmt.Sprintf("Created default role %s", insert.Role.Label))
-		if e = dao.AddPolicies(false, insert.Role.Uuid, insert.Role.Policies); e == nil {
+		if _, e = dao.AddPolicies(ctx, false, insert.Role.Uuid, insert.Role.Policies); e == nil {
 			log.Logger(ctx).Info(fmt.Sprintf(" - Policies added for role %s", insert.Role.Label))
 		} else {
 			break
 		}
 
-		go func(rolesACLs []*idm.ACL, roleName string) {
-			aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceAcl))
-			for _, acl := range rolesACLs {
-				if _, err := aclClient.CreateACL(ctx, &idm.CreateACLRequest{ACL: acl}); err != nil {
-					log.Logger(ctx).Error("Failed inserting ACLs for role "+roleName, zap.Error(err))
-					return
-				}
-			}
+		rolesACLs := insert.Acls
+		roleName := insert.Role.Label
 
-			log.Logger(ctx).Info("Inserted ACLs for role " + roleName)
-		}(insert.Acls, insert.Role.Label)
+		aclClient := idmc.ACLServiceClient(ctx)
+		for _, acl := range rolesACLs {
+			if _, err := aclClient.CreateACL(ctx, &idm.CreateACLRequest{ACL: acl}); err != nil {
+				log.Logger(ctx).Error("Failed inserting ACLs for role "+roleName, zap.Error(err))
+				break
+			}
+		}
+
+		log.Logger(ctx).Info("Inserted ACLs for role " + roleName)
 	}
 
 	return e
 }
 
 func UpgradeTo12(ctx context.Context) error {
+
+	dao, er := manager.Resolve[role.DAO](ctx)
+	if er != nil {
+		return er
+	}
 
 	scopeShared := permissions.FrontWsScopeShared
 
@@ -209,9 +200,8 @@ func UpgradeTo12(ctx context.Context) error {
 
 	var e error
 	for _, insert := range insertRoles {
-		dao := servicecontext.GetDAO(ctx).(role.DAO)
 		var update bool
-		_, update, e = dao.Add(insert.Role)
+		_, update, e = dao.Add(ctx, insert.Role)
 		if e != nil {
 			break
 		}
@@ -219,14 +209,14 @@ func UpgradeTo12(ctx context.Context) error {
 			continue
 		}
 		log.Logger(ctx).Info(fmt.Sprintf("Created role %s", insert.Role.Label))
-		if e = dao.AddPolicies(false, insert.Role.Uuid, insert.Role.Policies); e == nil {
+		if _, e = dao.AddPolicies(ctx, false, insert.Role.Uuid, insert.Role.Policies); e == nil {
 			log.Logger(ctx).Info(fmt.Sprintf(" - Policies added for role %s", insert.Role.Label))
 		} else {
 			break
 		}
 
 		e = std.Retry(ctx, func() error {
-			aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceAcl))
+			aclClient := idmc.ACLServiceClient(ctx)
 			for _, acl := range insert.Acls {
 				_, e := aclClient.CreateACL(ctx, &idm.CreateACLRequest{ACL: acl})
 				if e != nil {
@@ -239,4 +229,55 @@ func UpgradeTo12(ctx context.Context) error {
 	}
 
 	return e
+}
+
+func UpgradeTo4199(ctx context.Context) error {
+	newACLs := []*idm.ACL{
+		{RoleID: "ROOT_GROUP", Action: permissions.AclRead, WorkspaceID: common.IdmWsInternalDirectoryID, NodeID: "directory-ROOT"},
+		{RoleID: "ROOT_GROUP", Action: permissions.AclWrite, WorkspaceID: common.IdmWsInternalDirectoryID, NodeID: "directory-ROOT"},
+	}
+	aclClient := idmc.ACLServiceClient(ctx)
+	for _, acl := range newACLs {
+		_, e := aclClient.CreateACL(ctx, &idm.CreateACLRequest{ACL: acl}, grpc2.WaitForReady(true))
+		if e != nil {
+			return e
+		}
+	}
+	log.Logger(ctx).Info("Added new ACLs for root group to access 'directory' workspace")
+	return nil
+}
+
+func UpgradeTo421(ctx context.Context) error {
+	newACLs := []*idm.ACL{
+		{RoleID: "EXTERNAL_USERS", Action: &idm.ACLAction{Name: "parameter:core.auth:USER_CREATE_USERS", Value: "false"}, WorkspaceID: permissions.FrontWsScopeAll},
+	}
+	aclClient := idmc.ACLServiceClient(ctx)
+	for _, acl := range newACLs {
+		_, e := aclClient.CreateACL(ctx, &idm.CreateACLRequest{ACL: acl}, grpc2.WaitForReady(true))
+		if e != nil {
+			if strings.Contains(strings.ToLower(e.Error()), "duplicate") {
+				log.Logger(ctx).Info("Ignoring new ACL for external users role, it's already there")
+				return nil
+			}
+			return e
+		}
+	}
+	log.Logger(ctx).Info("Added new ACLs for external users")
+	return nil
+}
+
+var GrpcServiceMigrations = []*service.Migration{
+	{
+		TargetVersion: service.FirstRun(),
+		Up:            InitRoles,
+	}, {
+		TargetVersion: service.ValidVersion("1.2.0"),
+		Up:            UpgradeTo12,
+	}, {
+		TargetVersion: service.ValidVersion("4.1.99"),
+		Up:            UpgradeTo4199,
+	}, {
+		TargetVersion: service.ValidVersion("4.2.1"),
+		Up:            UpgradeTo421,
+	},
 }

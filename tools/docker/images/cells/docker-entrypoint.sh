@@ -47,11 +47,11 @@ if [ "${1#-}" != "$1" ]; then
 fi
 
 # Workaround issue of key generation at first run until it is fixed.
-cells version > /dev/null
+# cells version > /dev/null
 
-if [ "$2" != "version" ]; then
-	echo "### $(cells version)"
-fi 
-echo "### About to execute: [$@]"
+# if [ "$2" != "version" ]; then
+# 	echo "### $(cells version)"
+# fi 
+echo "[DEBUG] About to run command: [$@]"
 
 exec "$@"

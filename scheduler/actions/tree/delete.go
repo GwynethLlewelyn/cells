@@ -29,17 +29,18 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/scheduler/actions"
-	"github.com/pydio/cells/v4/scheduler/actions/tools"
-	"github.com/pydio/cells/v4/scheduler/lang"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	"github.com/pydio/cells/v5/scheduler/actions"
+	"github.com/pydio/cells/v5/scheduler/actions/tools"
+	"github.com/pydio/cells/v5/scheduler/lang"
 )
 
 var (
@@ -57,7 +58,7 @@ func (c *DeleteAction) GetDescription(_ ...string) actions.ActionDescription {
 		ID:               deleteActionName,
 		Label:            "Delete files",
 		Category:         actions.ActionCategoryTree,
-		Icon:             "delete-forever",
+		Icon:             "file-remove",
 		Description:      "Recursively delete files or folders passed in input",
 		InputDescription: "Single-selection of file or folder to delete. Folders are deleted recursively",
 		SummaryTemplate:  "",
@@ -65,7 +66,7 @@ func (c *DeleteAction) GetDescription(_ ...string) actions.ActionDescription {
 	}
 }
 
-func (c *DeleteAction) GetParametersForm() *forms.Form {
+func (c *DeleteAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -98,7 +99,7 @@ func (c *DeleteAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *DeleteAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *DeleteAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	if co, ok := action.Parameters["childrenOnly"]; ok {
 		c.childrenOnlyParam = co
@@ -114,13 +115,13 @@ func (c *DeleteAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (c *DeleteAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *DeleteAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil // Ignore
 	}
 
-	T := lang.Bundle().GetTranslationFunc(i18n.UserLanguageFromContext(ctx, config.Get(), true))
+	T := lang.Bundle().T(languages.UserLanguageFromContext(ctx, true))
 
 	childrenOnly, e := jobs.EvaluateFieldBool(ctx, input, c.childrenOnlyParam)
 	if e != nil {
@@ -136,11 +137,11 @@ func (c *DeleteAction) Run(ctx context.Context, channels *actions.RunnableChanne
 
 	readR, readE := cli.ReadNode(ctx, &tree.ReadNodeRequest{Node: sourceNode})
 	if readE != nil {
-		log.Logger(ctx).Error("Read Source", zap.Error(readE))
 		if ignore, _ := jobs.EvaluateFieldBool(ctx, input, c.ignoreNonExisting); ignore {
 			log.TasksLogger(ctx).Info("No file found, ignoring")
 			return input.WithIgnore(), nil
 		}
+		log.Logger(ctx).Error("Read Source", zap.Error(readE))
 		return input.WithError(readE), readE
 	}
 	sourceNode = readR.GetNode()
@@ -162,6 +163,15 @@ func (c *DeleteAction) Run(ctx context.Context, channels *actions.RunnableChanne
 		}
 	} else {
 
+		iSess := ""
+		if !isFlat {
+			iSess = uuid.New()
+			defer func() {
+				broker.MustPublish(context.Background(), common.TopicIndexEvent, &tree.IndexEvent{
+					SessionForceClose: iSess,
+				})
+			}()
+		}
 		var delErr error
 		wg := &sync.WaitGroup{}
 		throttle := make(chan struct{}, 4)
@@ -179,13 +189,17 @@ func (c *DeleteAction) Run(ctx context.Context, channels *actions.RunnableChanne
 				// Do not delete first .pydio!
 				continue
 			}
-			if isFlat && !n.IsLeaf() { // Do not remove folders yet
-				relPath := strings.Trim(strings.TrimPrefix(n.GetPath(), sourceNode.GetPath()), "/")
-				if childrenOnly && !strings.Contains(relPath, "/") {
-					firstLevelFolders = append(firstLevelFolders, n.Clone())
+			// Do not remove folders (ignore for struct, postpone first-level deletion for flats)
+			if !n.IsLeaf() {
+				if isFlat {
+					relPath := strings.Trim(strings.TrimPrefix(n.GetPath(), sourceNode.GetPath()), "/")
+					if childrenOnly && !strings.Contains(relPath, "/") {
+						firstLevelFolders = append(firstLevelFolders, n.Clone())
+					}
 				}
 				continue
 			}
+
 			wg.Add(1)
 			throttle <- struct{}{}
 			go func() {
@@ -199,9 +213,11 @@ func (c *DeleteAction) Run(ctx context.Context, channels *actions.RunnableChanne
 					statusPath = path.Dir(statusPath)
 				}
 				channels.StatusMsg <- strings.Replace(T("Jobs.User.DeletingItem"), "%s", statusPath, -1)
-				_, er := cli.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: n})
+				_, er := cli.DeleteNode(ctx, &tree.DeleteNodeRequest{Node: n, IndexationSession: iSess})
 				if er != nil {
 					delErr = fmt.Errorf("Cannot delete "+n.GetPath()+": %v", er)
+					log.TasksLogger(ctx).Error(delErr.Error(), zap.Error(delErr))
+					log.Logger(ctx).Error(delErr.Error(), zap.Error(delErr))
 				}
 			}()
 		}

@@ -5,6 +5,18 @@
   "Search.Config.IndexContent.Description": {
     "other": "Si cette option est activée, l'indexeur recherchera la métadonnée ContentRef, lira le contenu de cette référence, et l'indexera pour la recherche."
   },
+  "Search.Config.ContentRef.Label": {
+    "other": "Metadata référençant le contenu"
+  },
+  "Search.Config.ContentRef.Description": {
+    "other": "Nom de la métadonnée qui pointe vers un fichier interne contenant une représentation textuelle du document original. Ces contenus peuvent être en texte brut ou encodés en gzip, selon l'outil d'extraction de texte utilisé (par exemple Tika). Le moteur de recherche indexe généralement ce texte pour permettre la recherche dans le contenu. Assurez-vous de préfixer le nom des métadonnées avec 'pydio:' pour éviter les fuites de données."
+  },
+  "Search.Config.PlainTextExtensions.Label": {
+    "other": "Extensions Texte"
+  },
+  "Search.Config.PlainTextExtensions.Description": {
+    "other": "Liste des extensions pour les fichiers qui contiennent du texte et qui peuvent être indexés directement (liste séparée par des virgules)."
+  },
   "Search.Config.BasenameAnalyze.Label": {
     "other": "Analyseur de nom de fichier"
   },

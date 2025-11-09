@@ -21,7 +21,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"time"
@@ -29,13 +28,13 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/auth"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/std"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/auth"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
 var (
@@ -44,6 +43,7 @@ var (
 	tokAutoRefresh   string
 	tokCreationQuiet bool
 	tokScopes        []string
+	tokSecretPair    bool
 )
 
 var pTokCmd = &cobra.Command{
@@ -104,23 +104,27 @@ TOKEN SCOPE
 				fmt.Println(promptui.IconBad + " Cannot parse auto-refresh duration. Use golang format like 30s, 30m, 24h, 28d")
 			}
 		}
-		u, e := permissions.SearchUniqueUser(context.Background(), tokUserLogin, "")
+		u, e := permissions.SearchUniqueUser(cmd.Context(), tokUserLogin, "")
 		if e != nil {
-			cmd.Println("Cannot find user")
+			cmd.Printf("Error while searching for user %s: %v\n", tokUserLogin, e)
 			return
 		}
-		cli := auth.NewPersonalAccessTokenServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceToken))
-		resp, e := cli.Generate(context.Background(), &auth.PatGenerateRequest{
-			Type:              auth.PatType_PERSONAL,
-			UserUuid:          u.Uuid,
-			UserLogin:         tokUserLogin,
-			Label:             "Command generated token",
-			ExpiresAt:         expire.Unix(),
-			AutoRefreshWindow: refreshSeconds,
-			Scopes:            tokScopes,
+		ctx := cmd.Context()
+		cli := auth.NewPersonalAccessTokenServiceClient(grpc.ResolveConn(ctx, common.ServiceTokenGRPC))
+		resp, e := cli.Generate(cmd.Context(), &auth.PatGenerateRequest{
+			Type:               auth.PatType_PERSONAL,
+			UserUuid:           u.Uuid,
+			UserLogin:          tokUserLogin,
+			Label:              "Command generated token",
+			ExpiresAt:          expire.Unix(),
+			AutoRefreshWindow:  refreshSeconds,
+			Scopes:             tokScopes,
+			GenerateSecretPair: tokSecretPair,
 		})
 		if e != nil {
-			log.Fatal(e.Error())
+			if !tokCreationQuiet {
+				log.Fatal(e.Error())
+			}
 			return
 		}
 		var uDisplay = u.Login
@@ -137,6 +141,10 @@ TOKEN SCOPE
 				cmd.Println(promptui.IconGood + fmt.Sprintf(" This token for %s will expire on %s.", uDisplay, expire.Format(time.RFC850)))
 			}
 			cmd.Println(promptui.IconGood + " " + resp.AccessToken)
+			if tokSecretPair {
+				cmd.Println(promptui.IconGood + " You can use the following key as an S3 secret")
+				cmd.Println(promptui.IconGood + " " + resp.SecretPair)
+			}
 			cmd.Println("")
 			cmd.Println(promptui.IconWarn + " Make sure to secure it as it grants access to the user resources!")
 		}
@@ -146,8 +154,9 @@ TOKEN SCOPE
 func init() {
 	UserCmd.AddCommand(pTokCmd)
 	pTokCmd.Flags().StringVarP(&tokUserLogin, "user", "u", "", "User login (mandatory)")
-	pTokCmd.Flags().StringVarP(&tokExpireTime, "expire", "e", "", "Expire after duration. Format is 20u where u is a unit: s (second), (minute), h (hour), d(day).")
-	pTokCmd.Flags().StringVarP(&tokAutoRefresh, "auto", "a", "", "Auto-refresh expiration when token is used. Format is 20u where u is a unit: s (second), (minute), h (hour), d(day).")
+	pTokCmd.Flags().StringVarP(&tokExpireTime, "expire", "e", "", "Expire after duration. Format is 20u where u is a unit: s (second), m (minute), h (hour), d(day).")
+	pTokCmd.Flags().StringVarP(&tokAutoRefresh, "auto", "a", "", "Auto-refresh expiration when token is used. Format is 20u where u is a unit: s (second), m (minute), h (hour), d(day).")
 	pTokCmd.Flags().StringSliceVarP(&tokScopes, "scope", "s", []string{}, "Optional scopes")
 	pTokCmd.Flags().BoolVarP(&tokCreationQuiet, "quiet", "q", false, "Only return the newly created token value (typically useful in automation scripts with a short expiry time)")
+	pTokCmd.Flags().BoolVarP(&tokSecretPair, "secret", "p", false, "Create a secret key along with the new token")
 }

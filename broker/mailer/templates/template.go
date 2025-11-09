@@ -25,19 +25,22 @@
 package templates
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	hermes "github.com/matcornic/hermes/v2"
-	"github.com/pydio/cells/v4/broker/mailer/lang"
-	"github.com/pydio/cells/v4/common/proto/mailer"
+
+	"github.com/pydio/cells/v5/broker/mailer/lang"
+	"github.com/pydio/cells/v5/common/proto/mailer"
 )
 
-func GetHermes(languages ...string) hermes.Hermes {
+func GetHermes(ctx context.Context, languages ...string) hermes.Hermes {
 
-	configs := GetApplicationConfig(languages...)
+	configs := GetApplicationConfig(ctx, languages...)
 	return hermes.Hermes{
-		Theme: configs.Theme,
+		Theme:              configs.Theme,
+		DisableCSSInlining: configs.DisableCSSInlining,
 		Product: hermes.Product{
 			Name:        configs.Title,
 			Link:        configs.Url,
@@ -49,10 +52,25 @@ func GetHermes(languages ...string) hermes.Hermes {
 
 }
 
-func BuildTemplateWithId(user *mailer.User, templateId string, templateData map[string]string, languages ...string) (subject string, body hermes.Body) {
+// PrepareSimpleBody builds a simple hermes.Body with pre-translated Name, Greeting and Signature
+func PrepareSimpleBody(ctx context.Context, user *mailer.User, languages ...string) hermes.Body {
+	configs := GetApplicationConfig(ctx, languages...)
+	body := hermes.Body{
+		Name:      user.Name,
+		Greeting:  configs.Greeting,
+		Signature: configs.Signature,
+	}
+	if user.Name == "" {
+		body.Name = user.Address
+	}
+	return body
+}
 
-	T := lang.Bundle().GetTranslationFunc(languages...)
-	configs := GetApplicationConfig(languages...)
+// BuildTemplateWithId prepares a hermes.Body from a templateId
+func BuildTemplateWithId(ctx context.Context, user *mailer.User, templateId string, templateData map[string]string, languages ...string) (subject string, body hermes.Body) {
+
+	T := lang.Bundle().T(languages...)
+	configs := GetApplicationConfig(ctx, languages...)
 	var intros, outros []string
 	var actions []hermes.Action
 	if templateData == nil {

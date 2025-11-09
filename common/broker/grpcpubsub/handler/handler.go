@@ -21,7 +21,10 @@
 package handler
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +32,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	pb "github.com/pydio/cells/v4/common/proto/broker"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	pb "github.com/pydio/cells/v5/common/proto/broker"
 )
 
 var (
@@ -72,7 +75,7 @@ func (h *Handler) Publish(stream pb.Broker_PublishServer) error {
 		}
 
 		for _, message := range req.Messages {
-			if err := h.broker.PublishRaw(stream.Context(), req.Topic, message.Body, message.Header); err != nil {
+			if err := h.broker.PublishRaw(stream.Context(), path.Base(req.Topic), message.Body, message.Header); err != nil {
 				return err
 			}
 		}
@@ -83,9 +86,9 @@ func (h *Handler) Publish(stream pb.Broker_PublishServer) error {
 func (h *Handler) Subscribe(stream pb.Broker_SubscribeServer) error {
 	subPID := ""
 	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
-		subPID = strings.Join(md["subscriberid"], "")
+		subPID = strings.Join(md["cells-subscriber-id"], "")
 	}
-
+	mutex := &sync.Mutex{}
 	for {
 		req, err := stream.Recv()
 		if err != nil {
@@ -102,7 +105,7 @@ func (h *Handler) Subscribe(stream pb.Broker_SubscribeServer) error {
 		topicsLock.RLock()
 		if sub, ok := topics[topicKey]; ok {
 			//fmt.Println("Receive subscribe on", topicKey, "from", subPID, "appending stream to existing subscription")
-			sub.streams = append(sub.streams, streamWithReqId{id: id, stream: stream})
+			sub.streams = append(sub.streams, newStreamWithReqId(id, mutex, stream))
 			defer sub.removeStreamById(id)
 			topicsLock.RUnlock()
 			continue
@@ -112,11 +115,13 @@ func (h *Handler) Subscribe(stream pb.Broker_SubscribeServer) error {
 
 		//fmt.Println("Receive subscribe on", topicKey, "from", subPID, "creating new internal subscription")
 		sub := &subscriber{
-			subPID:  subPID,
-			topic:   topicKey,
-			queue:   queue,
-			ch:      make(chan *pb.SubscribeResponse),
-			streams: []streamWithReqId{{id: id, stream: stream}},
+			subPID: subPID,
+			topic:  topicKey,
+			queue:  queue,
+			ch:     make(chan *pb.SubscribeResponse),
+			streams: []streamWithReqId{
+				newStreamWithReqId(id, mutex, stream),
+			},
 		}
 		topicsLock.Lock()
 		topics[topicKey] = sub
@@ -128,7 +133,7 @@ func (h *Handler) Subscribe(stream pb.Broker_SubscribeServer) error {
 		if queue != "" {
 			oo = append(oo, broker.Queue(queue))
 		}
-		unSub, e := h.broker.Subscribe(stream.Context(), topic, func(msg broker.Message) error {
+		unSub, e := h.broker.Subscribe(stream.Context(), topic, func(ctx context.Context, msg broker.Message) error {
 			var target = &pb.Message{}
 			target.Header, target.Body = msg.RawData()
 			sub.ch <- &pb.SubscribeResponse{
@@ -144,9 +149,18 @@ func (h *Handler) Subscribe(stream pb.Broker_SubscribeServer) error {
 	}
 }
 
+func newStreamWithReqId(id string, m *sync.Mutex, stream pb.Broker_SubscribeServer) streamWithReqId {
+	return streamWithReqId{
+		Broker_SubscribeServer: stream,
+		Mutex:                  m,
+		id:                     id,
+	}
+}
+
 type streamWithReqId struct {
-	id     string
-	stream pb.Broker_SubscribeServer
+	*sync.Mutex
+	pb.Broker_SubscribeServer
+	id string
 }
 
 type subscriber struct {
@@ -175,6 +189,8 @@ func (s *subscriber) dispatch() {
 }
 
 func (s *subscriber) sendWithWarning(streamer streamWithReqId, message *pb.SubscribeResponse) {
+	streamer.Lock()
+	defer streamer.Unlock() // Unlock streamer anyway
 	done := make(chan bool)
 	defer close(done)
 	go func() {
@@ -182,14 +198,14 @@ func (s *subscriber) sendWithWarning(streamer streamWithReqId, message *pb.Subsc
 		case <-done:
 			return
 		case <-time.After(30 * time.Second):
-			fmt.Println("GRPC broker stream.Send stuck after 30s", "subscriber was "+s.subPID)
+			fmt.Println("GRPC broker stream.Send stuck after 30s", "subscriber was "+s.subPID+":"+s.topic)
 			return
 		}
 	}()
 	cop := proto.Clone(message).(*pb.SubscribeResponse)
 	cop.Id = streamer.id
-	if er := streamer.stream.Send(cop); er != nil {
-		fmt.Println("There was an error while sending to stream")
+	if er := streamer.Send(cop); er != nil {
+		fmt.Println(os.Getpid(), "Grpc.sendWithWarning: there was an error while sending to stream : "+er.Error())
 	}
 }
 
@@ -209,7 +225,9 @@ func (s *subscriber) removeStreamById(id string) {
 
 func (s *subscriber) unregister() {
 	//fmt.Println("Grpc Handler : unregistering dispatcher", s.topic)
-	s.unsub()
+	if s.unsub != nil {
+		s.unsub()
+	}
 	topicsLock.Lock()
 	defer topicsLock.Unlock()
 	delete(topics, s.topic)

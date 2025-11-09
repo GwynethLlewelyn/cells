@@ -23,7 +23,6 @@ package mc
 import (
 	"context"
 	"io"
-	"io/ioutil"
 	"math"
 	"sort"
 	"sync"
@@ -31,9 +30,9 @@ import (
 	minio "github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 // minPartSize - minimum part size 64MiB per object after which
@@ -67,7 +66,7 @@ func (c *Client) CopyObjectMultipartThreshold() int64 {
 func (c *Client) CopyObjectMultipart(ctx context.Context, srcObject models.ObjectInfo, srcBucket, srcPath, destBucket, destPath string, meta map[string]string, progress io.Reader) error {
 	log.Logger(ctx).Debug("Entering MultipartUpload for COPY")
 	if meta != nil {
-		ctx = metadata.WithAdditionalMetadata(ctx, meta)
+		ctx = propagator.WithAdditionalMetadata(ctx, meta)
 	}
 	// We have to use multipart copy
 	uploadID, err := c.mc.NewMultipartUpload(ctx, destBucket, destPath, minio.PutObjectOptions{UserMetadata: meta})
@@ -75,7 +74,7 @@ func (c *Client) CopyObjectMultipart(ctx context.Context, srcObject models.Objec
 		log.Logger(ctx).Error("New Multipart Error", zap.Error(err))
 		return err
 	}
-	partSize := srcObject.Size / 10
+
 	totalPartsCount, partSize, lastPartSize := optimalPartInfo(srcObject.Size)
 	var parts []minio.CompletePart
 	queue := make(chan struct{}, 15)
@@ -103,7 +102,7 @@ func (c *Client) CopyObjectMultipart(ctx context.Context, srcObject models.Objec
 				log.Logger(ctx).Error("CopyObjectPart Error - other parts will be ignored", zap.Error(err))
 				copyErr = er
 			} else if progress != nil {
-				_, _ = io.CopyN(ioutil.Discard, progress, length)
+				_, _ = io.CopyN(io.Discard, progress, length)
 			}
 			parts = append(parts, p)
 		}(i)

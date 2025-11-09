@@ -21,129 +21,244 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"os"
+	"path"
+	"regexp"
+	runtime2 "runtime"
 	"runtime/debug"
-	"strconv"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"text/template"
 	"time"
 
-	"github.com/pydio/cells/v4/common/config"
-
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client"
-	clientcontext "github.com/pydio/cells/v4/common/client/context"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
-	servercontext "github.com/pydio/cells/v4/common/server/context"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/context/ckeys"
-	"github.com/pydio/cells/v4/common/service/metrics"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/telemetry/metrics"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+
+	_ "google.golang.org/grpc/xds"
 )
 
 type ctxBalancerFilterKey struct{}
 
 var (
-	CallTimeoutShort         = 1 * time.Second
-	WarnMissingConnInContext = false
+	CallTimeoutShort    = 1 * time.Second
+	serviceTransformers []ServiceTransformer
 )
 
-func DialOptionsForRegistry(reg registry.Registry, options ...grpc.DialOption) []grpc.DialOption {
+type ServiceTransformer func(context.Context, string) (string, []string, bool)
 
-	var clusterConfig *client.ClusterConfig
-	config.Get("cluster").Default(&client.ClusterConfig{}).Scan(&clusterConfig)
-	clientConfig := clusterConfig.GetClientConfig("grpc")
-
-	backoffConfig := backoff.DefaultConfig
-
-	return append([]grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithResolvers(NewBuilder(reg, clientConfig.LBOptions()...)),
-		grpc.WithConnectParams(grpc.ConnectParams{MinConnectTimeout: 1 * time.Minute, Backoff: backoffConfig}),
-		grpc.WithChainUnaryInterceptor(
-			servicecontext.SpanUnaryClientInterceptor(),
-			MetaUnaryClientInterceptor(),
-		),
-		grpc.WithChainStreamInterceptor(
-			servicecontext.SpanStreamClientInterceptor(),
-			MetaStreamClientInterceptor(),
-		),
-	}, options...)
+func RegisterServiceTransformer(transformer ServiceTransformer) {
+	serviceTransformers = append(serviceTransformers, transformer)
 }
 
-func GetClientConnFromCtx(ctx context.Context, serviceName string, opt ...Option) grpc.ClientConnInterface {
-	if ctx == nil {
-		return NewClientConn(serviceName, opt...)
-	}
-	conn := clientcontext.GetClientConn(ctx)
-	if conn == nil && WarnMissingConnInContext {
-		fmt.Println("Warning, GetClientConnFromCtx could not find conn, will create a new one")
-		debug.PrintStack()
-	}
-	reg := servercontext.GetRegistry(ctx)
-	opt = append(opt, WithClientConn(conn))
-	opt = append(opt, WithRegistry(reg))
+func ResolveConn(ctx context.Context, serviceName string, opt ...Option) grpc.ClientConnInterface {
 
-	return NewClientConn(serviceName, opt...)
-}
+	if cc, ok := mox[serviceName]; ok {
+		return cc
+	}
 
-// NewClientConn returns a client attached to the defaults.
-func NewClientConn(serviceName string, opt ...Option) grpc.ClientConnInterface {
+	var headerKVs []string
+	for _, tr := range serviceTransformers {
+		if newServiceName, headers, ok := tr(ctx, serviceName); ok {
+			serviceName = newServiceName
+			headerKVs = append(headerKVs, headers...)
+		}
+	}
+
 	opts := new(Options)
 	for _, o := range opt {
 		o(opts)
 	}
 
-	if c, o := mox[strings.TrimPrefix(serviceName, common.ServiceGrpcNamespace_)]; o {
-		return c
+	cc := &clientConn{
+		callTimeout:    opts.CallTimeout,
+		balancerFilter: opts.BalancerFilter,
+		silentNotFound: opts.SilentNotFound,
+		serviceName:    serviceName,
+		headerKVs:      headerKVs,
+		lock:           &sync.Mutex{},
 	}
 
-	if opts.ClientConn == nil || opts.DialOptions != nil {
-		if opts.Registry == nil {
-			reg, err := registry.OpenRegistry(context.Background(), runtime.RegistryURL())
-			if err != nil {
-				return nil
-			}
-
-			opts.Registry = reg
-		}
-		conn, err := grpc.Dial("cells:///", DialOptionsForRegistry(opts.Registry, opts.DialOptions...)...)
-		if err != nil {
-			return nil
-		}
-		opts.ClientConn = conn
-	}
-
-	return &clientConn{
-		callTimeout:         opts.CallTimeout,
-		ClientConnInterface: opts.ClientConn,
-		balancerFilter:      opts.BalancerFilter,
-		serviceName:         common.ServiceGrpcNamespace_ + strings.TrimPrefix(serviceName, common.ServiceGrpcNamespace_),
-	}
+	return cc
 }
 
 type clientConn struct {
-	grpc.ClientConnInterface
+	conn atomic.Value
+	// grpc.ClientConnInterface
 	serviceName    string
+	headerKVs      []string
 	callTimeout    time.Duration
 	balancerFilter client.BalancerTargetFilter
+	silentNotFound bool
+
+	lock *sync.Mutex
+}
+
+func (cc *clientConn) resolveConn(ctx context.Context) error {
+	cc.lock.Lock()
+	defer cc.lock.Unlock()
+
+	var reg registry.Registry
+	propagator.Get(ctx, registry.ContextKey, &reg)
+
+	if reg == nil {
+		debug.PrintStack()
+		return errors.New("no registry found")
+	}
+
+	templates := make(map[string]*template.Template)
+	getTpl := func(filter string) (*template.Template, error) {
+		if t, ok := templates[filter]; ok {
+			return t, nil
+		}
+		t, er := template.New(filter).Parse(filter)
+		if er != nil {
+			return nil, er
+		}
+		templates[filter] = t
+		return t, nil
+	}
+
+	connPoolItems, err := reg.List(
+		registry.WithType(pb.ItemType_GENERIC),
+		registry.WithFilter(func(item registry.Item) bool {
+			// Retrieving server services information to see which services we need to start
+			if b, ok := item.Metadata()["services"]; ok {
+				var sm []map[string]string
+				if err := json.Unmarshal([]byte(b), &sm); err != nil {
+					return false
+				}
+				for _, smm := range sm {
+					if filter, ok := smm["filter"]; ok {
+						tmpl, err := getTpl(filter)
+						if err != nil {
+							return false
+						}
+
+						var buf bytes.Buffer
+						if err := tmpl.Execute(&buf, struct {
+							Name string
+						}{
+							Name: cc.serviceName,
+						}); err != nil {
+							return false
+						}
+
+						f := strings.SplitN(buf.String(), " ", 3)
+						var fn func(string, []byte) (bool, error)
+						switch f[1] {
+						case "=":
+						case "~=":
+							fn = regexp.Match
+						}
+
+						if fn != nil {
+							match, err := fn(f[2], []byte(f[0]))
+							if err != nil {
+								return false
+							}
+
+							if !match {
+								return false
+							}
+						}
+					}
+				}
+			} else {
+				return false
+			}
+
+			return true
+		}),
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if len(connPoolItems) != 1 {
+		return errors.New("ResolveConn called with multiple services")
+	}
+
+	var pool *openurl.Pool[grpc.ClientConnInterface]
+	if !connPoolItems[0].As(&pool) {
+		return errors.New("should be a connection")
+	}
+
+	conn, err := pool.Get(ctx)
+	if err != nil {
+		return errors.New("connection should be valid")
+	}
+
+	cc.conn.Store(conn)
+
+	return nil
+}
+
+func (cc *clientConn) getConn(ctx context.Context) (grpc.ClientConnInterface, error) {
+	conn := cc.conn.Load()
+	if conn != nil {
+		return conn.(grpc.ClientConnInterface), nil
+	}
+
+	if err := cc.resolveConn(ctx); err != nil {
+		return nil, err
+	}
+
+	return cc.getConn(ctx)
 }
 
 // Invoke performs a unary RPC and returns after the response is received
 // into reply.
 func (cc *clientConn) Invoke(ctx context.Context, method string, args interface{}, reply interface{}, opts ...grpc.CallOption) error {
+
+	conn, err := cc.getConn(ctx)
+	if err != nil {
+		return err
+	}
+
 	opts = append([]grpc.CallOption{
 		grpc.WaitForReady(true),
 	}, opts...)
 
-	ctx = metadata.AppendToOutgoingContext(ctx, ckeys.TargetServiceName, cc.serviceName)
+	if len(cc.headerKVs) > 0 {
+		for i := 0; i < len(cc.headerKVs)-1; i = i + 2 {
+			ctx = metadata.AppendToOutgoingContext(ctx, cc.headerKVs[i], cc.headerKVs[i+1])
+		}
+	}
+
+	ctx = metadata.AppendToOutgoingContext(ctx, common.CtxTargetServiceName, cc.serviceName)
+	if pc, file, line, ok := runtime2.Caller(2); ok {
+		var fName string
+		if fDesc := runtime2.FuncForPC(pc); fDesc != nil {
+			fName = ":" + path.Base(fDesc.Name()) + "()"
+		}
+		thisCaller := fmt.Sprintf("%s:%d%s", file, line, fName)
+		if prev := metadata.ValueFromIncomingContext(ctx, common.CtxGrpcClientCaller); len(prev) > 0 {
+			prev = append(prev, thisCaller)
+			thisCaller = strings.Join(prev, "|")
+		}
+		ctx = metadata.AppendToOutgoingContext(ctx, common.CtxGrpcClientCaller, thisCaller)
+	}
+
+	if cc.silentNotFound {
+		ctx = metadata.AppendToOutgoingContext(ctx, common.CtxGrpcSilentNotFound, "true")
+	}
+
 	var cancel context.CancelFunc
 	if cc.callTimeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, cc.callTimeout)
@@ -151,7 +266,7 @@ func (cc *clientConn) Invoke(ctx context.Context, method string, args interface{
 	if cc.balancerFilter != nil {
 		ctx = context.WithValue(ctx, ctxBalancerFilterKey{}, cc.balancerFilter)
 	}
-	er := cc.ClientConnInterface.Invoke(ctx, method, args, reply, opts...)
+	er := conn.Invoke(ctx, method, args, reply, opts...)
 	if er != nil && cancel != nil {
 		cancel()
 	}
@@ -165,12 +280,30 @@ var (
 
 // NewStream begins a streaming RPC.
 func (cc *clientConn) NewStream(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+	conn, err := cc.getConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	opts = append([]grpc.CallOption{
 		grpc.WaitForReady(true),
 	}, opts...)
 
-	ctx = metadata.AppendToOutgoingContext(ctx, ckeys.TargetServiceName, cc.serviceName)
-	ctx = metadata.AppendToOutgoingContext(ctx, "SubscriberId", strconv.Itoa(os.Getpid()))
+	if len(cc.headerKVs) > 0 {
+		for i := 0; i < len(cc.headerKVs)-1; i = i + 2 {
+			ctx = metadata.AppendToOutgoingContext(ctx, cc.headerKVs[i], cc.headerKVs[i+1])
+		}
+	}
+
+	ctx = metadata.AppendToOutgoingContext(ctx, common.CtxTargetServiceName, cc.serviceName)
+	if pc, file, line, ok := runtime2.Caller(2); ok {
+		var fName string
+		if fDesc := runtime2.FuncForPC(pc); fDesc != nil {
+			fName = ":" + path.Base(fDesc.Name()) + "()"
+		}
+		ctx = metadata.AppendToOutgoingContext(ctx, common.CtxGrpcClientCaller, fmt.Sprintf("%s:%d%s", file, line, fName))
+	}
+
 	var cancel context.CancelFunc
 	if cc.callTimeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, cc.callTimeout)
@@ -179,20 +312,29 @@ func (cc *clientConn) NewStream(ctx context.Context, desc *grpc.StreamDesc, meth
 		ctx = context.WithValue(ctx, ctxBalancerFilterKey{}, cc.balancerFilter)
 	}
 
-	s, e := cc.ClientConnInterface.NewStream(ctx, desc, method, opts...)
+	s, e := conn.NewStream(ctx, desc, method, opts...)
 	if e != nil && cancel != nil {
 		cancel()
 	}
 	if e == nil {
 		// Prepare gauges
 		key := cc.serviceName + desc.StreamName
-		scope := metrics.GetMetrics().Tagged(map[string]string{"target": cc.serviceName, "method": desc.StreamName})
-		gauge := scope.Gauge("open_streams")
-		pri := true
-		if cc.serviceName == "pydio.grpc.broker" || cc.serviceName == "pydio.grpc.log" || cc.serviceName == "pydio.grpc.audit" ||
-			cc.serviceName == "pydio.grpc.jobs" || cc.serviceName == "pydio.grpc.registry" || desc.StreamName == "StreamChanges" {
-			pri = false
+		scope := metrics.TaggedHelper(map[string]string{"target": cc.serviceName, "method": desc.StreamName})
+		gauge := scope.Gauge("open_streams", "Number of GRPC streams currently open")
+		pri := common.LogLevel == zapcore.DebugLevel
+		silentServices := []string{
+			"pydio.grpc.broker",
+			"pydio.grpc.log",
+			"pydio.grpc.audit",
+			"pydio.grpc.jobs",
+			"pydio.grpc.registry",
+			"pydio.grpc.config",
 		}
+		silentStreams := []string{
+			"StreamChanges",
+			"PostNodeChanges",
+		}
+		pri = !(slices.Contains(silentServices, cc.serviceName) || slices.Contains(silentStreams, desc.StreamName))
 
 		clientRCL.Lock()
 		clientRC[key]++

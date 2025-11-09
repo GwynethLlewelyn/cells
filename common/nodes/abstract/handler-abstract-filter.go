@@ -31,47 +31,52 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/cache"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
 )
+
+var rootNodesCacheConfig = cache.Config{
+	Prefix:      "nodes/root-nodes",
+	Eviction:    "10s",
+	CleanWindow: "60s",
+}
 
 // BranchFilter is a ready-made Handler that can be used by all handlers that just modify the path in one way
 // or another before forwarding calls to Next handler.
 type BranchFilter struct {
 	Handler
-	InputMethod    nodes.FilterFunc
-	OutputMethod   nodes.FilterFunc
-	RootNodesCache cache.Cache
+	InputMethod  nodes.FilterFunc
+	OutputMethod nodes.FilterFunc
 }
 
-func (v *BranchFilter) LookupRoot(uuid string) (*tree.Node, error) {
+func (v *BranchFilter) LookupRoot(ctx context.Context, uuid string) (*tree.Node, error) {
 
-	if virtualNode, exists := GetVirtualNodesManager(v.RuntimeCtx).ByUuid(uuid); exists {
+	if virtualNode, exists := GetVirtualProvider().ByUuid(ctx, uuid); exists {
 		return virtualNode, nil
 	}
 
-	if v.RootNodesCache == nil {
-		c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=10s&cleanWindow=60s")
-		v.RootNodesCache = c
-	}
+	ca, _ := cache_helper.ResolveCache(ctx, common.CacheTypeLocal, rootNodesCacheConfig)
 
 	var n *tree.Node
-	if v.RootNodesCache.Get(uuid, &n) {
+	if ca != nil && ca.Get(uuid, &n) {
 		return n, nil
 	}
 
-	resp, err := v.ClientsPool.GetTreeClient().ReadNode(context.Background(), &tree.ReadNodeRequest{Node: &tree.Node{
+	resp, err := nodes.GetSourcesPool(ctx).GetTreeClient().ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{
 		Uuid: uuid,
 	}})
 	if err != nil {
 		return nil, err
 	}
-	v.RootNodesCache.Set(uuid, resp.Node)
+	if ca != nil {
+		_ = ca.Set(uuid, resp.Node)
+	}
 
 	return resp.Node, nil
 }
@@ -92,10 +97,10 @@ func (v *BranchFilter) MakeRootKey(rNode *tree.Node) string {
 	return rand[0:8] + "-" + rNode.GetStringMeta("name")
 }
 
-func (v *BranchFilter) GetRootKeys(rootNodes []string) (map[string]*tree.Node, error) {
+func (v *BranchFilter) GetRootKeys(ctx context.Context, rootNodes []string) (map[string]*tree.Node, error) {
 	list := make(map[string]*tree.Node, len(rootNodes))
 	for _, root := range rootNodes {
-		if rNode, err := v.LookupRoot(root); err == nil {
+		if rNode, err := v.LookupRoot(ctx, root); err == nil {
 			list[v.MakeRootKey(rNode)] = rNode
 		} else {
 			return list, err
@@ -105,11 +110,11 @@ func (v *BranchFilter) GetRootKeys(rootNodes []string) (map[string]*tree.Node, e
 }
 
 func (v *BranchFilter) updateInputBranch(ctx context.Context, identifier string, node *tree.Node) (context.Context, error) {
-	return ctx, errors.New("not.implemented", "Abstract Method Not Implemented", 500)
+	return ctx, errors.WithStack(errors.StatusNotImplemented)
 }
 
 func (v *BranchFilter) updateOutputNode(ctx context.Context, identifier string, node *tree.Node) (context.Context, error) {
-	return ctx, errors.New("not.implemented", "Abstract Method Not Implemented", 500)
+	return ctx, errors.WithStack(errors.StatusNotImplemented)
 }
 
 func (v *BranchFilter) ExecuteWrapped(inputFilter nodes.FilterFunc, outputFilter nodes.FilterFunc, provider nodes.CallbackFunc) error {
@@ -172,8 +177,8 @@ func (v *BranchFilter) ListNodes(ctx context.Context, in *tree.ListNodesRequest,
 		for {
 			resp, err := stream.Recv()
 			if err != nil {
-				if err != io.EOF && err != io.ErrUnexpectedEOF {
-					s.SendError(err)
+				if !errors.IsStreamFinished(err) {
+					_ = s.SendError(err)
 				}
 				break
 			}
@@ -185,7 +190,7 @@ func (v *BranchFilter) ListNodes(ctx context.Context, in *tree.ListNodesRequest,
 			} else {
 				resp.Node = out
 			}
-			s.Send(resp)
+			_ = s.Send(resp)
 		}
 	}()
 	return s, nil
@@ -303,25 +308,25 @@ func (v *BranchFilter) GetObject(ctx context.Context, node *tree.Node, requestDa
 	return v.Next.GetObject(ctx, filtered, requestData)
 }
 
-func (v *BranchFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (v *BranchFilter) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	ctx, filtered, err := v.InputMethod(ctx, node, "in")
 	if err != nil {
-		return 0, err
+		return models.ObjectInfo{}, err
 	}
 	return v.Next.PutObject(ctx, filtered, reader, requestData)
 }
 
-func (v *BranchFilter) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (v *BranchFilter) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 
 	var outF, outT *tree.Node
 	var e error
 	ctx, outF, e = v.InputMethod(ctx, from, "from")
 	if e != nil {
-		return 0, e
+		return models.ObjectInfo{}, e
 	}
 	ctx, outT, e = v.InputMethod(ctx, to, "to")
 	if e != nil {
-		return 0, e
+		return models.ObjectInfo{}, e
 	}
 
 	return v.Next.CopyObject(ctx, outF, outT, requestData)
@@ -366,4 +371,16 @@ func (v *BranchFilter) MultipartListObjectParts(ctx context.Context, target *tre
 		return models.ListObjectPartsResult{}, err
 	}
 	return v.Next.MultipartListObjectParts(ctx, filtered, uploadID, partNumberMarker, maxParts)
+}
+
+func (v *BranchFilter) MultipartList(ctx context.Context, prefix string, requestData *models.MultipartRequestData) (models.ListMultipartUploadsResult, error) {
+	if prefix == "" {
+		return models.ListMultipartUploadsResult{}, nil
+	}
+	target := &tree.Node{Path: prefix}
+	ctx, _, err := v.InputMethod(ctx, target, "in")
+	if err != nil {
+		return models.ListMultipartUploadsResult{}, err
+	}
+	return v.Next.MultipartList(ctx, prefix, requestData)
 }

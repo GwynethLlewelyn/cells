@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
+	"github.com/pydio/cells/v5/common"
 )
 
 const (
@@ -38,6 +38,15 @@ const (
 	MetaFilterSize      = "size"
 	MetaFilterETag      = "etag"
 	MetaFilterDepth     = "depth"
+
+	MetaSortTime   = "mtime"
+	MetaSortSize   = "size"
+	MetaSortName   = "name"
+	MetaSortNameCI = "name_ci"
+	MetaSortMPath  = "mpath1,mpath2,mpath3,mpath4"
+	MetaSortType   = "leaf"
+	// MetaSortNatural sorts first by folders then by names
+	MetaSortNatural = "natural"
 )
 
 var (
@@ -51,6 +60,11 @@ type cmp struct {
 	val   int64
 }
 
+func ValidSortField(sortField string) bool {
+	return sortField == MetaSortName || sortField == MetaSortNameCI || sortField == MetaSortTime || sortField == MetaSortSize ||
+		sortField == MetaSortType || sortField == MetaSortMPath || sortField == MetaSortNatural
+}
+
 // MetaFilter holds specific filtering conditions, generally transformed from standard
 // search queries to basic Listing options.
 type MetaFilter struct {
@@ -62,6 +76,19 @@ type MetaFilter struct {
 	negativeGrep *regexp.Regexp
 	eTag         *regexp.Regexp
 	intComps     []cmp
+
+	sortField string
+	sortDesc  bool
+}
+
+// FilterBuilder interfaces a DB clause builder
+type FilterBuilder interface {
+	// And appends an AND query
+	And(query interface{}, args ...interface{})
+	// OrderBy appends an ORDER BY instruction
+	OrderBy(fieldName string, dir string)
+	// Ors creates a combined query of ORS
+	Ors(queries []string, args []interface{}) interface{}
 }
 
 // NewMetaFilter creates a meta filter looking for request node metadata specific keys.
@@ -105,9 +132,65 @@ func (m *MetaFilter) LimitDepth() int {
 	return 0
 }
 
+// Build uses appends all clauses to a FilterBuilder
+func (m *MetaFilter) Build(builder FilterBuilder) {
+
+	if m.grep != nil && !m.forceGrep {
+		m.grepToLikes("name", m.reqNode.GetStringMeta(MetaFilterGrep), false, builder)
+	}
+	if m.negativeGrep != nil {
+		m.grepToLikes("name", m.reqNode.GetStringMeta(MetaFilterNoGrep), true, builder)
+	}
+	if m.eTag != nil {
+		m.grepToLikes("etag", m.reqNode.GetStringMeta(MetaFilterETag), false, builder)
+	}
+	if m.filterType != NodeType_UNKNOWN {
+		if m.filterType == NodeType_LEAF {
+			builder.And("leaf = ?", 1)
+		} else {
+			builder.And("leaf = ?", 2)
+		}
+	}
+	for _, c := range m.intComps {
+		field := c.field
+		if c.field == MetaFilterTime {
+			field = "mtime"
+		}
+		comp := c.dir
+		if c.eq {
+			comp += "="
+		}
+		builder.And(field+" "+comp+" ?", c.val)
+	}
+
+	// Add orderBy
+	if m.sortField != "" {
+		if m.sortField == MetaSortNatural {
+			builder.OrderBy("leaf", "DESC")
+			builder.OrderBy("LOWER(name)", "ASC")
+		} else {
+			sortDesc := m.sortDesc
+			if m.sortField == MetaSortType { // Switch for backward compat on "leaf" : v4 was 0/1, v5 is 1/2
+				sortDesc = !sortDesc
+			}
+			dir := "ASC"
+			if sortDesc {
+				dir = "DESC"
+			}
+			if m.sortField == MetaSortNameCI {
+				builder.OrderBy("LOWER(name)", dir)
+			} else {
+				builder.OrderBy(m.sortField, dir)
+			}
+		}
+	}
+	return
+
+}
+
 // HasSQLFilters returns true if MetaFilter has one of grep (unless forced), negativeGrep, filterType or int comparators set.
 func (m *MetaFilter) HasSQLFilters() bool {
-	return (m.grep != nil && !m.forceGrep) || m.negativeGrep != nil || m.filterType != NodeType_UNKNOWN || len(m.intComps) > 0 || m.eTag != nil
+	return (m.grep != nil && !m.forceGrep) || m.negativeGrep != nil || m.filterType != NodeType_UNKNOWN || len(m.intComps) > 0 || m.eTag != nil || m.HasSort()
 }
 
 // ParseType register a node filter type
@@ -184,48 +267,32 @@ func (m *MetaFilter) Match(name string, n *Node) bool {
 	return true
 }
 
-// Where transforms registered conditions into a set of SQL statement (joined by AND).
-func (m *MetaFilter) Where() (where string, args []interface{}) {
-	var ww []string
-	if m.grep != nil && !m.forceGrep {
-		pp, aa := m.grepToLikes("name", m.reqNode.GetStringMeta(MetaFilterGrep), false)
-		ww = append(ww, pp)
-		args = append(args, aa...)
-	}
-	if m.negativeGrep != nil {
-		pp, aa := m.grepToLikes("name", m.reqNode.GetStringMeta(MetaFilterNoGrep), true)
-		ww = append(ww, pp)
-		args = append(args, aa...)
-	}
-	if m.eTag != nil {
-		pp, aa := m.grepToLikes("etag", m.reqNode.GetStringMeta(MetaFilterETag), false)
-		ww = append(ww, pp)
-		args = append(args, aa...)
-	}
-	if m.filterType != NodeType_UNKNOWN {
-		ww = append(ww, "leaf = ?")
-		if m.filterType == NodeType_LEAF {
-			args = append(args, 1)
-		} else {
-			args = append(args, 0)
+// AddSort adds a sort instruction
+func (m *MetaFilter) AddSort(defaultField, sortField string, sortDesc bool) {
+	var filtered []string
+	for _, f := range strings.Split(sortField, ",") {
+		f = strings.TrimSpace(f)
+		if ValidSortField(f) {
+			filtered = append(filtered, f)
 		}
 	}
-	for _, c := range m.intComps {
-		field := c.field
-		if c.field == MetaFilterTime {
-			field = "mtime"
-		}
-		comp := c.dir
-		if c.eq {
-			comp += "="
-		}
-		ww = append(ww, field+" "+comp+" ?")
-		args = append(args, c.val)
+	sortField = strings.Join(filtered, ",")
+	m.sortField = sortField
+	m.sortDesc = sortDesc
+	if m.sortDesc && m.sortField == "" {
+		m.sortField = defaultField
+	} else if m.sortField == defaultField && !sortDesc {
+		m.sortField = ""
+		m.sortDesc = false
 	}
-	return strings.Join(ww, " and "), args
 }
 
-func (m *MetaFilter) grepToLikes(field, g string, neg bool) (string, []interface{}) {
+// HasSort checks if sortField is not empty
+func (m *MetaFilter) HasSort() bool {
+	return m.sortField != ""
+}
+
+func (m *MetaFilter) grepToLikes(field, g string, neg bool, builder FilterBuilder) {
 	var parts []string
 	var arguments []interface{}
 	not := ""
@@ -233,26 +300,36 @@ func (m *MetaFilter) grepToLikes(field, g string, neg bool) (string, []interface
 		not = "NOT "
 	}
 	for _, p := range strings.Split(g, "|") {
-		parts = append(parts, field+" "+not+"LIKE ?")
-		arguments = append(arguments, m.grepToLike(p))
+		word, insensitive := m.grepToLike(p)
+		if insensitive {
+			parts = append(parts, "LOWER("+field+") "+not+"LIKE LOWER(?)")
+		} else {
+			parts = append(parts, field+" "+not+"LIKE ?")
+		}
+		arguments = append(arguments, word)
 	}
 	if len(parts) > 1 {
-		return "(" + strings.Join(parts, " OR ") + ")", arguments
+		if builder != nil {
+			builder.And(builder.Ors(parts, arguments))
+		}
 	} else {
-		return parts[0], arguments
+		if builder != nil {
+			builder.And(parts[0], arguments...)
+		}
 	}
 }
 
-func (m *MetaFilter) grepToLike(g string) string {
-	word := strings.ReplaceAll(g, "(?i)", "")
-	word = strings.Trim(word, "^$")
+func (m *MetaFilter) grepToLike(g string) (string, bool) {
+	insensitive := strings.Contains(g, "(?i)")
+	g = strings.ReplaceAll(g, "(?i)", "")
+	word := strings.Trim(g, "^$")
 	if !strings.HasPrefix(g, "^") {
 		word = "%" + word
 	}
 	if !strings.HasSuffix(g, "$") {
 		word += "%"
 	}
-	return word
+	return word, insensitive
 }
 
 type GeoJson struct {
@@ -261,7 +338,7 @@ type GeoJson struct {
 }
 
 type IndexableNode struct {
-	Node       `bson:"inline"`
+	*Node      `bson:"inline"`
 	ReloadCore bool `bson:"-"`
 	ReloadNs   bool `bson:"-"`
 
@@ -269,6 +346,7 @@ type IndexableNode struct {
 	Basename    string                 `bson:"basename"`
 	NodeType    string                 `bson:"node_type"`
 	Extension   string                 `bson:"extension"`
+	PathDepth   int                    `bson:"path_depth"`
 	TextContent string                 `bson:"text_content,omitempty"`
 	GeoPoint    map[string]interface{} `bson:"-"`                  // Used by Bleve
 	GeoJson     *GeoJson               `bson:"geo_json,omitempty"` // Used by Mongo
@@ -288,7 +366,7 @@ func (i *IndexableNode) MemLoad() {
 	i.Meta = i.AllMetaDeserialized(nil)
 	i.ModifTime = time.Unix(i.MTime, 0)
 	var basename string
-	i.GetMeta(common.MetaNamespaceNodeName, &basename)
+	_ = i.GetMeta(common.MetaNamespaceNodeName, &basename)
 	i.Basename = basename
 	if i.Type == 1 {
 		i.NodeType = "file"
@@ -296,12 +374,13 @@ func (i *IndexableNode) MemLoad() {
 	} else {
 		i.NodeType = "folder"
 	}
-	i.GetMeta(common.MetaNamespaceGeoLocation, &i.GeoPoint)
+	i.PathDepth = len(strings.Split(strings.Trim(i.Path, "/"), "/"))
+	_ = i.GetMeta(common.MetaNamespaceGeoLocation, &i.GeoPoint)
 	i.MetaStore = nil
 }
 
 func NewMemIndexableNode(n *Node) *IndexableNode {
-	i := &IndexableNode{Node: *n}
+	i := &IndexableNode{Node: n}
 	i.MemLoad()
 	return i
 }

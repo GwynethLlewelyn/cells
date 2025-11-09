@@ -26,25 +26,19 @@ import (
 
 	"github.com/ory/ladon"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/sql"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/service"
 )
 
+var Drivers = service.StorageDrivers{}
+
 type DAO interface {
-	sql.DAO
-	ladon.Warden
 	ladon.Manager
 
+	Migrate(ctx context.Context) error
+	MigrateLegacy(ctx context.Context) error
+	IsAllowed(ctx context.Context, r *ladon.Request) error
 	StorePolicyGroup(ctx context.Context, group *idm.PolicyGroup) (*idm.PolicyGroup, error)
-	ListPolicyGroups(ctx context.Context) ([]*idm.PolicyGroup, error)
+	ListPolicyGroups(ctx context.Context, filter string) ([]*idm.PolicyGroup, error)
 	DeletePolicyGroup(ctx context.Context, group *idm.PolicyGroup) error
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{DAO: v}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
 }

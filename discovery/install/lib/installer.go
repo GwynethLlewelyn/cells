@@ -24,19 +24,24 @@ package lib
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.uber.org/zap"
-	"net/url"
-	"time"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/install"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/install"
+	"github.com/pydio/cells/v5/common/proto/object"
+	sql2 "github.com/pydio/cells/v5/common/storage/sql"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 const (
@@ -59,7 +64,7 @@ func Install(ctx context.Context, c *install.InstallConfig, flags byte, publishe
 	publisher(&InstallProgressEvent{Message: "Starting installation now", Progress: 0})
 
 	if (flags&InstallAll) != 0 || (flags&InstallConfig) != 0 {
-		if err := actionConfigsSet(c); err != nil {
+		if err := actionConfigsSet(ctx, c); err != nil {
 			log.Logger(ctx).Error("Error while getting ports", zap.Error(err))
 			return err
 		}
@@ -67,7 +72,7 @@ func Install(ctx context.Context, c *install.InstallConfig, flags byte, publishe
 	}
 
 	if (flags&InstallAll) != 0 || (flags&InstallDb) != 0 {
-		if err := actionDatabaseAdd(c, flags); err != nil {
+		if err := actionDatabaseAdd(ctx, c, flags); err != nil {
 			log.Logger(ctx).Error("Error while adding database", zap.Error(err))
 			return err
 		}
@@ -75,7 +80,7 @@ func Install(ctx context.Context, c *install.InstallConfig, flags byte, publishe
 	}
 
 	if (flags&InstallAll) != 0 || (flags&InstallDs) != 0 {
-		if err := actionDatasourceAdd(c); err != nil {
+		if err := actionDatasourceAdd(ctx, c); err != nil {
 			log.Logger(ctx).Error("Error while adding datasource", zap.Error(err))
 			return err
 		}
@@ -83,7 +88,7 @@ func Install(ctx context.Context, c *install.InstallConfig, flags byte, publishe
 	}
 
 	if (flags&InstallAll) != 0 || (flags&InstallFrontend) != 0 {
-		if err := actionFrontendsAdd(c); err != nil {
+		if err := actionFrontendsAdd(ctx, c); err != nil {
 			log.Logger(ctx).Error("Error while creating logs directory", zap.Error(err))
 			return err
 		}
@@ -112,18 +117,26 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 			wrapError(e)
 			break
 		}
-		if e := checkConnection(dsn); e != nil {
+		DSN, err := sql2.NewStorageDSN(dsn)
+		if err != nil {
+			wrapError(err)
+			break
+		}
+		dbInfo, e := DSN.Check(ctx, true)
+		if e != nil {
 			wrapError(e)
 			break
 		}
-		jData := map[string]interface{}{"message": "successfully connected to database"}
-		if installExists, adminExists, err := checkCellsInstallExists(dsn); err == nil {
-			if installExists {
-				jData["tablesFound"] = true
-			}
-			if adminExists {
-				jData["adminFound"] = true
-			}
+		if e = specificVersionsChecks(ctx, DSN.Driver(), dbInfo); e != nil {
+			wrapError(e)
+			break
+		}
+		jData := map[string]interface{}{"message": fmt.Sprintf("successfully connected to server %s", dbInfo.DbVersion)}
+		if dbInfo.TablesFound {
+			jData["tablesFound"] = true
+		}
+		if dbInfo.AdminFound {
+			jData["adminFound"] = true
 		}
 		result.Success = true
 		data, _ := json.Marshal(jData)
@@ -132,7 +145,12 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 	case "MONGO":
 
 		// Create a new client and connect to the server
-		opts := options.Client().ApplyURI(c.DocumentsDSN)
+		testDSN := c.DocumentsDSN
+		if strings.Contains(testDSN, "srvScheme=true") {
+			testDSN = strings.Replace(testDSN, "srvScheme=true", "", 1)
+			testDSN = strings.Replace(testDSN, "mongodb://", "mongodb+srv://", 1)
+		}
+		opts := options.Client().ApplyURI(testDSN)
 		client, err := mongo.Connect(context.Background(), opts)
 		if err != nil {
 			wrapError(err)
@@ -152,8 +170,9 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 		result.JsonResult = string(data)
 
 	case "S3_KEYS":
-		endpoint := "s3.amazonaws.com"
+		endpoint := object.AmazonS3Endpoint
 		secure := true
+		isMinio := false
 		if c.GetDsS3Custom() != "" {
 			if u, e := url.Parse(c.GetDsS3Custom()); e != nil {
 				wrapError(e)
@@ -162,6 +181,9 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 				endpoint = u.Host
 				if u.Scheme == "http" {
 					secure = false
+				}
+				if u.Query().Get("minio") == "true" {
+					isMinio = true
 				}
 			}
 		}
@@ -172,6 +194,12 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 		cfData.Val("key").Set(c.GetDsS3ApiKey())
 		cfData.Val("secret").Set(c.GetDsS3ApiSecret())
 		cfData.Val("secure").Set(secure)
+		if r := c.GetDsS3CustomRegion(); r != "" {
+			cfData.Val("region").Set(r)
+		}
+		if isMinio {
+			cfData.Val("minioServer").Set(true)
+		}
 		mc, e := nodes.NewStorageClient(cfData)
 		if e != nil {
 			wrapError(e)
@@ -201,7 +229,7 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 		result.JsonResult = string(dd)
 
 	case "S3_BUCKETS":
-		endpoint := "s3.amazonaws.com"
+		endpoint := object.AmazonS3Endpoint
 		secure := true
 		if c.GetDsS3Custom() != "" {
 			if u, e := url.Parse(c.GetDsS3Custom()); e != nil {
@@ -264,7 +292,7 @@ func PerformCheck(ctx context.Context, name string, c *install.InstallConfig) (*
 
 	default:
 		result.Success = false
-		wrappedError = fmt.Errorf("unsupported check type " + name)
+		wrappedError = errors.New("unsupported check type " + name)
 		data, _ := json.Marshal(map[string]string{"error": "unsupported check type " + name})
 		result.JsonResult = string(data)
 

@@ -18,104 +18,180 @@
  * The latest code can be found at <https://pydio.com>.
  */
 
-package compose
+package compose_test
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config/mock"
-	"github.com/pydio/cells/v4/common/nodes"
-	nodescontext "github.com/pydio/cells/v4/common/nodes/context"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	omock "github.com/pydio/cells/v4/common/nodes/objects/mock"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/server/stubs/datatest"
-	"github.com/pydio/cells/v4/common/server/stubs/idmtest"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	_ "github.com/pydio/cells/v4/common/utils/cache/gocache"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	omock "github.com/pydio/cells/v5/common/nodes/objects/mock"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/server/stubs/datatest"
+	"github.com/pydio/cells/v5/common/server/stubs/idmtest"
+	"github.com/pydio/cells/v5/common/storage/sql"
+	"github.com/pydio/cells/v5/common/storage/test"
+	"github.com/pydio/cells/v5/common/utils/cache/gocache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	dcdao "github.com/pydio/cells/v5/data/docstore/dao/bleve"
+	metadao "github.com/pydio/cells/v5/data/meta/dao/sql"
+	idxdao "github.com/pydio/cells/v5/data/source/index/dao/sql"
+	acldao "github.com/pydio/cells/v5/idm/acl/dao/sql"
+	roledao "github.com/pydio/cells/v5/idm/role/dao/sql"
+	usrdao "github.com/pydio/cells/v5/idm/user/dao/sql"
+	wsdao "github.com/pydio/cells/v5/idm/workspace/dao/sql"
 
-	_ "github.com/mattn/go-sqlite3"
-	. "github.com/smartystreets/goconvey/convey"
-	"github.com/spf13/viper"
+	_ "github.com/pydio/cells/v5/common/utils/cache/gocache"
 	_ "gocloud.dev/pubsub/mempubsub"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestMain(m *testing.M) {
 
-	v := viper.New()
-	v.SetDefault(runtime.KeyCache, "pm://")
-	v.SetDefault(runtime.KeyShortCache, "pm://")
-	runtime.SetRuntime(v)
+	cache_helper.SetStaticResolver("pm://", &gocache.URLOpener{})
 
 	nodes.UseMockStorageClientType()
-
 	// Override default
 	nodes.RegisterStorageClient("mock", func(cfg configx.Values) (nodes.StorageClient, error) {
-		return omock.New("pydiods1", "personal", "cellsdata", "thumbnails", "versions"), nil
+		return mockClient, nil
 	})
-
-	if e := mock.RegisterMockConfig(); e != nil {
-		log.Fatal(e)
-	}
-
-	testData, er := idmtest.GetStartData()
-	if er != nil {
-		log.Fatal(er)
-	}
-
-	ds, er := datatest.NewDocStoreService()
-	if er != nil {
-		log.Fatal(er)
-	}
-	grpc.RegisterMock(common.ServiceDocStore, ds)
-
-	if er := datatest.RegisterTreeAndDatasources(); er != nil {
-		log.Fatal(er)
-	}
-	if er := idmtest.RegisterIdmMocksWithData(testData); er != nil {
-		log.Fatal(er)
-	}
 
 	m.Run()
 }
 
+var (
+	testServices = map[string]map[string]map[string]any{
+		common.ServiceUserGRPC: {
+			"sql": {
+				"func": usrdao.NewDAO,
+			},
+		},
+		common.ServiceRoleGRPC: {
+			"sql": {
+				"func": roledao.NewDAO,
+			},
+		},
+		common.ServiceAclGRPC: {
+			"sql": {
+				"func": acldao.NewDAO,
+			},
+		},
+		common.ServiceWorkspaceGRPC: {
+			"sql": {
+				"func": wsdao.NewDAO,
+			},
+		},
+		common.ServiceDocStoreGRPC: {
+			"dcbolt": {
+				"func": dcdao.NewBleveDAO,
+			},
+			"dcbleve": {
+				"func": dcdao.NewBleveDAO,
+			},
+		},
+		common.ServiceMetaGRPC: {
+			"sql": {
+				"func": metadao.NewMetaDAO,
+			},
+		},
+		common.ServiceTreeGRPC: {},
+	}
+	dss        = []string{"pydiods1", "personal", "cellsdata", "thumbnails", "versions"}
+	mockClient = omock.New(dss...)
+	testcases  []test.ServicesStorageTestCase
+)
+
+func init() {
+	tmpPath := os.TempDir()
+	unique := uuid.New()[:6] + "_"
+	sql.TestPrintQueries = false
+
+	for _, ds := range dss {
+		testServices[common.ServiceDataIndexGRPC_+ds] = map[string]map[string]any{"sql": {
+			"func":   idxdao.NewDAO,
+			"prefix": ds + "_",
+		}}
+	}
+
+	testcases = []test.ServicesStorageTestCase{
+		{
+			DSN: map[string]string{
+				"sql":     sql.SqliteDriver + "://" + sql.SharedMemDSN + "&hookNames=cleanTables&prefix=" + unique + "&policies=" + unique + "{{ .Meta.policies }}",
+				"dcbolt":  "boltdb://" + tmpPath + "/docstore-" + unique + ".db",
+				"dcbleve": "bleve://" + tmpPath + "/docstore-" + unique + ".bleve?rotationSize=-1",
+			},
+			Condition: os.Getenv("CELLS_TEST_SKIP_SQLITE") != "true",
+			Services:  testServices,
+			Label:     "Sqlite",
+		},
+	}
+	nodes.SetSourcesPoolOpener(func(ctx context.Context) *openurl.Pool[nodes.SourcesPool] {
+		return nodes.NewTestPoolWithDataSources(ctx, mockClient, dss...)
+	})
+}
+
 func TestPersonalResolution(t *testing.T) {
 
-	ctx := context.Background()
-	reg, _ := registry.OpenRegistry(ctx, "mem:///")
-	ctx = servicecontext.WithRegistry(ctx, reg)
-	ctx = nodescontext.WithSourcesPool(ctx, nodes.NewTestPool(ctx))
-	client := PathClient(ctx)
+	test.RunServicesTests(testcases, t, func(ctx context.Context) {
 
-	Convey("Test personal file", t, func() {
-		user, e := permissions.SearchUniqueUser(ctx, "admin", "")
-		So(e, ShouldBeNil)
-		userCtx := auth.WithImpersonate(ctx, user)
-		resp, e := client.ReadNode(userCtx, &tree.ReadNodeRequest{Node: &tree.Node{Path: "/personal-files"}})
-		So(e, ShouldBeNil)
-		t.Log("Output node is", resp.GetNode().Zap())
+		Convey("Setup Mock Data", t, func() {
+			sd, er := idmtest.GetStartData()
+			So(er, ShouldBeNil)
+			er = idmtest.RegisterIdmMocksWithData(ctx, sd)
+			So(er, ShouldBeNil)
+			er = datatest.RegisterDataServices(ctx)
+			So(er, ShouldBeNil)
 
-		cResp, e := client.CreateNode(userCtx, &tree.CreateNodeRequest{Node: &tree.Node{Path: "/personal-files/AdminFolder", Type: tree.NodeType_COLLECTION}})
-		So(e, ShouldBeNil)
-		t.Log("Created node is", cResp.GetNode().Zap())
+			// test docstore
+			dcc := docstore.NewDocStoreClient(grpc.ResolveConn(ctx, common.ServiceDocStoreGRPC))
+			dc, er := dcc.GetDocument(ctx, &docstore.GetDocumentRequest{
+				StoreID:    common.DocStoreIdVirtualNodes,
+				DocumentID: "my-files",
+			})
+			So(er, ShouldBeNil)
+			So(dc.Document, ShouldNotBeNil)
 
-		contentString := "content"
-		contentSize := int64(len(contentString))
-		written, er := client.PutObject(userCtx, &tree.Node{Path: "/personal-files/AdminFolder/file.txt"}, strings.NewReader(contentString), &models.PutRequestData{
-			Size: contentSize,
 		})
-		So(er, ShouldBeNil)
-		So(written, ShouldEqual, contentSize)
+
+		client := compose.PathClient()
+		Convey("Test personal file", t, func() {
+			user, e := permissions.SearchUniqueUser(ctx, "admin", "")
+			So(e, ShouldBeNil)
+			userCtx := auth.WithImpersonate(ctx, user)
+			resp, e := client.ReadNode(userCtx, &tree.ReadNodeRequest{Node: &tree.Node{Path: "/personal-files"}})
+			So(e, ShouldBeNil)
+			t.Log("Output node is", resp.GetNode().Zap())
+
+			cResp, e := client.CreateNode(userCtx, &tree.CreateNodeRequest{Node: &tree.Node{Path: "/personal-files/AdminFolder", Type: tree.NodeType_COLLECTION}})
+			So(e, ShouldBeNil)
+			t.Log("Created node is", cResp.GetNode().Zap())
+
+			contentString := "content"
+			contentSize := int64(len(contentString))
+			// Warning - if this fails with a path.not.writeable error, this might be linked to an issue in the stub
+			written, er := client.PutObject(userCtx, &tree.Node{Path: "/personal-files/AdminFolder/file.txt"}, strings.NewReader(contentString), &models.PutRequestData{
+				Size: contentSize,
+			})
+			if er != nil {
+				fmt.Printf("%+v", er)
+			}
+			So(er, ShouldBeNil)
+			So(written.Size, ShouldEqual, contentSize)
+		})
 	})
 
 }

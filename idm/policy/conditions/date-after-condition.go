@@ -27,7 +27,7 @@ import (
 	"github.com/ory/ladon"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 // DateAfterCondition is a condition which is fulfilled if the given time is after
@@ -38,7 +38,7 @@ type DateAfterCondition struct {
 
 // Fulfills returns true if the given value is a correctly formatted iso8601 time string
 // that represent a point in time after the specified time reference
-func (c *DateAfterCondition) Fulfills(value interface{}, _ *ladon.Request) bool {
+func (c *DateAfterCondition) Fulfills(ctx context.Context, value interface{}, _ *ladon.Request) bool {
 
 	if value == nil {
 		return false
@@ -46,13 +46,13 @@ func (c *DateAfterCondition) Fulfills(value interface{}, _ *ladon.Request) bool 
 
 	s, ok := value.(string)
 	if !ok {
-		log.Logger(context.Background()).Error("passed value must be a string", zap.Any("input param", value))
+		log.Logger(ctx).Error("passed value must be a string", zap.Any("input param", value))
 		return false
 	}
 
 	t, parseErr := time.Parse(timeLayout, s)
 	if parseErr != nil {
-		log.Logger(context.Background()).Error("cannot parse passed value. reference layout is "+timeLayout, zap.String("input param", s), zap.Error(parseErr))
+		log.Logger(ctx).Error("cannot parse passed value. reference layout is "+timeLayout, zap.String("input param", s), zap.Error(parseErr))
 		return false
 	}
 

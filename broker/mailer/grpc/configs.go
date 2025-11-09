@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
+ * Copyright (c) 2024. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
  *
  * Pydio Cells is free software: you can redistribute it and/or modify
@@ -21,14 +21,9 @@
 package grpc
 
 import (
-	"github.com/pydio/cells/v4/broker/mailer/lang"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/forms"
+	"github.com/pydio/cells/v5/broker/mailer/lang"
+	"github.com/pydio/cells/v5/common/forms"
 )
-
-func init() {
-	config.RegisterVaultKey("services/" + Name + "/sender/password")
-}
 
 var ExposedConfigs = &forms.Form{
 	I18NBundle: lang.Bundle(),
@@ -61,6 +56,13 @@ var ExposedConfigs = &forms.Form{
 					{"sender": "Mail.Config.FromCtlSender.Label"},
 					{"default": "Mail.Config.FromCtlDefault.Label"},
 				},
+			},
+			&forms.FormField{
+				Name:      "disableCssInlining",
+				Label:     "Mail.Config.FixOutlookDisplay",
+				Mandatory: false,
+				Type:      forms.ParamBool,
+				Default:   true,
 			},
 			&forms.SwitchField{
 				Name:        "sender",
@@ -141,6 +143,18 @@ var ExposedConfigs = &forms.Form{
 								Description: "Mail.Config.Smtp.Password.Description",
 								Mandatory:   true,
 								Type:        forms.ParamPassword,
+							},
+							&forms.FormField{
+								Name:        "connectionSecurity",
+								Label:       "Mail.Config.Smtp.Security.Label",
+								Description: "Mail.Config.Smtp.Security.Description",
+								Mandatory:   true,
+								Default:     "starttls",
+								Type:        forms.ParamSelect,
+								ChoicePresetList: []map[string]string{
+									{"starttls": "StartTLS"},
+									{"ssl": "SSL/TLS"},
+								},
 							},
 							&forms.FormField{
 								Name:        "insecureSkipVerify",

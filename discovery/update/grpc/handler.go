@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018. Abstrium SAS <team (at) pydio.com>
+ * Copyright (c) 2024. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
  *
  * Pydio Cells is free software: you can redistribute it and/or modify
@@ -26,33 +26,33 @@ import (
 	"math"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/update"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
-	update2 "github.com/pydio/cells/v4/discovery/update"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/update"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+	update2 "github.com/pydio/cells/v5/discovery/update"
+	"github.com/pydio/cells/v5/discovery/update/lang"
 )
 
 type Handler struct {
 	update.UnimplementedUpdateServiceServer
 }
 
-func (h *Handler) Name() string {
-	return ServiceName
-}
-
 func (h *Handler) UpdateRequired(ctx context.Context, request *update.UpdateRequest) (*update.UpdateResponse, error) {
 
-	configs := config.GetUpdatesConfigs()
+	configs := config.GetUpdatesConfigs(ctx)
 	binaries, e := update2.LoadUpdates(ctx, configs, request)
 	if e != nil {
 		log.Logger(ctx).Error("Failed retrieving available updates", zap.Error(e))
@@ -68,7 +68,10 @@ func (h *Handler) UpdateRequired(ctx context.Context, request *update.UpdateRequ
 
 func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRequest) (*update.ApplyUpdateResponse, error) {
 
-	configs := config.GetUpdatesConfigs()
+	crtLang := languages.UserLanguageFromContext(ctx, true)
+	T := lang.Bundle().T(crtLang)
+
+	configs := config.GetUpdatesConfigs(ctx)
 	binaries, e := update2.LoadUpdates(ctx, configs, &update.UpdateRequest{
 		PackageName: request.PackageName,
 	})
@@ -83,11 +86,11 @@ func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRe
 		}
 	}
 	if apply == nil {
-		return nil, fmt.Errorf("cannot find the requested version")
+		return nil, errors.New("cannot find the requested version")
 	}
 
-	log.Logger(ctx).Info("Update binary now", zap.Any("package", apply))
-	uName, _ := permissions.FindUserNameInContext(ctx)
+	log.Logger(ctx).Info("Updating binary now", zap.String("PackageName", apply.PackageName), zap.String("Version", apply.Version), zap.String("URL", apply.BinaryURL))
+	uName := claim.UserNameFromContext(ctx)
 
 	// Defining new Context
 	newCtx := context.Background()
@@ -105,12 +108,12 @@ func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRe
 		Status:        jobs.TaskStatus_Running,
 		HasProgress:   true,
 		StartTime:     int32(time.Now().Unix()),
-		StatusMessage: "Upgrading Binary",
+		StatusMessage: T("Update.Process.Start"),
 		TriggerOwner:  uName,
 	}
 	job := &jobs.Job{
 		ID:    response.Message,
-		Label: "Upgrading Binary",
+		Label: T("Update.Process.Start"),
 		Owner: uName,
 		Tasks: []*jobs.Task{task},
 	}
@@ -119,7 +122,7 @@ func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRe
 		Job:         job,
 	}
 	broker.MustPublish(ctx, common.TopicJobTaskEvent, event)
-	ct := runtime.ForkContext(context.Background(), ctx)
+	ct := context.WithoutCancel(ctx)
 	go func() {
 		defer close(pgChan)
 		defer close(errorChan)
@@ -129,9 +132,10 @@ func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRe
 			case pg := <-pgChan:
 				task.Progress = float32(pg)
 				if pg < 1 {
-					task.StatusMessage = fmt.Sprintf("Downloading Binary %v%%...", math.Floor(pg*100))
+					stringProgress := fmt.Sprintf("%v", math.Floor(pg*100))
+					task.StatusMessage = strings.Replace(T("Update.Process.Progress"), "{progress}", stringProgress, 1)
 				} else {
-					task.StatusMessage = "Download finished, now verifying package..."
+					task.StatusMessage = T("Update.Process.Verify")
 				}
 				broker.MustPublish(ct, common.TopicJobTaskEvent, event)
 			case e := <-errorChan:
@@ -141,10 +145,10 @@ func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRe
 				return
 			case <-doneChan:
 				task.Status = jobs.TaskStatus_Finished
-				task.StatusMessage = "Binary package has been successfully verified, you can now restart Cells.\n"
+				task.StatusMessage = T("Update.Process.Finished")
 				// Double check if we are on a protected port and log a hint in such case.
 				hasProtectedPort := false
-				sites, _ := config.LoadSites()
+				sites, _ := routing.LoadSites(ctx)
 				for _, si := range sites {
 					for _, a := range si.GetBindURLs() {
 						u, _ := url.Parse(a)
@@ -155,10 +159,13 @@ func (h *Handler) ApplyUpdate(ctx context.Context, request *update.ApplyUpdateRe
 					}
 				}
 				if hasProtectedPort {
-					task.StatusMessage += "--------- \n"
-					task.StatusMessage += "WARNING: you are using a reserved port on one your binding url.\n"
-					task.StatusMessage += "You must execute following command to authorize the new binary to use this port *before* restarting your instance:\n"
-					task.StatusMessage += "$ sudo setcap 'cap_net_bind_service=+ep' <path to your binary>\n"
+					task.StatusMessage += strings.Join([]string{
+						"",
+						"----------------",
+						T("Update.SetCapDetected.Warning"),
+						T("Update.SetCapDetected.Hint"),
+						T("Update.SetCapDetected.Command"),
+					}, "\n")
 				}
 				broker.MustPublish(ct, common.TopicJobTaskEvent, event)
 				return

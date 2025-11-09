@@ -32,9 +32,9 @@ import (
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/proto/install"
 )
 
 var sitesCmd = &cobra.Command{
@@ -83,15 +83,22 @@ EXAMPLES
 `,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		bindViperFlags(cmd.Flags())
-		_, _, er := initConfig(cmd.Context(), false)
-		return er
+
+		ctx, err := initManagerContext(cmd.Context())
+		if err != nil {
+			return err
+		}
+		cmd.SetContext(ctx)
+
+		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		sites, e := config.LoadSites(true)
+		ctx := cmd.Context()
+		sites, e := routing.LoadSites(ctx, true)
 		fatalIfError(cmd, e)
 		if len(sites) == 0 {
 			fmt.Println("No site is currently configured. Cells exposes automatically the following URLs : ")
-			ss, _ := config.LoadSites()
+			ss, _ := routing.LoadSites(ctx)
 			autoSite := ss[0]
 			for _, u := range autoSite.GetBindURLs() {
 				fmt.Println("   - " + u)
@@ -237,7 +244,7 @@ func listSites(cmd *cobra.Command, sites []*install.ProxyConfig) {
 func confirmAndSave(cmd *cobra.Command, args []string, sites []*install.ProxyConfig) error {
 
 	if len(args) > 0 && args[0] == "skipConfirm" {
-		e := config.SaveSites(sites, common.PydioSystemUsername, "Updating config sites")
+		e := routing.SaveSites(cmd.Context(), sites, common.PydioSystemUsername, "Updating config sites")
 		<-time.After(1 * time.Second)
 		return e
 	}
@@ -275,7 +282,7 @@ func confirmAndSave(cmd *cobra.Command, args []string, sites []*install.ProxyCon
 	}
 	confirm := promptui.Prompt{Label: "Do you want to save this configuration", IsConfirm: true}
 	if _, e := confirm.Run(); e == nil {
-		e = config.SaveSites(sites, common.PydioSystemUsername, "Updating config sites")
+		e = routing.SaveSites(cmd.Context(), sites, common.PydioSystemUsername, "Updating config sites")
 		if e != nil {
 			cmd.Println("***********************************************")
 			cmd.Println("[ERROR] Could not save config : " + e.Error())

@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "Free Condition"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "JSON Path"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "Request Hostname"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "Request Host"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "Request Port"
   },
   "contextMetaField.RequestMethod": {
     "other": "Request Method"
@@ -256,6 +265,9 @@
   },
   "treeQuery.UUIDs": {
     "other": "Node UUIDs"
+  },
+  "treeQuery.ETag": {
+    "other": "ETag"
   },
   "userSingleQuery.AttributeAnyValue": {
     "other": "Has any value"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "Scheduled Trigger"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Triggered by Webhook"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Webhook Api Slug"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "Run Parameter Name"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "Run Parameter Value"
   },
   "triggerFilterQuery.IsManual": {
     "other": "Manual Trigger"

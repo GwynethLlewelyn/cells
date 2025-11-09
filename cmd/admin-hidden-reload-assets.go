@@ -21,13 +21,17 @@
 package cmd
 
 import (
-	"context"
+	"net/url"
+	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/runtime"
 )
 
 // docDepsCmd shows dependencies between services.
@@ -40,9 +44,22 @@ DESCRIPTION
 
   [For development only] Clear in-memory assets and refresh all, including the i18n JSON files.
 `,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		u, err := url.Parse(runtime.DiscoveryURL())
+		if err != nil {
+			return err
+		}
+		discoveryConn, err := grpc.DialContext(ctx, u.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
+		ctx = runtime.WithClientConn(ctx, discoveryConn)
+		br := broker.NewBroker(runtime.BrokerURL(), broker.WithContext(ctx))
 		cmd.Println("Sending a reload command on ReloadAssets topic")
-		broker.MustPublish(context.Background(), common.TopicReloadAssets, &emptypb.Empty{})
+		err = br.Publish(ctx, common.TopicReloadAssets, &emptypb.Empty{})
+		<-time.After(100 * time.Millisecond)
+		return err
 	},
 }
 

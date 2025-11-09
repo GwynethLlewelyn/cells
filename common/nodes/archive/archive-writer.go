@@ -31,11 +31,16 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
+
+// Testing purpose
+type stackInternals struct{}
+
+var stackInternalsKey = stackInternals{}
 
 type Writer struct {
 	Router nodes.Handler
@@ -44,16 +49,31 @@ type Writer struct {
 	WalkFilter nodes.WalkFilterFunc
 }
 
-func (w *Writer) commonRoot(nodes []*tree.Node) string {
-
-	// TODO
-	// Assume nodes have same parent for now
+func (w *Writer) selectionPrefixes(nodes []*tree.Node) (pp []string) {
+	// A unique folder - return full path
 	if len(nodes) == 1 && !nodes[0].IsLeaf() {
-		return nodes[0].Path
-	} else {
-		return path.Dir(nodes[0].Path)
+		return []string{nodes[0].Path}
 	}
 
+	dirs := map[string]struct{}{}
+	for _, node := range nodes {
+		np := strings.TrimSuffix(node.Path, "/")
+		dirs[path.Dir(np)] = struct{}{}
+	}
+
+	// all nodes have a common parent, use it as internal root
+	if len(dirs) == 1 {
+		for range nodes {
+			pp = append(pp, path.Dir(strings.TrimSuffix(nodes[0].Path, "/")))
+		}
+		return
+	}
+
+	// There are different locations - use each as internal path
+	for _, node := range nodes {
+		pp = append(pp, path.Dir(node.Path))
+	}
+	return
 }
 
 // ZipSelection creates a .zip archive from nodes selection
@@ -72,9 +92,9 @@ func (w *Writer) ZipSelection(ctx context.Context, output io.Writer, selection [
 		}
 	}
 
-	parentRoot := w.commonRoot(selection)
+	prefixes := w.selectionPrefixes(selection)
 
-	log.Logger(ctx).Debug("ZipSelection", zap.String("parent", parentRoot), zap.Int("selection size", len(selection)))
+	log.Logger(ctx).Debug("ZipSelection", zap.Int("selection size", len(selection)))
 
 	filters := []nodes.WalkFilterFunc{
 		nodes.WalkFilterSkipPydioHiddenFile,
@@ -85,7 +105,7 @@ func (w *Writer) ZipSelection(ctx context.Context, output io.Writer, selection [
 	if w.WalkFilter != nil {
 		filters = append(filters, w.WalkFilter)
 	}
-	for _, node := range selection {
+	for i, node := range selection {
 
 		request := &tree.ListNodesRequest{
 			Node:       &tree.Node{Path: node.Path},
@@ -98,7 +118,7 @@ func (w *Writer) ZipSelection(ctx context.Context, output io.Writer, selection [
 			if err != nil {
 				return nil
 			}
-			internalPath := strings.TrimPrefix(n.Path, parentRoot)
+			internalPath := strings.TrimPrefix(n.Path, prefixes[i])
 			internalPath = strings.TrimLeft(internalPath, "/")
 			if internalPath == "" {
 				return nil
@@ -137,6 +157,11 @@ func (w *Writer) ZipSelection(ctx context.Context, output io.Writer, selection [
 			if len(logsChannels) > 0 {
 				logsChannels[0] <- "File " + internalPath + " added to archive"
 			}
+			// For Testing purpose
+			if v := ctx.Value(stackInternalsKey); v != nil {
+				vm := v.(map[string]string)
+				vm[internalPath] = internalPath
+			}
 
 			return nil
 		}, false, filters...)
@@ -169,9 +194,9 @@ func (w *Writer) TarSelection(ctx context.Context, output io.Writer, gzipFile bo
 		defer tw.Close()
 	}
 
-	parentRoot := w.commonRoot(selection)
+	prefixes := w.selectionPrefixes(selection)
 
-	for _, node := range selection {
+	for i, node := range selection {
 
 		request := &tree.ListNodesRequest{
 			Node:       &tree.Node{Path: node.Path},
@@ -181,7 +206,7 @@ func (w *Writer) TarSelection(ctx context.Context, output io.Writer, gzipFile bo
 		}
 		err := w.Router.ListNodesWithCallback(ctx, request, func(ctx context.Context, n *tree.Node, err error) error {
 
-			internalPath := strings.TrimPrefix(n.Path, parentRoot)
+			internalPath := strings.TrimPrefix(n.Path, prefixes[i])
 			header := &tar.Header{
 				Name:    internalPath,
 				ModTime: n.GetModTime(),

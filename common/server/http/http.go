@@ -22,20 +22,23 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"go.uber.org/zap"
+	"golang.org/x/exp/maps"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/registry/util"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/server"
-	"github.com/pydio/cells/v4/common/server/http/mux"
-	"github.com/pydio/cells/v4/common/server/middleware"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/middleware"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/server"
+	"github.com/pydio/cells/v5/common/server/http/mux"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 func init() {
@@ -45,7 +48,34 @@ func init() {
 type Opener struct{}
 
 func (o *Opener) OpenURL(ctx context.Context, u *url.URL) (server.Server, error) {
-	return New(ctx), nil
+	srvID := "http-" + uuid.New()
+	lMux := NewRegistrar(ctx, srvID)
+
+	srv := &http.Server{}
+	srv.BaseContext = func(_ net.Listener) context.Context {
+		// Just link to the parent context cancellation
+		ct, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-ctx.Done()
+			cancel()
+		}()
+		return ct
+	}
+	srv.Handler = mux.NewMiddleware(ctx, srvID, lMux)
+	srv.Handler = propagator.HttpContextMiddleware(middleware.ClientConnIncomingContext(ctx))(srv.Handler)
+	srv.Handler = propagator.HttpContextMiddleware(middleware.RegistryIncomingContext(ctx))(srv.Handler)
+
+	ctx, cancel := context.WithCancel(ctx)
+
+	return server.NewServer(ctx, &Server{
+		id:   srvID,
+		name: "http",
+		meta: make(map[string]string),
+
+		cancel:         cancel,
+		RouteRegistrar: lMux,
+		Server:         srv,
+	}), nil
 }
 
 type Server struct {
@@ -55,75 +85,40 @@ type Server struct {
 
 	cancel context.CancelFunc
 	net.Listener
-	*server.ListableMux
+	routing.RouteRegistrar
 	*http.Server
 }
 
-func New(ctx context.Context) server.Server {
-	lMux := server.NewListableMux()
-	/*
-		lMux.HandleFunc("/debug/pprof/", pprof.Index)
-		lMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		lMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		lMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		lMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	*/
-
-	srv := &http.Server{}
-	srv.Handler = mux.NewMiddleware(ctx, lMux)
-	srv.Handler = ContextMiddlewareHandler(middleware.ClientConnIncomingContext(ctx))(srv.Handler)
-	srv.Handler = ContextMiddlewareHandler(middleware.RegistryIncomingContext(ctx))(srv.Handler)
-
-	ctx, cancel := context.WithCancel(ctx)
-
-	return server.NewServer(ctx, &Server{
-		id:   "http-" + uuid.New(),
-		name: "http",
-		meta: server.InitPeerMeta(),
-
-		cancel:      cancel,
-		ListableMux: lMux,
-		Server:      srv,
-	})
-}
-
 func (s *Server) RawServe(opts *server.ServeOptions) (ii []registry.Item, e error) {
-	addr := opts.HttpBindAddress
-	if addr == "" {
-		addr = runtime.HttpBindAddress()
-	}
-	lis, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
+	if opts.Listener == nil {
+		return nil, errors.New("must have a listener")
 	}
 
-	s.Listener = lis
+	s.Listener = opts.Listener
 
 	go func() {
 		defer s.cancel()
 
-		if err := s.Server.Serve(lis); err != nil {
+		if err := s.Server.Serve(s.Listener); err != nil {
 			if err.Error() == "http: Server closed" || err.Error() == "context canceled" {
 				return
 			}
-			log.Logger(context.Background()).Error("Could not start http server because "+err.Error(), zap.Error(err))
+			log.Logger(opts.Context).Error("Could not start http server because "+err.Error(), zap.Error(err))
 		}
 	}()
 
-	ii = append(ii, util.CreateAddress(s.Listener.Addr().String(), nil))
-	for _, endpoint := range s.ListableMux.Patterns() {
-		ii = append(ii, util.CreateEndpoint(endpoint, nil))
-	}
 	return
 }
 
 func (s *Server) Stop() error {
-	// Return initial context ?
-	return s.Server.Shutdown(context.TODO())
+	// Shutdown may wait indefinitely for open connections to close - Force close after a timeout
+	ctx, can := context.WithTimeout(context.Background(), 5*time.Second)
+	defer can()
+	return s.Server.Shutdown(ctx)
 }
 
 func (s *Server) Endpoints() []string {
-	return s.ListableMux.Patterns()
+	return s.RouteRegistrar.Patterns()
 }
 
 func (s *Server) ID() string {
@@ -142,14 +137,23 @@ func (s *Server) Metadata() map[string]string {
 	return s.meta // map[string]string{}
 }
 
+func (s *Server) SetMetadata(meta map[string]string) {
+	s.meta = meta
+}
+
 func (s *Server) As(i interface{}) bool {
-	if v, ok := i.(*server.HttpMux); ok {
-		*v = s.ListableMux
-		return true
-	}
-	if v, ok := i.(*server.PatternsProvider); ok {
-		*v = s.ListableMux
+	if v, ok := i.(*routing.RouteRegistrar); ok {
+		*v = s.RouteRegistrar
 		return true
 	}
 	return false
+}
+
+func (s *Server) Clone() interface{} {
+	clone := &Server{}
+	clone.id = s.id
+	clone.name = s.name
+	clone.meta = maps.Clone(s.meta)
+
+	return clone
 }

@@ -22,7 +22,6 @@ package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -30,8 +29,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	i18n2 "github.com/pydio/cells/v4/common/utils/i18n"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	i18n2 "github.com/pydio/cells/v5/common/utils/i18n/languages"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type singleCounter struct {
@@ -210,7 +209,7 @@ func countGoStrings(cmd *cobra.Command, projectId, counterType, fpath string) er
 	}
 
 	var values map[string]map[string]string
-	jfile, _ := ioutil.ReadFile(fpath)
+	jfile, _ := os.ReadFile(fpath)
 	err := json.Unmarshal([]byte(string(jfile)), &values)
 
 	counters[projectId].singleCounters[counterType].msgNb += len(values)
@@ -233,7 +232,7 @@ func countJsStrings(cmd *cobra.Command, projectId, ftype, fpath string) error {
 
 	var values map[string]string
 	// file existence at fpath has already been checked
-	jfile, _ := ioutil.ReadFile(fpath)
+	jfile, _ := os.ReadFile(fpath)
 	err := json.Unmarshal([]byte(string(jfile)), &values)
 
 	counters[projectId].singleCounters[ftype].msgNb += len(values)
@@ -257,14 +256,14 @@ func convertJsLib(cmd *cobra.Command, dirPath string) error {
 		Other string `json:"other"`
 	}
 
-	for oldN, newN := range i18n2.LanguagesLegacyNames {
+	for oldN, newN := range i18n2.LegacyNames {
 
 		fPath := path.Join(dirPath, oldN+".json")
 		tPath := path.Join(dirPath, newN+".all.json")
 
 		if _, e := os.Stat(fPath); e == nil {
 			// Convert this lib to new format
-			content, _ := ioutil.ReadFile(fPath)
+			content, _ := os.ReadFile(fPath)
 			var s map[string]string
 			e := json.Unmarshal(content, &s)
 			if e != nil {
@@ -276,7 +275,7 @@ func convertJsLib(cmd *cobra.Command, dirPath string) error {
 				newFormat[key] = translation{Other: value}
 			}
 			data, _ := json.MarshalIndent(newFormat, "", "  ")
-			if e := ioutil.WriteFile(tPath, data, 0644); e != nil {
+			if e := os.WriteFile(tPath, data, 0644); e != nil {
 				cmd.Println("Could not write file " + tPath)
 			} else {
 				e2 := os.Remove(fPath)

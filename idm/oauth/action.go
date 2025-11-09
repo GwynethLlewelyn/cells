@@ -25,20 +25,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pydio/cells/v4/common/service/errors"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/auth"
-	"github.com/pydio/cells/v4/common/proto/docstore"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/idm/oauth/lang"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/docstorec"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/auth"
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/idm/oauth/lang"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 func init() {
@@ -47,43 +47,11 @@ func init() {
 	})
 }
 
-// InsertPruningJob adds a job to scheduler
-func InsertPruningJob(ctx context.Context) error {
-
-	T := lang.Bundle().GetTranslationFunc(i18n.GetDefaultLanguage(config.Get()))
-
-	cli := jobs.NewJobServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceJobs))
-	if resp, e := cli.GetJob(ctx, &jobs.GetJobRequest{JobID: pruneTokensActionName}); e == nil && resp.Job != nil {
-		return nil // Already exists
-	} else if e != nil && errors.FromError(e).Code != 404 {
-		log.Logger(ctx).Info("Insert pruning job: jobs service not ready yet :"+e.Error(), zap.Any("err", errors.FromError(e)))
-		return e // not ready yet, retry
-	}
-	log.Logger(ctx).Info("Inserting pruning job for revoked token and reset password tokens")
-	_, e := cli.PutJob(ctx, &jobs.PutJobRequest{Job: &jobs.Job{
-		ID:    pruneTokensActionName,
-		Owner: common.PydioSystemUsername,
-		Label: T("Auth.PruneJob.Title"),
-		Schedule: &jobs.Schedule{
-			Iso8601Schedule: "R/2012-06-04T19:25:16.828696-07:00/PT60M", // Every hour
-		},
-		AutoStart:      false,
-		MaxConcurrency: 1,
-		Actions: []*jobs.Action{{
-			ID: pruneTokensActionName,
-		}},
-	}})
-
-	return e
-}
-
 var (
 	pruneTokensActionName = "actions.auth.prune.tokens"
 )
 
-type PruneTokensAction struct {
-	common.RuntimeHolder
-}
+type PruneTokensAction struct{}
 
 func (c *PruneTokensAction) GetDescription(lang ...string) actions.ActionDescription {
 	return actions.ActionDescription{
@@ -98,7 +66,7 @@ func (c *PruneTokensAction) GetDescription(lang ...string) actions.ActionDescrip
 	}
 }
 
-func (c *PruneTokensAction) GetParametersForm() *forms.Form {
+func (c *PruneTokensAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 
@@ -108,28 +76,43 @@ func (c *PruneTokensAction) GetName() string {
 }
 
 // Init pass parameters
-func (c *PruneTokensAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *PruneTokensAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	return nil
 }
 
 // Run the actual action code
-func (c *PruneTokensAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *PruneTokensAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
-	T := lang.Bundle().GetTranslationFunc(i18n.GetDefaultLanguage(config.Get()))
+	T := lang.Bundle().T(languages.GetDefaultLanguage(ctx))
 
 	output := input
 
 	// Prune revoked tokens on OAuth service
-	cli := auth.NewAuthTokenPrunerClient(grpc.GetClientConnFromCtx(ctx, common.ServiceOAuth))
-	if pruneResp, e := cli.PruneTokens(ctx, &auth.PruneTokensRequest{}); e != nil {
-		return input.WithError(e), e
-	} else {
-		log.TasksLogger(ctx).Info("OAuth Service: " + T("Auth.PruneJob.Revoked", struct{ Count int32 }{Count: pruneResp.GetCount()}))
-		output.AppendOutput(&jobs.ActionOutput{Success: true})
+	cli := auth.NewAuthTokenPrunerClient(grpc.ResolveConn(ctx, common.ServiceOAuthGRPC))
+
+	ss, er := routing.LoadSites(ctx)
+	if er != nil {
+		return input.AsRunError(er)
+	}
+	for _, site := range ss {
+		tokenCtx, err := routing.SiteToContext(ctx, site)
+		if err != nil {
+			log.TasksLogger(ctx).Warn("Cannot run OAuth pruning on site "+site.GetDefaultBindURL(), zap.Error(err))
+			continue
+		}
+		log.TasksLogger(ctx).Info("Running OAuth Pruning on site " + site.GetDefaultBindURL())
+		if pruneResp, e := cli.PruneTokens(tokenCtx, &auth.PruneTokensRequest{}); e != nil {
+			return input.WithError(e), e
+		} else {
+			if pruneResp.GetCount() > -1 {
+				log.TasksLogger(ctx).Info("OAuth Service: " + T("Auth.PruneJob.Revoked", struct{ Count int32 }{Count: pruneResp.GetCount()}))
+			}
+			output.AppendOutput(&jobs.ActionOutput{Success: true})
+		}
 	}
 
 	// Prune revoked tokens on OAuth service
-	cli2 := auth.NewAuthTokenPrunerClient(grpc.GetClientConnFromCtx(ctx, common.ServiceToken))
+	cli2 := auth.NewAuthTokenPrunerClient(grpc.ResolveConn(ctx, common.ServiceTokenGRPC))
 	if pruneResp, e := cli2.PruneTokens(ctx, &auth.PruneTokensRequest{}); e != nil {
 		return input.WithError(e), e
 	} else {
@@ -138,7 +121,7 @@ func (c *PruneTokensAction) Run(ctx context.Context, channels *actions.RunnableC
 	}
 
 	// Prune reset password tokens
-	docCli := docstore.NewDocStoreClient(grpc.GetClientConnFromCtx(ctx, common.ServiceDocStore))
+	docCli := docstorec.DocStoreClient(ctx)
 	deleteResponse, er := docCli.DeleteDocuments(ctx, &docstore.DeleteDocumentsRequest{
 		StoreID: "resetPasswordKeys",
 		Query: &docstore.DocumentQuery{

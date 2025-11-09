@@ -1,13 +1,35 @@
+/*
+ * Copyright (c) 2024. Abstrium SAS <team (at) pydio.com>
+ * This file is part of Pydio Cells.
+ *
+ * Pydio Cells is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Pydio Cells is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Pydio Cells.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * The latest code can be found at <https://pydio.com>.
+ */
+
 package log
 
 import (
 	"fmt"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/log"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
 	"strings"
 	"time"
+
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/middleware/keys"
+	"github.com/pydio/cells/v5/common/proto/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 // IndexableLog extends default log.LogMessage struct to add index specific methods
@@ -21,9 +43,9 @@ func (*IndexableLog) BleveType() string {
 	return "log"
 }
 
-type baseCodec struct{}
+type BaseCodec struct{}
 
-func (b *baseCodec) Marshal(input interface{}) (interface{}, error) {
+func (b *BaseCodec) Marshal(input interface{}) (interface{}, error) {
 	var msg *IndexableLog
 	switch v := input.(type) {
 	case *IndexableLog:
@@ -37,13 +59,13 @@ func (b *baseCodec) Marshal(input interface{}) (interface{}, error) {
 	case *log.LogMessage:
 		return &IndexableLog{LogMessage: v}, nil
 	default:
-		return nil, fmt.Errorf("unrecognized type")
+		return nil, errors.New("unrecognized type")
 	}
 	return msg, nil
 }
 
 // marshalLogMsg creates an IndexableLog object and populates the inner LogMessage with known fields of the passed JSON line.
-func (b *baseCodec) marshalLogMsg(line *log.Log) (*IndexableLog, error) {
+func (b *BaseCodec) marshalLogMsg(line *log.Log) (*IndexableLog, error) {
 
 	msg := &IndexableLog{
 		LogMessage: &log.LogMessage{},
@@ -57,7 +79,8 @@ func (b *baseCodec) marshalLogMsg(line *log.Log) (*IndexableLog, error) {
 
 	for k, v := range data {
 		val, ok := v.(string)
-		if !ok {
+		if !ok && k != common.KeyTransferSize {
+			zaps[k] = v
 			continue
 		}
 		switch k {
@@ -73,11 +96,17 @@ func (b *baseCodec) marshalLogMsg(line *log.Log) (*IndexableLog, error) {
 			msg.MsgId = val
 		case "logger": // name of the service that is currently logging.
 			msg.Logger = val
-		// Node specific info
+		// N specific info
 		case common.KeyNodeUuid:
 			msg.NodeUuid = val
 		case common.KeyNodePath:
 			msg.NodePath = val
+		case common.KeyTransferSize:
+			if f, o := v.(float64); o {
+				msg.TransferSize = int64(f)
+			} else if i, o2 := v.(int64); o2 {
+				msg.TransferSize = i
+			}
 		case common.KeyWorkspaceUuid:
 			msg.WsUuid = val
 		case common.KeyWorkspaceScope:
@@ -94,11 +123,11 @@ func (b *baseCodec) marshalLogMsg(line *log.Log) (*IndexableLog, error) {
 		case common.KeyProfile:
 			msg.Profile = val
 		// Session and remote client info
-		case servicecontext.HttpMetaRemoteAddress:
+		case keys.HttpMetaRemoteAddress:
 			msg.RemoteAddress = val
-		case servicecontext.HttpMetaUserAgent:
+		case keys.HttpMetaUserAgent:
 			msg.UserAgent = val
-		case servicecontext.HttpMetaProtocol:
+		case keys.HttpMetaProtocol:
 			msg.HttpProtocol = val
 		// Span enable following a given request between the various services
 		case common.KeySpanUuid:

@@ -25,12 +25,13 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/treec"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
 var (
@@ -38,7 +39,6 @@ var (
 	patchRecycleRoot string
 )
 
-// createCmd represents the create command
 var patchRecyclePersonalCmd = &cobra.Command{
 	Use:   "patch-recycle-personal",
 	Short: "Patch the recycle bin of the personal folders",
@@ -53,13 +53,13 @@ DESCRIPTION
 
 		ctx := cmd.Context()
 
-		treeClient := tree.NewNodeProviderClient(grpc.GetClientConnFromCtx(ctx, common.ServiceTree))
+		treeClient := treec.NodeProviderClient(ctx, longGrpcCallTimeout())
 		stream, e := treeClient.ListNodes(ctx, &tree.ListNodesRequest{Node: &tree.Node{Path: patchRecycleRoot}})
 		if e != nil {
 			return e
 		}
 
-		aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceAcl))
+		aclClient := idm.NewACLServiceClient(grpc.ResolveConn(ctx, common.ServiceAclGRPC))
 
 		for {
 			resp, er := stream.Recv()

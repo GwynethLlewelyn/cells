@@ -25,34 +25,42 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/manifoldco/promptui"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 
-	cellsnet "github.com/pydio/cells/v4/common/utils/net"
+	net2 "github.com/pydio/cells/v5/common/utils/net"
 )
 
 var (
 	args             []string
 	processStartTags []string
+	processRootID    string
 	preRunRegistry   []func(Runtime)
 	r                Runtime = &emptyRuntime{}
 )
 
 type Runtime interface {
+	AllSettings() map[string]interface{}
 	GetBool(key string) bool
 	GetString(key string) string
 	GetStringSlice(key string) []string
 	IsSet(key string) bool
+	Set(key string, value interface{})
 	SetDefault(key string, value interface{})
 }
 
 // SetRuntime sets internal global Runtime
 func SetRuntime(runtime Runtime) {
 	r = runtime
+}
+
+// GetRuntime returns the main Runtime
+func GetRuntime() Runtime {
+	return r
 }
 
 func RegisterPreRun(preRun func(runtime Runtime)) {
@@ -93,6 +101,18 @@ func IsSet(key string) bool {
 	return r.IsSet(key)
 }
 
+// Name returns the name for the node
+func Name() string {
+	return r.GetString(KeyName)
+}
+
+func Cluster() string {
+	if !IsSet(KeyCluster) {
+		return "default"
+	}
+	return r.GetString(KeyCluster)
+}
+
 // DiscoveryURL returns the scheme://address url for Registry
 func DiscoveryURL() string {
 	return r.GetString(KeyDiscovery)
@@ -100,7 +120,7 @@ func DiscoveryURL() string {
 
 func IsGrpcScheme(u string) bool {
 	if u != "" {
-		if ur, e := url.Parse(u); e == nil && ur.Scheme == "grpc" {
+		if ur, e := url.Parse(u); e == nil && (ur.Scheme == "grpc" || ur.Scheme == "xds") {
 			return true
 		}
 	}
@@ -124,7 +144,13 @@ func RegistryURL() string {
 		return r.GetString(KeyDiscovery)
 	}
 
-	return r.GetString(KeyRegistry)
+	// if r.IsSet(KeyRegistry) {
+	str := r.GetString(KeyRegistry)
+	u, _ := url.Parse(str)
+	if u.Path == "" {
+		u.Path = DefaultRegistrySuffix
+	}
+	return u.String()
 }
 
 // BrokerURL returns the scheme://address url for Broker
@@ -133,7 +159,13 @@ func BrokerURL() string {
 		return r.GetString(KeyDiscovery)
 	}
 
-	return r.GetString(KeyBroker)
+	str := r.GetString(KeyBroker)
+	u, _ := url.Parse(str)
+	if u.Path == "" {
+		u.Path += DefaultBrokerSuffix
+	}
+
+	return u.String()
 }
 
 // ConfigURL returns the scheme://address url for Config
@@ -142,19 +174,18 @@ func ConfigURL() string {
 	if r.IsSet(KeyDiscovery) {
 		v = r.GetString(KeyDiscovery)
 	}
-	if u, e := url.Parse(v); e == nil && strings.TrimLeft(u.Path, "/") == "" {
-		u.Path = "/config"
-		v = u.String()
+	if u, e := url.Parse(v); e == nil {
+		if u.Scheme != "file" {
+			if u.Path == "" {
+				u.Path += DefaultConfigSuffix
+			}
+		}
+
+		str, _ := url.PathUnescape(u.String())
+		v = str
+
 	}
 	return v
-}
-
-func CacheURL() string {
-	return r.GetString(KeyCache)
-}
-
-func ShortCacheURL() string {
-	return r.GetString(KeyShortCache)
 }
 
 // ConfigIsLocalFile checks if ConfigURL scheme is file
@@ -173,23 +204,29 @@ func SetVaultMasterKey(masterKey string) {
 		u, e = url.Parse(r.GetString(KeyVault))
 	} else {
 		u, e = url.Parse(ConfigURL())
+		if u.Scheme == "file" {
+			// Replace basename with pydio-vault.json
+			u.Path = path.Join(path.Dir(u.Path), DefaultVaultFileName)
+		}
+
 	}
 	if e != nil {
 		return
 	}
-	if u.Scheme == "file" {
-		// Replace basename with pydio-vault.json
-		u.Path = filepath.Join(filepath.Dir(u.Path), DefaultVaultFileName)
-	} else {
-		u.Path = "vault"
-	}
+
 	q := u.Query()
-	q.Set("masterKey", masterKey)
+	q.Set("namespace", "vault")
+	q.Set("masterKey", url.QueryEscape(masterKey))
 	u.RawQuery = q.Encode()
-	r.SetDefault("computedVaultURL", u.String())
+
+	str, _ := url.PathUnescape(u.String())
+
+	r.SetDefault("computedVaultURL", str)
 }
 
 func VaultURL() string {
+	// return ConfigURL()
+	// TODO
 	return r.GetString("computedVaultURL")
 }
 
@@ -203,6 +240,14 @@ func CertsStoreURL() string {
 
 func CertsStoreLocalLocation() string {
 	return filepath.Join(ApplicationWorkingDir(), DefaultCertStorePath)
+}
+
+func BindHost() string {
+	return r.GetString(KeyBindHost)
+}
+
+func AdvertiseHost() string {
+	return r.GetString(KeyAdvertiseAddress)
 }
 
 // HttpServerType returns one of HttpServerCaddy or HttpServerCore
@@ -256,34 +301,40 @@ func IsFork() bool {
 	return r.GetBool(KeyForkLegacy)
 }
 
-// MetricsEnabled returns if the metrics should be published or not
-func MetricsEnabled() bool {
-	return r.GetBool(KeyEnableMetrics)
-}
-
-// PprofEnabled returns if an http endpoint should be published for debug/pprof
-func PprofEnabled() bool {
-	return r.GetBool(KeyEnablePprof)
-}
-
 // DefaultAdvertiseAddress reads or compute the address advertised to clients
 func DefaultAdvertiseAddress() string {
 	if addr := r.GetString(KeyAdvertiseAddress); addr != "" {
 		return addr
 	}
+
 	bindAddress := r.GetString(KeyBindHost)
 	ip := net.ParseIP(r.GetString(KeyBindHost))
-	addr, err := utilnet.ResolveBindAddress(ip)
-	if err != nil {
-		return bindAddress
+	store := bindAddress
+	if ip == nil || ip.IsUnspecified() {
+		if public, privates, er := net2.ShouldWarnPublicBind(); er == nil && public != "" {
+			fmt.Println(promptui.IconWarn + " WARNING: You are using an unspecified bind_address, which could expose Cells internal servers on a public IP address (" + public + "). Use 'bind_address' flag to select an internal network interface (amongst " + strings.Join(privates, ",") + "). If this machine does not provide one, you can set up a virtual IP interface with a private address — see " + promptui.Styler(promptui.FGUnderline)("https://pydio.com/docs/kb/deployment/no-private-ip-detected-issue"))
+		} else if er != nil {
+			fmt.Println(promptui.IconWarn + " WARNING: Cannot verify if bind_address is properly protected: " + er.Error())
+		}
+		if addr, err := utilnet.ResolveBindAddress(ip); err == nil {
+			store = addr.String()
+		}
+	} else if !ip.IsLoopback() && !ip.IsPrivate() {
+		fmt.Println(promptui.IconWarn + " WARNING: You are using a non-private bind_address, which could expose Cells internal servers.")
 	}
-	r.SetDefault(KeyAdvertiseAddress, addr)
-
-	if !cellsnet.IsPrivateIP(addr) {
-		fmt.Println(promptui.IconWarn + " WARNING: no private IP detected. Please set up a virtual IP interface with a private address — see " + promptui.Styler(promptui.FGUnderline)("https://pydio.com/docs/kb/deployment/no-private-ip-detected-issue") + " — or Cells internal servers might become accessible publicly")
-	}
+	r.SetDefault(KeyAdvertiseAddress, store)
 
 	return r.GetString(KeyAdvertiseAddress)
+}
+
+// ProcessRootID retrieves a unique identifier for the current process
+func ProcessRootID() string {
+	return processRootID
+}
+
+// SetProcessRootID passes a UUID for the current process
+func SetProcessRootID(id string) {
+	processRootID = id
 }
 
 // ProcessStartTags returns a list of tags to be used for identifying processes
@@ -303,6 +354,7 @@ func SetArgs(aa []string) {
 func buildProcessStartTag() {
 	xx := r.GetStringSlice(KeyArgExclude)
 	tt := r.GetStringSlice(KeyArgTags)
+	processStartTags = append(processStartTags, "n:"+r.GetString(KeyName))
 	for _, t := range tt {
 		processStartTags = append(processStartTags, "t:"+t)
 	}
@@ -314,114 +366,22 @@ func buildProcessStartTag() {
 	}
 }
 
-// BuildForkParams creates --key=value arguments from runtime parameters
-func BuildForkParams(cmd string) []string {
-	discovery := fmt.Sprintf("grpc://" + GrpcDiscoveryBindAddress())
-	params := []string{
-		cmd,
-		"--" + KeyFork,
-		"--" + KeyDiscovery, discovery,
-		"--" + KeyGrpcPort, "0",
-		"--" + KeyGrpcDiscoveryPort, "0",
-		"--" + KeyHttpServer, HttpServerNative,
-		//"--" + KeyHttpPort, "0", // This is already the default
-	}
-
-	// Copy string arguments
-	strArgs := []string{
-		KeyBindHost,
-		KeyAdvertiseAddress,
-	}
-
-	strArgsWithDefaults := map[string]string{
-		KeyKeyring:    DefaultKeyKeyring,
-		KeyCache:      DefaultKeyCache,
-		KeyShortCache: DefaultKeyShortCache,
-	}
-
-	// Copy bool arguments
-	boolArgs := []string{
-		KeyEnableMetrics,
-		KeyEnablePprof,
-	}
-
-	// Copy slices arguments
-	sliceArgs := []string{
-		KeyNodeCapacity,
-	}
-
-	for _, s := range strArgs {
-		if IsSet(s) {
-			params = append(params, "--"+s, GetString(s))
-		}
-	}
-	for _, bo := range boolArgs {
-		if GetBool(bo) {
-			params = append(params, "--"+bo)
-		}
-	}
-	for _, sl := range sliceArgs {
-		if IsSet(sl) {
-			for _, a := range GetStringSlice(sl) {
-				params = append(params, "--"+sl, a)
-			}
-		}
-	}
-	// Set these only if they differ from their default value
-	for k, v := range strArgsWithDefaults {
-		if IsSet(k) && GetString(k) != v {
-			params = append(params, "--"+k, GetString(k))
-		}
-	}
-
-	return params
-}
-
-// IsRequired checks arguments, --tags and --exclude against a service name
-func IsRequired(name string, tags ...string) bool {
-	xx := r.GetStringSlice(KeyArgExclude)
-	tt := r.GetStringSlice(KeyArgTags)
-	if len(tt) > 0 {
-		var hasTag bool
-		for _, t := range tt {
-			for _, st := range tags {
-				if st == t {
-					hasTag = true
-					break
-				}
-			}
-		}
-		if !hasTag {
-			return false
-		}
-	}
-	for _, x := range xx {
-		re := regexp.MustCompile(x)
-		if re.MatchString(name) {
-			return false
-		}
-	}
-
-	if len(args) == 0 {
-		return true
-	}
-
-	for _, arg := range args {
-		re := regexp.MustCompile(arg)
-		if re.MatchString(name) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // GetHostname wraps os.Hostname, could be overwritten by env or parameter.
 func GetHostname() string {
 	if s, er := os.Hostname(); er == nil {
 		return s
 	}
 	return ""
+}
+
+// GetPID wraps os.Getpid.
+func GetPID() string {
+	return fmt.Sprintf("%d", os.Getpid())
+}
+
+// GetPPID wraps os.Getppid.
+func GetPPID() string {
+	return fmt.Sprintf("%d", os.Getppid())
 }
 
 // HasCapacity checks if a specific capacity is registered for the current process
@@ -456,8 +416,10 @@ func Describe() (out []InfoGroup) {
 		"Vault",
 		"Keyring",
 		"Certificates",
-		"Cache",
-		"ShortCache",
+		//"Cache",
+		//"ShortCache",
+		//"Queue",
+		//"Persisting Queue",
 	}
 	urls := map[string]func() string{
 		"Registry":     RegistryURL,
@@ -466,8 +428,20 @@ func Describe() (out []InfoGroup) {
 		"Vault":        VaultURL,
 		"Keyring":      KeyringURL,
 		"Certificates": CertsStoreURL,
-		"Cache":        CacheURL,
-		"ShortCache":   ShortCacheURL,
+		/*
+			"Cache": func() string {
+				return CacheURL("")
+			},
+			"ShortCache": func() string {
+				return ShortCacheURL()
+			},
+			"Queue": func() string {
+				return QueueURL()
+			},
+			"Persisting Queue": func() string {
+				return PersistingQueueURL()
+			},
+		*/
 	}
 
 	for _, k := range keys {
@@ -489,19 +463,24 @@ func Describe() (out []InfoGroup) {
 		InfoPair{"Advertise", DefaultAdvertiseAddress()},
 	)
 
-	logging := InfoGroup{Name: "Monitoring"}
-	me := "false"
-	pp := "false"
-	if MetricsEnabled() {
-		me = "true"
-	}
-	if PprofEnabled() {
-		pp = "true"
-	}
+	// Todo - expose telemetry info ?
+	logging := InfoGroup{Name: "Telemetry (todo)"}
+	/*
+		me := "false"
+		pp := "false"
+		if o, _, _ := MetricsRemoteEnabled(); o {
+			me = "/metrics/sd (with basic-auth)"
+		} else if MetricsEnabled() {
+			me = "true"
+		}
+		if PprofEnabled() {
+			pp = "true"
+		}
+		logging.Pairs = append(logging.Pairs,
+			InfoPair{"Metrics", me},
+			InfoPair{"Profiles", pp},
+		)
+	*/
 
-	logging.Pairs = append(logging.Pairs,
-		InfoPair{"Metrics", me},
-		InfoPair{"Profiles", pp},
-	)
 	return append(out, uGroup, network, logging)
 }

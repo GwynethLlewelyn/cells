@@ -23,19 +23,22 @@ package server
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/pkg/errors"
+	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/pydio/cells/v4/common/registry"
-	servercontext "github.com/pydio/cells/v4/common/server/context"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
 type CoreServer interface {
 	Name() string
 	ID() string
 	Type() Type
-	Metadata() map[string]string
 	As(interface{}) bool
 }
 
@@ -52,6 +55,9 @@ type Server interface {
 
 	Is(status registry.Status) bool
 	NeedsRestart() bool
+	Metadata() map[string]string
+
+	RegisterContextInterceptor(interceptor propagator.IncomingContextModifier)
 }
 
 type Type int8
@@ -65,28 +71,47 @@ const (
 )
 
 type server struct {
-	s      RawServer
-	opts   *Options
-	status registry.Status
-	links  []registry.Item
+	S     RawServer
+	Opts  *Options
+	links []registry.Item
+
+	lock    sync.Mutex
+	stopped bool
 }
 
-func NewServer(ctx context.Context, s RawServer) Server {
+var servers []Server
 
+func NewServer(ctx context.Context, s RawServer) Server {
 	srv := &server{
-		s: s,
-		opts: &Options{
+		S: s,
+		Opts: &Options{
 			Context: ctx,
+			Metadata: map[string]string{
+				registry.MetaStatusKey: string(registry.StatusStopped),
+			},
 		},
-		status: registry.StatusStopped,
 	}
 
-	if reg := servercontext.GetRegistry(ctx); reg != nil {
+	servers = append(servers, srv)
+
+	var reg registry.Registry
+	if propagator.Get(ctx, registry.ContextKey, &reg) {
 		if err := reg.Register(srv); err != nil {
 			fmt.Println("[ERROR] Cannot register Server " + err.Error())
 		}
 	}
+
 	return srv
+}
+
+func Get(out interface{}) bool {
+	for _, srv := range servers {
+		if srv.As(out) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *server) Server() {}
@@ -102,42 +127,73 @@ func (s *server) Serve(oo ...ServeOption) (outErr error) {
 		o(opt)
 	}
 
-	var g errgroup.Group
-	for _, h := range opt.BeforeServe {
-		func(bs func(oo ...registry.RegisterOption) error) {
-			g.Go(func() error {
-				return bs(opt.RegistryOptions...)
-			})
-		}(h)
-	}
-	if er := g.Wait(); er != nil {
-		return er
+	if opt.BlockUntilServe {
+		for _, h := range opt.BeforeServe {
+			if err := h(opt.RegistryOptions...); err != nil {
+				return err
+			}
+		}
+	} else {
+
+		g := &errgroup.Group{}
+		for _, h := range opt.BeforeServe {
+			func(bs func(oo ...registry.RegisterOption) error) {
+				g.Go(func() error {
+					ch := make(chan error, 1)
+
+					go func() {
+						ch <- bs(opt.RegistryOptions...)
+					}()
+
+					select {
+					case <-time.After(10 * time.Second):
+						return errors.New("[ERROR] BeforeServe timeout")
+					case err := <-ch:
+						return err
+					}
+				})
+			}(h)
+		}
+
+		if er := g.Wait(); er != nil {
+			return er
+		}
 	}
 
-	ii, err := s.s.RawServe(opt)
+	_, err := s.S.RawServe(opt)
 	if err != nil {
 		return err
 	}
-	s.status = registry.StatusReady
 
-	// Making sure we register the endpoints
-	if reg := servercontext.GetRegistry(s.opts.Context); reg != nil {
-		// Update for status
-		if err := reg.Register(s); err != nil {
-			return err
-		}
-		for _, item := range ii {
-			if err := reg.Register(item, registry.WithEdgeTo(s.ID(), "instance", nil)); err != nil {
+	if opt.BlockUntilServe {
+		for _, h := range opt.AfterServe {
+			if err := h(opt.RegistryOptions...); err != nil {
 				return err
 			}
-			s.links = append(s.links, item)
 		}
-	}
+	} else {
+		g2 := &errgroup.Group{}
+		for _, h := range opt.AfterServe {
+			func(as func(oo ...registry.RegisterOption) error) {
+				g2.Go(func() error {
+					ch := make(chan error, 1)
 
-	// Apply AfterServe non-blocking
-	for _, h := range opt.AfterServe {
-		if er := h(); er != nil {
-			fmt.Println("There was an error while applying an AfterServe", er)
+					go func() {
+						ch <- as(opt.RegistryOptions...)
+					}()
+
+					select {
+					case <-time.After(10 * time.Second):
+						return errors.New("[ERROR] BeforeServe timeout")
+					case err := <-ch:
+						return err
+					}
+				})
+			}(h)
+		}
+
+		if er := g2.Wait(); er != nil {
+			return er
 		}
 	}
 
@@ -145,10 +201,17 @@ func (s *server) Serve(oo ...ServeOption) (outErr error) {
 }
 
 func (s *server) Stop(oo ...registry.RegisterOption) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.stopped {
+		return nil
+	}
 
-	if err := s.s.Stop(); err != nil {
+	if err := s.S.Stop(); err != nil {
 		return err
 	}
+
+	s.stopped = true
 
 	opts := &registry.RegisterOptions{}
 	for _, o := range oo {
@@ -156,14 +219,17 @@ func (s *server) Stop(oo ...registry.RegisterOption) error {
 	}
 
 	// We deregister the endpoints to clear links and re-register as stopped
-	if reg := servercontext.GetRegistry(s.opts.Context); reg != nil {
+	var reg registry.Registry
+	if propagator.Get(s.Opts.Context, registry.ContextKey, &reg) {
 		for _, i := range s.links {
 			_ = reg.Deregister(i, registry.WithRegisterFailFast())
 		}
 		if er := reg.Deregister(s, registry.WithRegisterFailFast()); er != nil {
 			return er
 		} else if !opts.DeregisterFull {
-			s.status = registry.StatusStopped
+			meta := s.Metadata()
+			meta[registry.MetaStatusKey] = string(registry.StatusStopped)
+			s.SetMetadata(meta)
 			_ = reg.Register(s, registry.WithRegisterFailFast())
 		}
 	}
@@ -172,28 +238,19 @@ func (s *server) Stop(oo ...registry.RegisterOption) error {
 }
 
 func (s *server) ID() string {
-	return s.s.ID()
+	return s.S.ID()
 }
 
 func (s *server) Name() string {
-	return s.s.Name()
+	return s.S.Name()
 }
 
 func (s *server) Type() Type {
-	return s.s.Type()
-}
-
-func (s *server) Metadata() map[string]string {
-	meta := make(map[string]string)
-	for k, v := range s.s.Metadata() {
-		meta[k] = v
-	}
-	meta[registry.MetaStatusKey] = string(s.status)
-	return meta
+	return s.S.Type()
 }
 
 func (s *server) Is(status registry.Status) bool {
-	return s.status == status
+	return s.Metadata()[registry.MetaStatusKey] == string(status)
 }
 
 func (s *server) NeedsRestart() bool {
@@ -209,5 +266,28 @@ func (s *server) As(i interface{}) bool {
 		return true
 	}
 
-	return s.s.As(i)
+	return s.S.As(i)
+}
+
+func (s *server) Metadata() map[string]string {
+	meta := maps.Clone(s.Opts.Metadata)
+	return meta
+}
+
+func (s *server) SetMetadata(meta map[string]string) {
+	s.Opts.Metadata = meta
+}
+
+func (s *server) Clone() interface{} {
+	clone := &server{}
+	clone.S = std.DeepClone(s.S)
+	clone.Opts = &Options{
+		Metadata: s.Metadata(),
+	}
+
+	return clone
+}
+
+func (s *server) RegisterContextInterceptor(interceptor propagator.IncomingContextModifier) {
+	*s.Opts.interceptors = append(*s.Opts.interceptors, interceptor)
 }

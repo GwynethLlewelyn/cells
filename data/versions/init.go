@@ -26,21 +26,29 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/docstore"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/utils/cache"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/commons/docstorec"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
-var policiesCache cache.Cache
+var (
+	policiesCacheConf = cache.Config{
+		Prefix:      "pydio.grpc.versions/policies",
+		Eviction:    "1h",
+		CleanWindow: "1h",
+	}
+)
 
 func init() {
 
@@ -63,23 +71,27 @@ func init() {
 // PolicyForNode checks datasource name and find corresponding VersioningPolicy (if set). Returns nil otherwise.
 func PolicyForNode(ctx context.Context, node *tree.Node) *tree.VersioningPolicy {
 
-	if policiesCache == nil {
-		c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=1h&cleanWindow=1h")
-		policiesCache = c
-	}
-
 	dataSourceName := node.GetStringMeta(common.MetaNamespaceDatasourceName)
-	policyName := config.Get("services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+dataSourceName, "VersioningPolicyName").String()
+	if dataSourceName == "" {
+		log.Logger(ctx).Error("looking for versioning policy but node misses the datasource name")
+		return nil
+	}
+	var dsConfig *object.DataSource
+	if er := config.Get(ctx, "services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+dataSourceName).Scan(&dsConfig); er != nil {
+		log.Logger(ctx).Error("cannot scan datasource config when reading PolicyForNode")
+	}
+	policyName := dsConfig.GetVersioningPolicyName()
 	if policyName == "" {
 		return nil
 	}
+	pk := cache_helper.MustResolveCache(ctx, common.CacheTypeLocal, policiesCacheConf)
 
 	var v *tree.VersioningPolicy
-	if policiesCache.Get(policyName, &v) {
+	if pk.Get(policyName, &v) {
 		return v
 	}
 
-	dc := docstore.NewDocStoreClient(grpc.GetClientConnFromCtx(ctx, common.ServiceDocStore))
+	dc := docstorec.DocStoreClient(ctx)
 	r, e := dc.GetDocument(ctx, &docstore.GetDocumentRequest{
 		StoreID:    common.DocStoreIdVersioningPolicies,
 		DocumentID: policyName,
@@ -91,7 +103,7 @@ func PolicyForNode(ctx context.Context, node *tree.Node) *tree.VersioningPolicy 
 	var p *tree.VersioningPolicy
 	if er := json.Unmarshal([]byte(r.Document.Data), &p); er == nil {
 		log.Logger(ctx).Debug("[VERSION] found policy for node", zap.Any("p", p))
-		policiesCache.Set(policyName, p)
+		pk.Set(policyName, p)
 		return p
 	}
 
@@ -102,9 +114,9 @@ func PolicyForNode(ctx context.Context, node *tree.Node) *tree.VersioningPolicy 
 // backward compatibility.
 func DataSourceForPolicy(ctx context.Context, policy *tree.VersioningPolicy) (nodes.LoadedSource, error) {
 	if policy.VersionsDataSourceName == "default" {
-		return getRouter(ctx).GetClientsPool().GetDataSourceInfo(common.PydioVersionsNamespace)
+		return getRouter().GetClientsPool(ctx).GetDataSourceInfo(common.PydioVersionsNamespace)
 	}
-	if ls, err := getRouter(ctx).GetClientsPool().GetDataSourceInfo(policy.VersionsDataSourceName); err == nil {
+	if ls, err := getRouter().GetClientsPool(ctx).GetDataSourceInfo(policy.VersionsDataSourceName); err == nil {
 		if policy.VersionsDataSourceBucket != "" {
 			ls.ObjectsBucket = policy.VersionsDataSourceBucket
 		}
@@ -114,8 +126,34 @@ func DataSourceForPolicy(ctx context.Context, policy *tree.VersioningPolicy) (no
 	}
 }
 
-func DefaultLocation(originalUUID, versionUUID string) *tree.Node {
-	c := config.Get("services", "pydio.versions-store")
+// LocationForNode computes version location for the current name
+func LocationForNode(ctx context.Context, node *tree.Node, versionId string) (*tree.Node, error) {
+	if nodeDS := node.GetStringMeta(common.MetaNamespaceDatasourceName); nodeDS == "" {
+		return nil, errors.WithMessage(errors.InvalidParameters, "input node is missing the datasource name metadata")
+	}
+	p := PolicyForNode(ctx, node)
+	var dsName string
+	if p != nil && p.VersionsDataSourceName != "default" {
+		dsName = p.VersionsDataSourceName
+	} else {
+		c := config.Get(ctx, "services", "pydio.versions-store")
+		dsName = c.Val("datasource").Default(configx.Reference("#/defaults/datasource")).String()
+	}
+	vPath := node.GetUuid() + "__" + versionId
+	return &tree.Node{
+		Uuid: vPath,
+		Path: path.Join(dsName, vPath),
+		Type: tree.NodeType_LEAF,
+		MetaStore: map[string]string{
+			common.MetaNamespaceDatasourceName: `"` + dsName + `"`,
+			common.MetaNamespaceDatasourcePath: `"` + vPath + `"`,
+		},
+	}, nil
+}
+
+// DefaultLocation returns legacy configuration for versions stored without Location
+func DefaultLocation(ctx context.Context, originalUUID, versionUUID string) *tree.Node {
+	c := config.Get(ctx, "services", "pydio.versions-store")
 	dsName := c.Val("datasource").Default(configx.Reference("#/defaults/datasource")).String()
 	vPath := originalUUID + "__" + versionUUID
 	return &tree.Node{

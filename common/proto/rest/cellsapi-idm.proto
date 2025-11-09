@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package rest;
 
-option go_package ="github.com/pydio/cells/common/proto/rest";
+option go_package ="github.com/pydio/cells/v5/common/proto/rest";
 
 import "cells-idm.proto";
 import "cells-service.proto";
@@ -198,6 +198,7 @@ message RevokeResponse{
 message ResetPasswordTokenRequest {
     // Start a ResetPassword workflow for this user
     string UserLogin = 1;
+    bool Create = 2;
 }
 
 message ResetPasswordTokenResponse {

@@ -24,12 +24,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pydio/cells/v4/common/etl"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/etl"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 type syncShareLoadedUser struct{}
@@ -72,20 +73,20 @@ func (c *SyncSharesAction) GetDescription(lang ...string) actions.ActionDescript
 }
 
 // GetParametersForm returns a UX form
-func (c *SyncSharesAction) GetParametersForm() *forms.Form {
+func (c *SyncSharesAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 
 // Init passes relevant parameters.
-func (c *SyncSharesAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *SyncSharesAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if err := c.ParseStores(action.Parameters); err != nil {
 		return err
 	}
 	if mappingJson, ok := action.Parameters["mapping"]; !ok {
-		return fmt.Errorf("task sync user must take a mapping parameter")
+		return errors.New("task sync user must take a mapping parameter")
 	} else {
 		if e := json.Unmarshal([]byte(mappingJson), &c.mapping); e != nil {
-			return fmt.Errorf("task sync cannot parse json parameter: " + e.Error())
+			return errors.New("task sync cannot parse json parameter: " + e.Error())
 		}
 	}
 	if sType, ok := action.Parameters["shareType"]; ok {
@@ -100,7 +101,7 @@ func (c *SyncSharesAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (c *SyncSharesAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *SyncSharesAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	channels.StatusMsg <- "Initializing shares list for diff/merge..."
 
@@ -159,7 +160,6 @@ func (c *SyncSharesAction) Run(ctx context.Context, channels *actions.RunnableCh
 	merger.SaveShares(ctx, diff, progress, params)
 
 	// Compute message output
-	output := input
 	data, _ := json.Marshal(map[string]interface{}{
 		"msg":    messages,
 		"errors": pgErrors,
@@ -171,6 +171,5 @@ func (c *SyncSharesAction) Run(ctx context.Context, channels *actions.RunnableCh
 		StringBody: s,
 		JsonBody:   data,
 	}
-	output.AppendOutput(actionOutput)
-	return output, nil
+	return input.WithOutput(actionOutput), nil
 }

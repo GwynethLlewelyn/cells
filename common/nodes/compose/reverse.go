@@ -26,40 +26,44 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/acl"
-	"github.com/pydio/cells/v4/common/nodes/archive"
-	"github.com/pydio/cells/v4/common/nodes/core"
-	"github.com/pydio/cells/v4/common/nodes/encryption"
-	"github.com/pydio/cells/v4/common/nodes/path"
-	"github.com/pydio/cells/v4/common/nodes/put"
-	"github.com/pydio/cells/v4/common/nodes/version"
-	"github.com/pydio/cells/v4/common/nodes/virtual"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/utils/cache"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/acl"
+	"github.com/pydio/cells/v5/common/nodes/archive"
+	"github.com/pydio/cells/v5/common/nodes/core"
+	"github.com/pydio/cells/v5/common/nodes/encryption"
+	"github.com/pydio/cells/v5/common/nodes/path"
+	"github.com/pydio/cells/v5/common/nodes/put"
+	"github.com/pydio/cells/v5/common/nodes/version"
+	"github.com/pydio/cells/v5/common/nodes/virtual"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+)
+
+var (
+	revCacheConfig = cache.Config{
+		Prefix:      "nodes/reverse",
+		Eviction:    "120s",
+		CleanWindow: "10m",
+	}
 )
 
 // Reverse is an extended clientImpl used mainly to filter events sent from inside to outside the application
 type Reverse struct {
 	nodes.Client
-	runtimeCtx context.Context
-	rootsCache cache.Cache
 }
 
-func ReverseClient(ctx context.Context, oo ...nodes.Option) *Reverse {
+func ReverseClient(oo ...nodes.Option) *Reverse {
 	opts := append(oo,
-		nodes.WithContext(ctx),
-		nodes.WithCore(func(pool nodes.SourcesPool) nodes.Handler {
-			exe := &core.Executor{}
-			exe.SetClientsPool(pool)
-			return exe
-		}),
+		nodes.WithCore(&core.Executor{}),
+		nodes.WithTracer("Reverse", 2),
 		acl.WithAccessList(),
+		path.WithPermanentPrefix(),
 		path.WithWorkspace(),
 		path.WithMultipleRoots(),
 		virtual.WithResolver(),
@@ -71,11 +75,8 @@ func ReverseClient(ctx context.Context, oo ...nodes.Option) *Reverse {
 		encryption.WithEncryption(),
 	)
 	cl := newClient(opts...)
-	c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=120s&cleanWindow=10m")
 	return &Reverse{
-		Client:     cl,
-		runtimeCtx: cl.runtimeCtx,
-		rootsCache: c,
+		Client: cl,
 	}
 }
 
@@ -90,13 +91,13 @@ func (r *Reverse) WorkspaceCanSeeNode(ctx context.Context, accessList *permissio
 	roots := workspace.RootUUIDs
 	var ancestors []*tree.Node
 	var ancestorsLoaded bool
-	resolver := abstract.GetVirtualNodesManager(r.runtimeCtx).GetResolver(false)
+	resolver := abstract.GetVirtualProvider().GetResolver(false)
 	for _, root := range roots {
 		if parent, ok := r.NodeIsChildOfRoot(ctx, node, root); ok {
 			if accessList != nil {
 				if !ancestorsLoaded {
 					var e error
-					if ancestors, e = nodes.BuildAncestorsList(ctx, r.GetClientsPool().GetTreeClient(), node); e != nil {
+					if ancestors, e = nodes.BuildAncestorsList(ctx, nodes.GetSourcesPool(ctx).GetTreeClient(), node); e != nil {
 						log.Logger(ctx).Debug("Cannot list ancestors list for", node.Zap(), zap.Error(e))
 						return node, false
 					} else {
@@ -126,8 +127,8 @@ func (r *Reverse) WorkspaceCanSeeNode(ctx context.Context, accessList *permissio
 // NodeIsChildOfRoot compares pathes between possible parent and child
 func (r *Reverse) NodeIsChildOfRoot(ctx context.Context, node *tree.Node, rootId string) (*tree.Node, bool) {
 
-	vManager := abstract.GetVirtualNodesManager(r.runtimeCtx)
-	if virtualNode, exists := vManager.ByUuid(rootId); exists {
+	vManager := abstract.GetVirtualProvider()
+	if virtualNode, exists := vManager.ByUuid(ctx, rootId); exists {
 		if resolved, e := vManager.ResolveInContext(ctx, virtualNode, false); e == nil {
 			//log.Logger(ctx).Info("NodeIsChildOfRoot, Comparing Pathes on resolved", zap.String("node", node.Path), zap.String("root", resolved.Path))
 			return resolved, node.Path == resolved.Path || strings.HasPrefix(node.Path, strings.TrimRight(resolved.Path, "/")+"/")
@@ -144,13 +145,17 @@ func (r *Reverse) NodeIsChildOfRoot(ctx context.Context, node *tree.Node, rootId
 // getRoot provides a loaded root node from the cache or from the treeClient
 func (r *Reverse) getRoot(ctx context.Context, rootId string) *tree.Node {
 	var node *tree.Node
-	if r.rootsCache.Get(rootId, &node) {
+	ca := cache_helper.MustResolveCache(ctx, common.CacheTypeLocal, revCacheConfig)
+	if ca.Get(rootId, &node) {
 		return node
 	}
-	resp, e := r.GetClientsPool().GetTreeClient().ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: rootId}})
+	resp, e := r.GetClientsPool(ctx).GetTreeClient().ReadNode(ctx, &tree.ReadNodeRequest{
+		Node:      &tree.Node{Uuid: rootId},
+		StatFlags: []uint32{tree.StatFlagNone},
+	})
 	if e == nil && resp.Node != nil {
 		resp.Node.Path = strings.Trim(resp.Node.Path, "/")
-		r.rootsCache.Set(rootId, resp.Node.Clone())
+		_ = ca.Set(rootId, resp.Node.Clone())
 		return resp.Node
 	}
 	return nil

@@ -21,37 +21,44 @@
 package util
 
 import (
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/merger"
+	"golang.org/x/exp/maps"
+
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/merger"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
 func ToProtoServer(s registry.Server) *pb.Server {
 	if nn, ok := s.(*server); ok {
-		return nn.s
+		return nn.S
 	}
 	return &pb.Server{}
 }
 
 func ToServer(i *pb.Item, s *pb.Server) registry.Server {
-	return &server{s: s, i: i}
+	return &server{S: s, I: i}
 }
 
 type server struct {
-	i *pb.Item
-	s *pb.Server
+	I *pb.Item
+	S *pb.Server
 }
 
 func (s *server) ID() string {
-	return s.i.Id
+	return s.I.Id
 }
 
 func (s *server) Name() string {
-	return s.i.Name
+	return s.I.Name
 }
 
 func (s *server) Metadata() map[string]string {
-	return s.i.Metadata
+	return maps.Clone(s.I.Metadata)
+}
+
+func (s *server) SetMetadata(meta map[string]string) {
+	s.I.Metadata = meta
 }
 
 func (s *server) Server() {}
@@ -90,4 +97,13 @@ func (s *server) GetUniqueId() string {
 func (s *server) Merge(differ merger.Differ, params map[string]string) (merger.Differ, error) {
 	// Return target
 	return differ, nil
+}
+
+func (d *server) Clone() interface{} {
+	clone := &server{}
+
+	clone.I = std.DeepClone(d.I)
+	clone.S = std.DeepClone(d.S)
+
+	return clone
 }

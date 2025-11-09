@@ -22,24 +22,36 @@ package jobs
 
 import (
 	"context"
+	"fmt"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
-func (a *Action) ToMessages(startMessage ActionMessage, ctx context.Context, output, failedFilter chan ActionMessage, errors chan error, done chan bool) {
+const (
+	IndexedContextKey = "chainIndex"
+)
 
-	startMessage, excluded, pass := a.ApplyFilters(ctx, startMessage)
+func (a *Action) ToMessages(startMessage *ActionMessage, ctx context.Context, output, failedFilter chan *ActionMessage, errors chan error, done chan bool) {
+
+	ff := a.getFilters()
+	startMessage, excluded, pass := a.ApplyFilters(ctx, ff, startMessage)
 	if !pass {
 		if excluded != nil {
-			failedFilter <- *excluded
+			failedFilter <- excluded
 		} else {
 			failedFilter <- startMessage
 		}
@@ -47,9 +59,15 @@ func (a *Action) ToMessages(startMessage ActionMessage, ctx context.Context, out
 		return
 	}
 	if excluded != nil {
-		failedFilter <- *excluded
+		failedFilter <- excluded
 	}
 	if a.HasSelectors() {
+		var ll []string
+		for _, sel := range a.getSelectors() {
+			ll = append(ll, "\""+sel.SelectorLabel()+"\"")
+		}
+		_, ct := a.BuildTaskActionPath(ctx, "")
+		log.TasksLogger(ct).Info("Launching " + strings.Join(ll, ", "))
 		a.FanToNext(ctx, 0, startMessage, output, errors, done)
 	} else {
 		output <- startMessage
@@ -75,72 +93,75 @@ func (a *Action) getSelectors() []InputSelector {
 	if a.DataSourceSelector != nil {
 		selectors = append(selectors, a.DataSourceSelector)
 	}
+	if a.DataSelector != nil {
+		selectors = append(selectors, a.DataSelector)
+	}
 	return selectors
 }
 
-func (a *Action) ApplyFilters(ctx context.Context, input ActionMessage) (output ActionMessage, excluded *ActionMessage, passThrough bool) {
-	passThrough = true
-	output = input
+func (a *Action) getFilters() (ff []InputFilter) {
 	if a.NodesFilter != nil {
-		output, excluded, passThrough = a.NodesFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
+		ff = append(ff, a.NodesFilter)
 	}
 	if a.IdmFilter != nil {
-		output, excluded, passThrough = a.IdmFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
+		ff = append(ff, a.IdmFilter)
 	}
 	if a.DataSourceFilter != nil {
-		output, excluded, passThrough = a.DataSourceFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
+		ff = append(ff, a.DataSourceFilter)
 	}
 	if a.TriggerFilter != nil {
-		output, excluded, passThrough = a.TriggerFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
-	}
-	if a.UsersFilter != nil {
-		output, passThrough = a.UsersFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
+		ff = append(ff, a.TriggerFilter)
 	}
 	if a.ActionOutputFilter != nil {
-		output, passThrough = a.ActionOutputFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
+		ff = append(ff, a.ActionOutputFilter)
 	}
 	if a.ContextMetaFilter != nil {
-		output, passThrough = a.ContextMetaFilter.Filter(ctx, output)
-		if !passThrough {
-			return
-		}
+		ff = append(ff, a.ContextMetaFilter)
 	}
 	return
 }
 
-func (a *Action) FanToNext(ctx context.Context, index int, input ActionMessage, output chan ActionMessage, errors chan error, done chan bool) {
+func (a *Action) ApplyFilters(ctx context.Context, ff []InputFilter, input *ActionMessage) (output *ActionMessage, excluded *ActionMessage, passThrough bool) {
+	passThrough = true
+	output = input
+	for _, f := range ff {
+		logger := log.TasksLogger(a.debugLogContext(ctx, true, f))
+		output, excluded, passThrough = f.Filter(ctx, output.Clone())
+		if !passThrough {
+			if excluded != nil {
+				logger.Debug("Filter may break to", zap.Object("FAIL", excluded))
+			} else {
+				logger.Debug("Filter breaks here")
+			}
+			return
+		}
+		logger.Debug("ZAPS", zap.Object("PASS", output))
+	}
+	return
+}
+
+func (a *Action) FanToNext(ctx context.Context, index int, input *ActionMessage, output chan *ActionMessage, errors chan error, done chan bool) {
 
 	selectors := a.getSelectors()
 	if index < len(selectors)-1 {
-		// Make a intermediary pipes for output/done
-		nextOut := make(chan ActionMessage)
+		// Make an intermediary pipes for output/done
+		nextOut := make(chan *ActionMessage)
 		nextDone := make(chan bool, 1)
 		go func() {
+			empty := true
 			for {
 				select {
 				case message := <-nextOut:
-					go a.FanToNext(ctx, index+1, message, output, errors, done)
+					empty = false
+					go a.FanToNext(ctx, index+1, message.Clone(), output, errors, done)
 				case <-nextDone:
 					close(nextOut)
 					close(nextDone)
+					if empty {
+						// Trigger done on the upper level
+						log.TasksLogger(ctx).Info("Empty intermediary selector, forward done")
+						done <- true
+					}
 					return
 				}
 			}
@@ -160,13 +181,20 @@ func (a *Action) FanToNext(ctx context.Context, index int, input ActionMessage, 
 
 }
 
-func (a *Action) FanOutSelector(ctx context.Context, selector InputSelector, input ActionMessage, output chan ActionMessage, done chan bool, errors chan error) {
+func (a *Action) FanOutSelector(ctx context.Context, selector InputSelector, input *ActionMessage, output chan *ActionMessage, done chan bool, errors chan error) {
 
 	// If multiple selectors, we have to apply them sequentially
 	wire := make(chan interface{})
 	selectDone := make(chan bool, 1)
 	var timeoutCancel context.CancelFunc
+	logger := log.TasksLogger(a.debugLogContext(ctx, false, selector))
+	logger.Debug("ZAPS", zap.Object("Input", input))
+	if selector.GetClearInput() {
+		input = selector.ApplyClearInput(input)
+	}
+	originalChain := input.Clone().OutputChain
 	go func() {
+		var count = 0
 		for {
 			select {
 			case obj := <-wire:
@@ -175,26 +203,32 @@ func (a *Action) FanOutSelector(ctx context.Context, selector InputSelector, inp
 					break
 				}
 				if nodeP, o := obj.(*tree.Node); o {
-					node := *nodeP // copy
-					input = input.WithNode(&node)
+					input = input.WithNode(nodeP.Clone())
 				} else if userP, oU := obj.(*idm.User); oU {
-					user := *userP
-					input = input.WithUser(&user)
+					input = input.WithUser(proto.Clone(userP).(*idm.User))
 				} else if roleP, oR := obj.(*idm.Role); oR {
-					role := *roleP
-					input = input.WithRole(&role)
+					input = input.WithRole(proto.Clone(roleP).(*idm.Role))
 				} else if wsP, oW := obj.(*idm.Workspace); oW {
-					ws := *wsP
-					input = input.WithWorkspace(&ws)
+					input = input.WithWorkspace(proto.Clone(wsP).(*idm.Workspace))
 				} else if aclP, oA := obj.(*idm.ACL); oA {
-					acl := *aclP
-					input = input.WithAcl(&acl)
+					input = input.WithAcl(proto.Clone(aclP).(*idm.ACL))
 				} else if dsP, oD := obj.(*object.DataSource); oD {
-					ds := *dsP
-					input = input.WithDataSource(&ds)
+					input = input.WithDataSource(proto.Clone(dsP).(*object.DataSource))
+				} else if jc, oJ := obj.(JsonChunk); oJ {
+					ao := &ActionOutput{}
+					if jc.v != "" {
+						ao.SetVar(jc.v, jc.d)
+					} else {
+						ao.JsonBody, _ = json.Marshal(jc.d)
+					}
+					// Make Sure to Reset OutputChain, otherwise it stacks up
+					input = input.Clone()
+					input.OutputChain = originalChain
+					input = input.WithOutput(ao)
 				} else {
 					break
 				}
+				count++
 				output <- input
 			case <-selectDone:
 				close(wire)
@@ -202,6 +236,11 @@ func (a *Action) FanOutSelector(ctx context.Context, selector InputSelector, inp
 				done <- true
 				if timeoutCancel != nil {
 					timeoutCancel()
+				}
+				if count > 0 {
+					logger.Debug(fmt.Sprintf("Sent %d objects (to separate actions)", count))
+				} else {
+					logger.Debug("Empty Query Result")
 				}
 				return
 			}
@@ -221,7 +260,7 @@ func (a *Action) FanOutSelector(ctx context.Context, selector InputSelector, inp
 
 }
 
-func (a *Action) CollectSelector(ctx context.Context, selector InputSelector, input ActionMessage, output chan ActionMessage, done chan bool, errors chan error) {
+func (a *Action) CollectSelector(ctx context.Context, selector InputSelector, input *ActionMessage, output chan *ActionMessage, done chan bool, errors chan error) {
 
 	// If multiple selectors, we have to apply them sequentially
 	var nodes []*tree.Node
@@ -230,7 +269,13 @@ func (a *Action) CollectSelector(ctx context.Context, selector InputSelector, in
 	var workspaces []*idm.Workspace
 	var acls []*idm.ACL
 	var dss []*object.DataSource
+	var jsonChunks []JsonChunk
 
+	logger := log.TasksLogger(a.debugLogContext(ctx, false, selector))
+	logger.Debug("ZAPS", zap.Object("Input", input))
+	if selector.GetClearInput() {
+		input = selector.ApplyClearInput(input)
+	}
 	var timeoutCancel context.CancelFunc
 	wire := make(chan interface{})
 	selectDone := make(chan bool, 1)
@@ -257,6 +302,8 @@ func (a *Action) CollectSelector(ctx context.Context, selector InputSelector, in
 					acls = append(acls, acl)
 				} else if ds, oD := obj.(*object.DataSource); oD {
 					dss = append(dss, ds)
+				} else if jc, oJ := obj.(JsonChunk); oJ {
+					jsonChunks = append(jsonChunks, jc)
 				}
 			case <-selectDone:
 				close(wire)
@@ -280,25 +327,97 @@ func (a *Action) CollectSelector(ctx context.Context, selector InputSelector, in
 	}()
 	wg.Wait()
 
+	if len(nodes) == 0 && len(roles) == 0 && len(workspaces) == 0 && len(acls) == 0 && len(users) == 0 && len(dss) == 0 && len(jsonChunks) == 0 {
+		done <- true
+		return
+	}
+
 	input = input.WithNodes(nodes...)
 	input = input.WithRoles(roles...)
 	input = input.WithWorkspaces(workspaces...)
 	input = input.WithAcls(acls...)
 	input = input.WithUsers(users...)
 	input = input.WithDataSources(dss...)
-	if len(nodes) == 0 && len(roles) == 0 && len(workspaces) == 0 && len(acls) == 0 && len(users) == 0 && len(dss) == 0 {
-		done <- true
-		return
+	if len(jsonChunks) > 0 {
+		var full []interface{}
+		var targetVar string
+		for _, j := range jsonChunks {
+			targetVar = j.v
+			full = append(full, j.d)
+		}
+		ao := &ActionOutput{}
+		if targetVar == "" {
+			ao.JsonBody, _ = json.Marshal(full)
+		} else {
+			ao.SetVar(targetVar, full)
+		}
+		input = input.WithOutput(ao)
+	}
+	count := len(nodes) + len(roles) + len(workspaces) + len(acls) + len(users) + len(dss) + len(jsonChunks)
+	if count > 0 {
+		logger.Debug(fmt.Sprintf("Sent %d objects as a collection", count))
+	} else {
+		logger.Debug("Empty Query Result")
 	}
 	output <- input
 	done <- true
 }
 
+func (a *Action) BuildTaskActionPath(ctx context.Context, suffix string, indexTag ...int) (string, context.Context) {
+	pPath := "ROOT"
+	var tags []string
+	if mm, ok := propagator.FromContextRead(ctx); ok {
+		if p, o := mm[common.CtxMetaTaskActionPath]; o {
+			pPath = p
+		}
+		if t, o := mm[common.CtxMetaTaskActionTags]; o {
+			tags = strings.Split(t, ",")
+		}
+	}
+	chainIndex := 0
+	if civ := ctx.Value(IndexedContextKey); civ != nil {
+		chainIndex = civ.(int)
+	}
+	var sx string
+	if len(suffix) > 0 {
+		sx = suffix
+	}
+	id := ""
+	if a != nil { // Maybe nil if parent runnable is ROOT
+		id = a.ID
+	}
+	newPath := path.Join(pPath, fmt.Sprintf("%s$%d%s", id, chainIndex, sx))
+	newMeta := map[string]string{
+		common.CtxMetaTaskActionPath: newPath,
+	}
+	if len(indexTag) > 0 && indexTag[0] > 0 {
+		tags = append(tags, fmt.Sprintf("%s:%d", newPath, indexTag[0]))
+		newMeta[common.CtxMetaTaskActionTags] = strings.Join(tags, ",")
+	}
+	ctx = propagator.WithAdditionalMetadata(ctx, newMeta)
+	return newPath, ctx
+}
+
 /* LOGGING SUPPORT */
+
+func (a *Action) debugLogContext(ctx context.Context, filter bool, obj interface{}) context.Context {
+
+	var suffix string
+	if filter {
+		filterID := obj.(InputFilter).FilterID()
+		suffix = "$" + filterID
+	} else {
+		selectorID := obj.(InputSelector).SelectorID()
+		suffix = "$" + selectorID
+	}
+	_, ct := a.BuildTaskActionPath(ctx, suffix)
+	return ct
+
+}
 
 func (a *Action) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
 	encoder.AddString("ID", a.ID)
-	encoder.AddReflected("Parameters", a.Parameters)
+	_ = encoder.AddReflected("Parameters", a.Parameters)
 	return nil
 }
 

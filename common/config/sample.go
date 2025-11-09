@@ -20,7 +20,25 @@
 
 package config
 
-import "github.com/pydio/cells/v4/common"
+import (
+	"context"
+
+	"github.com/pydio/cells/v5/common"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+)
+
+// SaveNewFromSample parses Json default sample and save it to context config
+func SaveNewFromSample(ctx context.Context) error {
+	var data interface{}
+	if err := json.Unmarshal([]byte(SampleConfig), &data); err != nil {
+		return err
+	}
+	if err := Set(ctx, data); err == nil {
+		return Save(ctx, common.PydioSystemUsername, "Initialize with sample config")
+	} else {
+		return err
+	}
+}
 
 // SampleConfig is the default config used during the first install
 var SampleConfig = `{
@@ -29,175 +47,50 @@ var SampleConfig = `{
 		"update": {
 			"publicKey": "` + common.UpdateDefaultPublicKey + `",
 			"updateUrl": "` + common.UpdateDefaultServerUrl + `"
-		}
-	},
-    "ports":{
-        "nats": 4222
-    },
-    "frontend":{
-        "secureHeaders":{
-			"X-XSS-Protection": "1; mode=block"
 		},
-        "plugin": {
-            "editor.libreoffice": {
-                "LIBREOFFICE_HOST": "localhost",
-                "LIBREOFFICE_PORT": "9980",
-                "LIBREOFFICE_SSL": true
-            }
-        }
-    },
-    "services":{
-        "pydio.grpc.config":{
-            "dsn": "default"
-        },
-        "pydio.grpc.user":{
-            "dsn": "default",
-            "tables":{
-                "tree": "idm_user_tree",
-                "nodes":"idm_user_nodes",
-                "roles":"idm_user_roles",
-                "attributes":"idm_user_attributes"
-            }
-        },
-		"pydio.grpc.mailer": {
-			"queue": {
-				"@value": "boltdb"
-			},
-			"sender": {
-				"@value": "disabled"
-			}
-		},
-        "pydio.grpc.role":{
-            "dsn": "default"
-        },
-        "pydio.grpc.workspace":{
-            "dsn": "default"
-        },
-        "pydio.grpc.acl":{
-            "dsn": "default"
-        },
-        "pydio.grpc.tree":{
-            "dsn":"default"
-        },
-        "pydio.grpc.meta":{
-            "dsn":"default"
-        },
-        "pydio.thumbs_store":{
-            "datasource" : "default",
-            "bucket"     : "thumbs"
-        },
-        "pydio.docstore-binaries":{
-            "datasource" : "default",
-            "bucket"     : "binaries"
-        },
-        "pydio.versions-store":{
-            "datasource" : "default",
-            "bucket"     : "versions"
-        },
-        "pydio.grpc.search": {
-            "indexContent": false,
-			"basenameAnalyzer": "standard",
-			"contentAnalyzer": "en"
-        },
-		"pydio.grpc.policy": {
-			"dsn": "databaseParseTime"
-		},
-        "pydio.grpc.data-key": {
-            "dsn": "default"
-        },
-        "pydio.grpc.user-key": {
-            "dsn": "default"
-        },
-		"pydio.grpc.update" : {
-			"channel": "` + common.UpdateDefaultChannel + `"
-		},
-		"pydio.grpc.user-meta": {
-			"dsn": "default"
-		},
-        "pydio.grpc.tasks": {
-            "fork": true
-        },
-		"pydio.web.oauth":{
-			"connectors": [
-				{
-					"type": "pydio",
-					"id"  : "pydio",
-					"name": "Pydio Cells"
-				}
+		"layout": {
+			"templates":[
+				{"Uuid":"my-files","Path":"my-files","Type":2,"MetaStore":{"name":"my-files", "onDelete":"rename-uuid","resolution":"\/\/ Default node used for storing personal users data in separate folders. \n\/\/ Use Ctrl+Space to see the objects available for completion.\nSplitMode = true; DataSourceName = DataSources.personal; DataSourcePath = User.Name;","contentType":"text\/javascript"}},
+				{"Uuid":"cells","Path":"cells","Type":2,"MetaStore":{"name":"cells","resolution":"\/\/ Default node used as parent for creating empty cells. \n\/\/ Use Ctrl+Space to see the objects available for completion.\nSplitMode = true; DataSourceName = DataSources.cellsdata; DataSourcePath = User.Name;","contentType":"text\/javascript"}}
 			],
-			"cors": {
-				"public": {
-					"allowedOrigins": "*"
-				}
-			},
-			"staticClients": [
-                {
-					"client_id": "` + DefaultOAuthClientID + `",
-					"client_name": "CellsFrontend Application",
-					"revokeRefreshTokenAfterInactivity": "2h",
-					"grant_types": [
-						"authorization_code", 
-						"refresh_token"
-					],
-					"redirect_uris": [
-						"#default_bind#/auth/callback"
-                    ],
-                    "post_logout_redirect_uris": [
-                        "#default_bind#/auth/logout"
-                    ],
-					"response_types": ["code", "token", "id_token"],
-					"scope": "openid email profile pydio offline"
-				},
-				{
-					"client_id": "cells-sync",
-					"client_name": "CellsSync Application",
-					"grant_types": [
-						"authorization_code", 
-						"refresh_token"
-					],
-					"redirect_uris": [
-						"http://localhost:3000/servers/callback",
-						"http://localhost:[3636-3666]/servers/callback"
-					],
-					"response_types": ["code", "token", "id_token"],
-					"scope": "openid email profile pydio offline"
-				},
-				{
-					"client_id": "cells-client",
-					"client_name": "Cells Client CLI Tool",
-					"grant_types": [
-						"authorization_code",
-						"refresh_token"
-					],
-					"redirect_uris": [
-						"http://localhost:3000/servers/callback",
-						"#binds...#/oauth2/oob"
-					],
-					"response_types": [
-						"code",
-						"token",
-						"id_token"
-					],
-					"scope": "openid email profile pydio offline"
-				},
-				{
-					"client_id": "cells-mobile",
-					"client_name": "Mobile Applications",
-					"grant_types": [
-						"authorization_code",
-						"refresh_token"
-					],
-					"redirect_uris": [
-						"cellsauth://callback"
-					],
-					"response_types": [
-						"code",
-						"token",
-						"id_token"
-					],
-					"scope": "openid email profile pydio offline"
-				}
+			"workspaces":[
+				{"Label": "Personal Files", "Description": "User personal files", "Slug": "personal-files", "RootUUIDs": ["my-files"], "Attributes":"{\"DEFAULT_RIGHTS\":\"rw\"}"},
+				{"Label": "Common Files", "Description": "Data shared by all users", "Slug": "common-files", "RootUUIDs": ["DATASOURCE:pydiods1"], "Attributes":"{\"DEFAULT_RIGHTS\":\"rw\"}"}
 			]
+		},
+		"sites": [
+		  {
+			"Binds": [
+			  "0.0.0.0:8080"
+			],
+			"Routing": [
+			  {
+				"Effect": 1,
+				"Matcher": "*"
+			  }
+			],
+			"TLSConfig": {
+			  "SelfSigned": {}
+			}
+		  }
+		],
+        "telemetry": {
+		  
+		  "metrics": {
+			"readers": []
+		  },
+		  "otelService": {
+			"attributes": {
+			  "deployment": "local"
+			},
+			"name": "cells"
+		  },
+		  "profiling": {
+			"publishers": []
+		  },
+		  "tracing": {
+			"outputs": []
+		  }
 		}
-    }
+	}
 }`

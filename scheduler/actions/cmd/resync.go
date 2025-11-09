@@ -22,21 +22,17 @@ package cmd
 
 import (
 	"context"
-	grpc2 "google.golang.org/grpc"
-	"strings"
-	"time"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
-	"github.com/pydio/cells/v4/common/service/errors"
 	"go.uber.org/zap"
+	grpc2 "google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/sync"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/sync"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -44,7 +40,6 @@ var (
 )
 
 type ResyncAction struct {
-	common.RuntimeHolder
 	ServiceName string
 	Path        string
 	DryRun      bool
@@ -57,7 +52,7 @@ func (c *ResyncAction) GetDescription(lang ...string) actions.ActionDescription 
 		ID:              resyncActionName,
 		Label:           "Resynchronize",
 		Category:        actions.ActionCategoryCmd,
-		Icon:            "reload",
+		Icon:            "database-refresh",
 		Description:     "Trigger a Resync command on a SyncProvider microservice endpoint",
 		SummaryTemplate: "",
 		HasForm:         true,
@@ -65,7 +60,7 @@ func (c *ResyncAction) GetDescription(lang ...string) actions.ActionDescription 
 }
 
 // GetParametersForm returns a UX form
-func (c *ResyncAction) GetParametersForm() *forms.Form {
+func (c *ResyncAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -113,10 +108,10 @@ func (c *ResyncAction) SetTask(task *jobs.Task) {
 }
 
 // Init passes parameters
-func (c *ResyncAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *ResyncAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	c.ServiceName = action.Parameters["service"]
 	if c.ServiceName == "" {
-		return errors.BadRequest(common.ServiceJobs, "Missing parameters for Sync Action")
+		return errors.WithMessage(errors.InvalidParameters, "Missing parameters for Sync Action")
 	}
 	if path, ok := action.Parameters["path"]; ok {
 		c.Path = path
@@ -130,13 +125,12 @@ func (c *ResyncAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run perform actual action code
-func (c *ResyncAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *ResyncAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
-	ctx, _ = context.WithTimeout(ctx, 1*time.Hour)
+	//ctx, _ = context.WithTimeout(ctx, 1*time.Hour)
 	srvName := jobs.EvaluateFieldStr(ctx, input, c.ServiceName)
-	// V4: strip grpc prefix
-	srvName = strings.TrimPrefix(srvName, common.ServiceGrpcNamespace_)
-	syncClient := sync.NewSyncEndpointClient(grpc.GetClientConnFromCtx(c.GetRuntimeContext(), srvName))
+
+	syncClient := sync.NewSyncEndpointClient(grpc.ResolveConn(ctx, srvName))
 	log.TasksLogger(ctx).Info("Sending Resync command to " + srvName)
 	_, e := syncClient.TriggerResync(ctx, &sync.ResyncRequest{
 		Path:   jobs.EvaluateFieldStr(ctx, input, c.Path),
@@ -147,7 +141,7 @@ func (c *ResyncAction) Run(ctx context.Context, channels *actions.RunnableChanne
 		log.TasksLogger(ctx).Error("Unable to trigger resync for "+srvName, zap.Error(e))
 		return input.WithError(e), e
 	}
-	output := input
+	output := input.Clone()
 	output.AppendOutput(&jobs.ActionOutput{
 		Success: true,
 	})

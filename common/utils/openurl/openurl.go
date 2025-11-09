@@ -52,6 +52,32 @@ func (m *SchemeMap) Register(api, typ, scheme string, value interface{}) {
 	m.m[scheme] = value
 }
 
+// FromStringNoParse parses urlstr as an URL and looks up the value for the URL's scheme.
+func (m *SchemeMap) FromStringNoParse(typ, urlstr string) (interface{}, error) {
+	parts := strings.SplitN(urlstr, "://", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("open %s.%s: should have a scheme", m.api, typ)
+	}
+	scheme := parts[0]
+	if scheme == "" {
+		return nil, fmt.Errorf("open %s.%s: no scheme in URL %s", m.api, typ, urlstr)
+	}
+	for _, prefix := range []string{
+		fmt.Sprintf("%s+%s+", m.api, strings.ToLower(typ)),
+		fmt.Sprintf("%s+", m.api),
+	} {
+		scheme = strings.TrimPrefix(scheme, prefix)
+	}
+
+	scheme = strings.SplitN(scheme, "+", 2)[0]
+
+	v, ok := m.m[scheme]
+	if !ok {
+		return nil, fmt.Errorf("open %s.%s: no driver registered for %q for URL %s; available schemes: %v", m.api, typ, scheme, urlstr, strings.Join(m.Schemes(), ", "))
+	}
+	return v, nil
+}
+
 // FromString parses urlstr as an URL and looks up the value for the URL's scheme.
 func (m *SchemeMap) FromString(typ, urlstr string) (interface{}, *url.URL, error) {
 	u, err := url.Parse(urlstr)
@@ -77,6 +103,9 @@ func (m *SchemeMap) FromURL(typ string, u *url.URL) (interface{}, error) {
 	} {
 		scheme = strings.TrimPrefix(scheme, prefix)
 	}
+
+	scheme = strings.SplitN(scheme, "+", 2)[0]
+
 	v, ok := m.m[scheme]
 	if !ok {
 		return nil, fmt.Errorf("open %s.%s: no driver registered for %q for URL %q; available schemes: %v", m.api, typ, scheme, u, strings.Join(m.Schemes(), ", "))
@@ -102,4 +131,25 @@ func (m *SchemeMap) ValidScheme(scheme string) bool {
 		}
 	}
 	return false
+}
+
+func DSNToURL(driver string, dsn string, prefix string) *url.URL {
+	u := &url.URL{
+		Scheme: driver,
+	}
+
+	q := u.Query()
+	q.Set("dsn", dsn)
+	q.Set("prefix", prefix)
+	u.RawQuery = q.Encode()
+
+	return u
+}
+
+func URLToDSN(u *url.URL) (driver string, dsn string, prefix string) {
+	driver = u.Scheme
+	dsn = u.Query().Get("dsn")
+	prefix = u.Query().Get("prefix")
+
+	return
 }

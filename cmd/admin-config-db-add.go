@@ -1,3 +1,5 @@
+//go:build exclude
+
 /*
  * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
@@ -21,14 +23,13 @@
 package cmd
 
 import (
-	"context"
 	"strings"
 	"time"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/discovery/install/lib"
+	"github.com/pydio/cells/v5/discovery/install/lib"
 )
 
 // configDatabaseAddCmd adds database connection to the configuration.
@@ -55,11 +56,11 @@ DESCRIPTION
 
 		if dbType == "SQL" {
 
-			if _, err := promptDB(installConfig); err != nil {
+			if _, err := promptDB(cmd.Context(), installConfig); err != nil {
 				return err
 			}
 			cmd.Println("\033[1m## Performing SQL Installation\033[0m")
-			if err := lib.Install(context.Background(), installConfig, lib.InstallDb, func(event *lib.InstallProgressEvent) {
+			if err := lib.Install(cmd.Context(), installConfig, lib.InstallDb, func(event *lib.InstallProgressEvent) {
 				cmd.Println(promptui.IconGood + " " + event.Message)
 			}); err != nil {
 				return err
@@ -67,7 +68,7 @@ DESCRIPTION
 
 		} else {
 
-			if err := promptDocumentsDSN(installConfig); err != nil {
+			if err := promptDocumentsDSN(cmd.Context(), installConfig); err != nil {
 				return err
 			}
 			if strings.HasPrefix(installConfig.DocumentsDSN, "mongodb://") {
@@ -80,7 +81,7 @@ DESCRIPTION
 			}
 
 			cmd.Println("\033[1m## Performing NoSQL Installation\033[0m")
-			if err := lib.Install(context.Background(), installConfig, lib.InstallDb|lib.InstallDSNOnly, func(event *lib.InstallProgressEvent) {
+			if err := lib.Install(cmd.Context(), installConfig, lib.InstallDb|lib.InstallDSNOnly, func(event *lib.InstallProgressEvent) {
 				cmd.Println(promptui.IconGood + " " + event.Message)
 			}); err != nil {
 				return err
@@ -94,7 +95,7 @@ DESCRIPTION
 			}
 
 			_, e := (&promptui.Prompt{
-				Label:     "Do you wish to run migration for all assigned services?",
+				Label:     "Do you wish to run migration for all assigned services? This requires the server to be stopped in order to read the BoltDB.",
 				IsConfirm: true,
 				Default:   "n",
 			}).Run()

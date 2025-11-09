@@ -24,83 +24,152 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
-	migrate "github.com/rubenv/sql-migrate"
+	"gorm.io/gorm"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/sql"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/statics"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/openurl"
+	"github.com/pydio/cells/v5/common/utils/watch"
 )
 
+var (
+	schemes          = []string{"mysql", "sqlite3"}
+	errClosedChannel = errors.New("channel is closed")
+)
+
+type URLOpener struct{}
+
+const timeout = 500 * time.Millisecond
+
+func init() {
+	o := &URLOpener{}
+	for _, scheme := range schemes {
+		config.DefaultURLMux().Register(scheme, o)
+	}
+}
+
+func (o *URLOpener) Open(ctx context.Context, urlstr string, base config.Store) (config.Store, error) {
+	u, err := url.Parse(urlstr)
+	if err != nil {
+		return nil, err
+	}
+
+	var opts []configx.Option
+
+	encode := u.Query().Get("encode")
+	switch encode {
+	case "string":
+		opts = append(opts, configx.WithString())
+	case "yaml":
+		opts = append(opts, configx.WithYAML())
+	case "json":
+		opts = append(opts, configx.WithJSON())
+	default:
+		opts = append(opts, configx.WithJSON())
+	}
+
+	if data := u.Query().Get("data"); data != "" {
+		//unescapedData, err := url.QueryUnescape(data)
+		//if err != nil {
+		//	return nil, err
+		//}
+		opts = append(opts, configx.WithInitData([]byte(data)))
+	}
+
+	driver := u.Scheme
+	dsn := u.Host
+	prefix := u.Query().Get("prefix")
+
+	switch u.Scheme {
+	case "mysql":
+		driver, dsn, prefix = openurl.URLToDSN(u)
+	}
+
+	store, err := New(ctx, driver, dsn, prefix)
+	if err != nil {
+		fmt.Println("And the error is ? ", err)
+	}
+
+	envPrefix := u.Query().Get("env")
+	if envPrefix != "" {
+		env := os.Environ()
+		for _, v := range env {
+			if strings.HasPrefix(v, envPrefix) {
+				vv := strings.SplitN(v, "=", 2)
+				if len(vv) == 2 {
+					k := strings.TrimPrefix(vv[0], envPrefix)
+					k = strings.ReplaceAll(k, "_", "/")
+					k = strings.ToLower(k)
+
+					var m map[string]interface{}
+					msg, err := strconv.Unquote(vv[1])
+					if err != nil {
+						msg = vv[1]
+					}
+
+					json.Unmarshal([]byte(msg), &m)
+					store.Val(k).Set(m)
+				}
+			}
+		}
+	}
+
+	return store, nil
+}
+
 type SQL struct {
-	dao      dao.DAO
+	dao      DAO
 	config   configx.Values
 	watchers []*receiver
 }
 
-func New(ctx context.Context, driver string, dsn string, prefix string) (configx.Entrypoint, error) {
-	var d dao.DAO
-	var de error
-	switch driver {
-	case "mysql":
-		c, er := sql.NewDAO(ctx, driver, dsn, prefix)
-		if er != nil {
-			return nil, er
-		}
-		d, de = NewDAO(ctx, c)
-	case "sqlite3":
-		c, er := sql.NewDAO(ctx, driver, dsn, prefix)
-		if er != nil {
-			return nil, er
-		}
-		d, de = NewDAO(ctx, c)
-	}
-	if de != nil {
-		return nil, de
-	}
+func (s *SQL) Reset() {
+	//TODO implement me
+	panic("implement me")
+}
 
-	dc := configx.New()
-	if er := dc.Val("prepare").Set(true); er != nil {
-		return nil, er
-	}
+func (s *SQL) Flush() {
+	//TODO implement me
+	panic("implement me")
+}
 
-	if er := d.Init(ctx, dc); er != nil {
-		return nil, er
-	}
+func New(ctx context.Context, driver string, dsn string, prefix string) (config.Store, error) {
+	var db *gorm.DB
+
+	//o, er := storage.Get(ctx, &db)
+	//if o && er != nil {
+	//	return nil, er
+	//}
+
+	d := NewDAO(db)
 
 	return &SQL{
 		dao: d,
 	}, nil
 }
 
-// Init handler for the SQL DAO
-func (s *SQL) Init(ctx context.Context, options configx.Values) error {
+func (s *SQL) Context(ctx context.Context) configx.Values {
+	return s.config.Context(ctx)
+}
 
-	migrations := &sql.FSMigrationSource{
-		Box:         statics.AsFS(migrationsFS, "migrations"),
-		Dir:         "./" + s.dao.Driver(),
-		TablePrefix: s.dao.Prefix(),
-	}
+func (s *SQL) Options() *configx.Options {
+	return s.config.Options()
+}
 
-	sqldao := s.dao.(sql.DAO)
+func (s *SQL) Key() []string {
+	return s.config.Key()
+}
 
-	_, err := sql.ExecMigration(sqldao.DB(), s.dao.Driver(), migrations, migrate.Up, s.dao.Prefix())
-	if err != nil {
-		return err
-	}
-
-	// Preparing the db statements
-	if options.Val("prepare").Default(true).Bool() {
-		for key, query := range queries {
-			if err := sqldao.Prepare(key, query); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+func (s *SQL) Default(def any) configx.Values {
+	return s.config.Default(def)
 }
 
 func (s *SQL) Val(path ...string) configx.Values {
@@ -110,12 +179,12 @@ func (s *SQL) Val(path ...string) configx.Values {
 	return &wrappedConfig{s.config.Val(path...), s}
 }
 
-func (s *SQL) Get() configx.Value {
+func (s *SQL) Get() any {
 	dao := s.dao.(DAO)
 
 	v := configx.New(configx.WithJSON())
 
-	b, err := dao.Get()
+	b, err := dao.Get(context.TODO())
 	if err != nil {
 		v.Set(map[string]interface{}{})
 	}
@@ -124,18 +193,18 @@ func (s *SQL) Get() configx.Value {
 
 	s.config = v
 
-	return v
+	return v.Get()
 }
 
-func (s *SQL) Set(data interface{}) error {
+func (s *SQL) Set(value interface{}) error {
 	dao := s.dao.(DAO)
 
-	b, err := json.Marshal(data)
+	b, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 
-	if err := dao.Set(b); err != nil {
+	if err := dao.Set(context.TODO(), b); err != nil {
 		return err
 	}
 
@@ -167,8 +236,8 @@ func (s *SQL) Save(ctxUser, ctxMessage string) error {
 	return nil
 }
 
-func (s *SQL) Watch(oo ...configx.WatchOption) (configx.Receiver, error) {
-	opts := &configx.WatchOptions{}
+func (s *SQL) Watch(oo ...watch.WatchOption) (watch.Receiver, error) {
+	opts := &watch.WatchOptions{}
 	for _, o := range oo {
 		o(opts)
 	}
@@ -182,6 +251,23 @@ func (s *SQL) Watch(oo ...configx.WatchOption) (configx.Receiver, error) {
 	s.watchers = append(s.watchers, r)
 
 	return r, nil
+}
+
+func (s *SQL) As(out any) bool { return false }
+
+func (s *SQL) Close(_ context.Context) error {
+	return nil
+}
+
+func (s *SQL) Done() <-chan struct{} {
+	// Never returns
+	return nil
+}
+
+func (s *SQL) Lock() {
+}
+
+func (s *SQL) Unlock() {
 }
 
 type receiver struct {
@@ -229,8 +315,8 @@ type wrappedConfig struct {
 	s *SQL
 }
 
-func (w *wrappedConfig) Set(val interface{}) error {
-	err := w.Values.Set(val)
+func (w *wrappedConfig) Set(value interface{}) error {
+	err := w.Values.Set(value)
 	if err != nil {
 		return err
 	}

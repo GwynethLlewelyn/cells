@@ -27,8 +27,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/install"
 )
 
 func init() {
@@ -45,7 +46,7 @@ DESCRIPTION
   See 'sites' command help for more info about Sites management.
 `,
 	Run: func(cmd *cobra.Command, args []string) {
-		sites, e := config.LoadSites(true)
+		sites, e := routing.LoadSites(cmd.Context(), true)
 		if len(sites) == 0 {
 			cmd.Println("No sites are defined in config, currently using defaults. Nothing to do.")
 			return
@@ -53,7 +54,7 @@ DESCRIPTION
 		fatalIfError(cmd, e)
 		err := fmt.Errorf("Please provide an index between 0 and %d", len(sites)-1)
 		if len(sites) == 1 {
-			err = fmt.Errorf("Please confirm you wish to delete this site by providing index 0 as argument")
+			err = errors.New("Please confirm you wish to delete this site by providing index 0 as argument")
 		}
 		if len(args) == 0 {
 			fatalIfError(cmd, err)

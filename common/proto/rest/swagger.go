@@ -24,3 +24,6 @@ import _ "embed"
 
 //go:embed cellsapi-rest.swagger.json
 var SwaggerJson string
+
+//go:embed cellsapi-rest-v2.swagger.json
+var SwaggerV2 string

@@ -22,22 +22,22 @@ package archive
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/config/mock"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config/mock"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/uuid"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func getTempArchive(formatOrName string) (*tree.Node, string, error) {
@@ -57,12 +57,12 @@ func getTempArchive(formatOrName string) (*tree.Node, string, error) {
 	refFile := filepath.Join("..", "testdata", fName)
 	nodeUuid := uuid.New()
 	tmpDir := os.TempDir()
-	refData, e := ioutil.ReadFile(refFile)
+	refData, e := os.ReadFile(refFile)
 	if e != nil {
 		return nil, "", e
 	}
 	tmpArchive := filepath.Join(tmpDir, nodeUuid)
-	e2 := ioutil.WriteFile(tmpArchive, refData, 0755)
+	e2 := os.WriteFile(tmpArchive, refData, 0755)
 	if e2 != nil {
 		return nil, "", e2
 	}
@@ -189,7 +189,7 @@ func TestReader_StatChild(t *testing.T) {
 		{
 			_, e := archiveReader.StatChildZip(context.Background(), archiveNode, "actions/nonexistingfile.go")
 			So(e, ShouldNotBeNil)
-			So(errors.FromError(e).Code, ShouldEqual, 404)
+			So(errors.Is(e, errors.StatusNotFound), ShouldBeTrue)
 		}
 		{
 			stat, e := archiveReader.StatChildZip(context.Background(), archiveNode, "actions/interfaces.go")
@@ -244,7 +244,7 @@ func TestReader_StatChild(t *testing.T) {
 		{
 			_, e := archiveReader.StatChildTar(context.Background(), false, archiveNode, "actions/nonexistingfile.go")
 			So(e, ShouldNotBeNil)
-			So(errors.FromError(e).Code, ShouldEqual, 404)
+			So(errors.Is(e, errors.StatusNotFound), ShouldBeTrue)
 		}
 		{
 			stat, e := archiveReader.StatChildTar(context.Background(), false, archiveNode, "actions/interfaces.go")
@@ -280,7 +280,7 @@ func TestReader_StatChild(t *testing.T) {
 		{
 			_, e := archiveReader.StatChildTar(context.Background(), true, archiveNode, "actions/nonexistingfile.go")
 			So(e, ShouldNotBeNil)
-			So(errors.FromError(e).Code, ShouldEqual, 404)
+			So(errors.Is(e, errors.StatusNotFound), ShouldBeTrue)
 		}
 		{
 			stat, e := archiveReader.StatChildTar(context.Background(), true, archiveNode, "actions/interfaces.go")
@@ -343,7 +343,7 @@ func TestReader_ReadChild(t *testing.T) {
 		So(e, ShouldBeNil)
 		defer reader.Close()
 
-		tmpRead, _ := ioutil.TempFile("", "pydio-read-archive-file")
+		tmpRead, _ := os.CreateTemp("", "pydio-read-archive-file")
 		tmpName := tmpRead.Name()
 		defer tmpRead.Close()
 		defer os.Remove(tmpName)
@@ -364,7 +364,7 @@ func TestReader_ReadChild(t *testing.T) {
 			Router: nodes.NewHandlerMock(),
 		}
 
-		tmpWriter, _ := ioutil.TempFile("", "pydio-read-archive-file")
+		tmpWriter, _ := os.CreateTemp("", "pydio-read-archive-file")
 		tmpName := tmpWriter.Name()
 		defer tmpWriter.Close()
 		defer os.Remove(tmpName)
@@ -385,7 +385,7 @@ func TestReader_ReadChild(t *testing.T) {
 			Router: nodes.NewHandlerMock(),
 		}
 
-		tmpWriter, _ := ioutil.TempFile("", "pydio-read-archive-file")
+		tmpWriter, _ := os.CreateTemp("", "pydio-read-archive-file")
 		tmpName := tmpWriter.Name()
 		defer tmpWriter.Close()
 		defer os.Remove(tmpName)
@@ -402,7 +402,8 @@ func TestReader_ExtractAll(t *testing.T) {
 
 	Convey("ExtractAllZip", t, func() {
 
-		So(mock.RegisterMockConfig(), ShouldBeNil)
+		ctx, er := mock.RegisterMockConfig(context.Background())
+		So(er, ShouldBeNil)
 		archiveNode, tmpArchive, e := getTempArchive("zip")
 		So(e, ShouldBeNil)
 		defer os.Remove(tmpArchive)
@@ -411,7 +412,7 @@ func TestReader_ExtractAll(t *testing.T) {
 			Router: nodes.NewHandlerMock(),
 		}
 
-		er := archiveReader.ExtractAllZip(context.Background(), archiveNode, &tree.Node{
+		er = archiveReader.ExtractAllZip(ctx, archiveNode, &tree.Node{
 			Path: "path/to/target",
 		})
 		So(er, ShouldBeNil)
@@ -428,7 +429,8 @@ func TestReader_ExtractAll(t *testing.T) {
 			Router: nodes.NewHandlerMock(),
 		}
 
-		er := archiveReader.ExtractAllTar(context.Background(), false, archiveNode, &tree.Node{
+		glob, _ := mock.RegisterMockConfig(context.Background())
+		er := archiveReader.ExtractAllTar(glob, false, archiveNode, &tree.Node{
 			Path: "path/to/target",
 		})
 		So(er, ShouldBeNil)
@@ -445,7 +447,8 @@ func TestReader_ExtractAll(t *testing.T) {
 			Router: nodes.NewHandlerMock(),
 		}
 
-		er := archiveReader.ExtractAllTar(context.Background(), true, archiveNode, &tree.Node{
+		glob, _ := mock.RegisterMockConfig(context.Background())
+		er := archiveReader.ExtractAllTar(glob, true, archiveNode, &tree.Node{
 			Path: "path/to/target",
 		})
 		So(er, ShouldBeNil)

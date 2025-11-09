@@ -23,20 +23,23 @@ package frontend
 import (
 	"context"
 	"encoding/base64"
+	"path"
 	"strings"
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth/claim"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/compose"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type User struct {
@@ -61,7 +64,7 @@ func (u *User) Load(ctx context.Context) error {
 
 	u.Workspaces = make(map[string]*Workspace)
 
-	claims, ok := ctx.Value(claim.ContextKey).(claim.Claims)
+	claims, ok := claim.FromContext(ctx)
 	if !ok {
 		// No user logged
 		return nil
@@ -70,7 +73,7 @@ func (u *User) Load(ctx context.Context) error {
 	u.Claims = claims
 
 	// Load user object
-	userName, _ := permissions.FindUserNameInContext(ctx)
+	userName := claim.UserNameFromContext(ctx)
 	if user, err := permissions.SearchUniqueUser(ctx, userName, ""); err != nil {
 		return err
 	} else {
@@ -80,7 +83,7 @@ func (u *User) Load(ctx context.Context) error {
 	// Check locks info
 	if l, ok := u.UserObject.Attributes["locks"]; ok {
 		var locks []string
-		log.Logger(context.Background()).Debug("Checking Locks", zap.Any("l", l))
+		log.Logger(ctx).Debug("Checking Locks", zap.Any("l", l))
 		if e := json.Unmarshal([]byte(l), &locks); e == nil {
 			if len(locks) > 0 {
 				u.HasLocks = true
@@ -132,8 +135,8 @@ func (u *User) LoadActiveWorkspace(parameter string) {
 		}
 	}
 	// Load default repository from preferences, or start on home page
-	var defaultStart = "homepage"
-	if v := u.FlattenedRolesConfigByName("core.conf", "DEFAULT_START_REPOSITORY"); v != "" {
+	var defaultStart = common.IdmWsInternalHomepageID
+	if v := u.FlattenedRolesConfigByName("core.conf", "DEFAULT_START_REPOSITORY"); v != "" && v != "-1" {
 		defaultStart = v
 	}
 
@@ -151,11 +154,11 @@ func (u *User) LoadActiveWorkspace(parameter string) {
 
 }
 
-func (u *User) LoadActiveLanguage(parameter string) string {
+func (u *User) LoadActiveLanguage(ctx context.Context, parameter string) string {
 	if parameter != "" {
 		return parameter
 	}
-	lang := i18n.GetDefaultLanguage(config.Get())
+	lang := languages.GetDefaultLanguage(ctx)
 	if v := u.FlattenedRolesConfigByName("core.conf", "lang"); v != "" {
 		lang = v
 	}
@@ -179,46 +182,37 @@ func (u *User) FlattenedRolesConfigByName(pluginId string, name string) string {
 
 func (u *User) LoadWorkspaces(ctx context.Context, accessList *permissions.AccessList) error {
 
-	workspacesAccesses := accessList.GetAccessibleWorkspaces(ctx)
-	for wsId := range workspacesAccesses {
-		if wsId == "settings" || wsId == "homepage" {
-			slug := "settings"
-			if wsId == "homepage" {
-				slug = "welcome"
-			}
+	workspacesAccesses := accessList.DetectedWsRights(ctx)
+	for wsId, right := range workspacesAccesses {
+		if slug, ok := common.IdmWsInternalReservedSlugs[wsId]; ok {
 			ws := &idm.Workspace{
 				Scope: idm.WorkspaceScope_ADMIN,
 				UUID:  wsId,
 				Slug:  slug,
 				Label: wsId,
 			}
-			workspace := &Workspace{
+			u.Workspaces[wsId] = &Workspace{
+				Workspace:   *ws,
 				AccessType:  wsId,
 				AccessRight: "rw",
 			}
-			workspace.Workspace = *ws
-			u.Workspaces[wsId] = workspace
 		} else {
-			aclWs, ok := accessList.Workspaces[wsId]
+			aclWs, ok := accessList.GetWorkspaces()[wsId]
 			if !ok {
 				log.Logger(ctx).Error("something went wrong, access list refers to unknown workspace", zap.String("wsId", wsId))
 				continue
 			}
-			access := workspacesAccesses[aclWs.UUID]
-			access = strings.Replace(access, "read", "r", -1)
-			access = strings.Replace(access, "write", "w", -1)
-			access = strings.Replace(access, ",", "", -1)
-			ws := &Workspace{}
-			ws.Workspace = *aclWs
-			ws.AccessRight = access
-			ws.AccessType = "gateway"
-			u.Workspaces[wsId] = ws
+			u.Workspaces[wsId] = &Workspace{
+				Workspace:   *aclWs,
+				AccessRight: right.UserStateString(),
+				AccessType:  "gateway",
+			}
 		}
 	}
 	return nil
 }
 
-func (u *User) Publish(status RequestStatus, pool *PluginsPool) *Cuser {
+func (u *User) Publish(ctx context.Context, status RequestStatus, pool *PluginsPool) *Cuser {
 	if !u.Logged {
 		return nil
 	}
@@ -232,14 +226,14 @@ func (u *User) Publish(status RequestStatus, pool *PluginsPool) *Cuser {
 			Attris_admin: "1",
 		}
 	}
-	reg.Cpreferences.Cpref = u.publishPreferences(status, pool)
+	reg.Cpreferences.Cpref = u.publishPreferences(ctx, status, pool)
 
 	/*
 		// Add locks info
 		var hasLock bool
 		if l, ok := u.UserObject.Attributes["locks"]; ok {
 			var locks []string
-			log.Logger(context.Background()).Info("Checking Locks", zap.Any("l", l))
+			log.Logger(ctx).Info("Checking Locks", zap.Any("l", l))
 			if e := json.Unmarshal([]byte(l), &locks); e == nil {
 				if len(locks) > 0 {
 					if reg.Cspecial_rights == nil {
@@ -261,13 +255,13 @@ func (u *User) Publish(status RequestStatus, pool *PluginsPool) *Cuser {
 		reg.Cactive_repo = &Cactive_repo{
 			Attrid: u.ActiveWorkspace,
 		}
-		reg.Crepositories.Crepo = u.publishWorkspaces(status, pool)
+		reg.Crepositories.Crepo = u.publishWorkspaces(ctx, status, pool)
 	}
 
 	return reg
 }
 
-func (u *User) publishPreferences(status RequestStatus, pool *PluginsPool) (preferencesNodes []*Cpref) {
+func (u *User) publishPreferences(ctx context.Context, status RequestStatus, pool *PluginsPool) (preferencesNodes []*Cpref) {
 
 	if preferences, ok := u.UserObject.Attributes["preferences"]; ok {
 		var userPrefs map[string]string
@@ -298,7 +292,7 @@ func (u *User) publishPreferences(status RequestStatus, pool *PluginsPool) (pref
 					AttrpluginId: exposed.PluginId,
 				})
 			} else if v := u.FlattenedRolesConfigByName(exposed.PluginId, exposed.Attrname); v != "" {
-				//				log.Logger(context.Background()).Info("-- Pref found in flattened roles for " + exposed.Attrname)
+				//				log.Logger(ctx).Info("-- Pref found in flattened roles for " + exposed.Attrname)
 				preferencesNodes = append(preferencesNodes, &Cpref{
 					Attrname:     exposed.Attrname,
 					Attrvalue:    v,
@@ -328,7 +322,7 @@ func (u *User) publishPreferences(status RequestStatus, pool *PluginsPool) (pref
 	return
 }
 
-func (u *User) publishWorkspaces(status RequestStatus, pool *PluginsPool) (workspaceNodes []*Crepo) {
+func (u *User) publishWorkspaces(ctx context.Context, status RequestStatus, pool *PluginsPool) (workspaceNodes []*Crepo) {
 
 	accessSettings := make(map[string]*Cclient_settings)
 	for _, p := range pool.Plugins {
@@ -338,9 +332,16 @@ func (u *User) publishWorkspaces(status RequestStatus, pool *PluginsPool) (works
 	}
 
 	// Used to detect "personal files"-like workspace
-	vNodeManager := abstract.GetVirtualNodesManager(status.RuntimeCtx)
+	vNodeManager := abstract.GetVirtualProvider()
+	var skipReserved bool
+	if status.Request != nil {
+		skipReserved = strings.Contains(status.Request.Header.Get("User-Agent"), "com.pydio.PydioPro;")
+	}
 
 	for _, ws := range u.Workspaces {
+		if _, ok := common.IdmWsInternalReservedSlugs[ws.UUID]; ok && skipReserved {
+			continue
+		}
 		repo := &Crepo{
 			Attrid:             ws.UUID,
 			Attraccess_type:    ws.AccessType,
@@ -353,14 +354,30 @@ func (u *User) publishWorkspaces(status RequestStatus, pool *PluginsPool) (works
 		if ws.Description != "" {
 			repo.Cdescription = &Cdescription{Cdata: ws.Description}
 		}
-		if ws.Scope != idm.WorkspaceScope_ADMIN {
+		if ws.Scope == idm.WorkspaceScope_ROOM {
 			repo.Attrowner = "shared"
-			repo.Attruser_editable_repository = "true"
+			// Use existing xml attribute to tell if user is owner or not
+			// The real "editable" aspect is linked to PoliciesContextEditable value
+			if u.isWorkspaceOwnerFromPolicy(ws.Workspace.Policies) {
+				repo.Attruser_editable_repository = "true"
+			} else {
+				repo.Attruser_editable_repository = "false"
+			}
 			repo.Attrrepository_type = "cell"
+		} else if ws.Scope == idm.WorkspaceScope_LINK {
+			repo.Attrowner = "shared"
+			repo.Attrrepository_type = "link"
+			if ws.Label == "{{RefLabel}}" && len(ws.RootUUIDs) == 1 {
+				// Load unique node to re-build label
+				router := compose.UuidClient()
+				if rsp, e := router.ReadNode(status.Request.Context(), &tree.ReadNodeRequest{Node: &tree.Node{Uuid: ws.RootUUIDs[0]}}); e == nil {
+					repo.Clabel = &Clabel{Cdata: path.Base(rsp.GetNode().GetPath())}
+				}
+			}
 		} else {
 			repo.Attrrepository_type = "workspace"
 			if len(ws.RootUUIDs) == 1 {
-				if _, ok := vNodeManager.ByUuid(ws.RootUUIDs[0]); ok {
+				if _, ok := vNodeManager.ByUuid(ctx, ws.RootUUIDs[0]); ok {
 					repo.Attrrepository_type = "workspace-personal"
 				}
 			}
@@ -373,4 +390,13 @@ func (u *User) publishWorkspaces(status RequestStatus, pool *PluginsPool) (works
 	}
 
 	return
+}
+
+func (u *User) isWorkspaceOwnerFromPolicy(policies []*service.ResourcePolicy) bool {
+	for _, pol := range policies {
+		if pol.Action == service.ResourcePolicyAction_OWNER {
+			return pol.Subject == u.UserObject.Uuid
+		}
+	}
+	return false
 }

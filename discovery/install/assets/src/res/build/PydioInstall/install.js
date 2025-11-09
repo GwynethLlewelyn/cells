@@ -72,6 +72,75 @@ var api = new _InstallServiceApi2.default(client);
 
 var supportedLanguages = [_react2.default.createElement(_materialUi.MenuItem, { key: "en-us", value: "en-us", primaryText: "English" }), _react2.default.createElement(_materialUi.MenuItem, { key: "fr", value: "fr", primaryText: "Français" }), _react2.default.createElement(_materialUi.MenuItem, { key: "de", value: "de", primaryText: "Deutsch" }), _react2.default.createElement(_materialUi.MenuItem, { key: "es-es", value: "es-es", primaryText: "Español" }), _react2.default.createElement(_materialUi.MenuItem, { key: "it", value: "it", primaryText: "Italiano" }), _react2.default.createElement(_materialUi.MenuItem, { key: "pt-br", value: "pt-br", primaryText: "Português do Brasil" })];
 
+var noWrap = {
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+};
+var hintColor = 'rgba(0,0,0, 0.33)';
+var panelBG = 'rgba(225, 234, 242, 0.98)';
+var v2Block = {
+    backgroundColor: '#dde3ea',
+    borderRadius: '3px 3px 0 0',
+    height: 52,
+    marginTop: 8,
+    boxSizing: 'border-box'
+};
+var underline = {
+    idle: { borderBottom: '1px solid rgb(193 199 206)' },
+    focus: { borderBottom: '2px solid var(--md-sys-color-primary)' }
+};
+
+var fieldStyles = {
+    textFieldV2: {
+        style: _extends({}, v2Block),
+        inputStyle: { position: 'absolute', height: 30, marginTop: 0, bottom: 2, paddingLeft: 8, paddingRight: 8 },
+        hintStyle: _extends({ bottom: 4, paddingLeft: 7, color: hintColor }, noWrap, { width: '100%' }),
+        underlineStyle: _extends({ opacity: 1, bottom: 0 }, underline.idle),
+        underlineFocusStyle: _extends({ opacity: 1, borderRadius: 0, bottom: 0 }, underline.focus),
+        floatingLabelFixed: true,
+        floatingLabelStyle: _extends({ top: 26, left: 8, width: '127%' }, noWrap),
+        floatingLabelShrinkStyle: { top: 26, left: 8 },
+        errorStyle: {
+            position: 'absolute', bottom: 8, right: 8,
+            maxWidth: '60%', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden'
+        }
+    },
+    selectFieldV2: {
+        style: _extends({}, v2Block, { padding: 8, paddingRight: 0, overflow: 'hidden' }),
+        menuStyle: { marginTop: -6 },
+        hintStyle: _extends({ paddingLeft: 0, marginBottom: -7, paddingRight: 56, color: hintColor }, noWrap, { width: '100%' }),
+        underlineStyle: _extends({ opacity: 1, bottom: 0, left: 0, right: 0 }, underline.idle),
+        underlineFocusStyle: _extends({ opacity: 1, borderRadius: 0, bottom: 0 }, underline.focus),
+        floatingLabelFixed: true,
+        floatingLabelStyle: _extends({ top: 26, left: 8, width: '127%' }, noWrap),
+        floatingLabelShrinkStyle: { top: 26, left: 8 },
+        dropDownMenuProps: {
+            iconStyle: { right: 0, fill: '#9e9e9e' },
+            menuStyle: { background: 'white' }
+        }
+    },
+    textareaFieldV2: {
+        rows: 15,
+        rowsMax: 15,
+        style: { height: 388 },
+        inputStyle: {
+            backgroundColor: v2Block.backgroundColor,
+            height: 380,
+            borderRadius: v2Block.borderRadius,
+            marginTop: 8,
+            paddingLeft: 8
+        },
+        textareaStyle: { marginTop: 24, marginBottom: 0 },
+        floatingLabelFixed: true,
+        floatingLabelStyle: _extends({ top: 35, left: 6, width: '127%' }, noWrap),
+        floatingLabelShrinkStyle: { top: 35, left: 6 },
+        hintStyle: _extends({ paddingLeft: 7, color: hintColor }, noWrap, { width: '100%', top: 12, bottom: 'inherit' }),
+        underlineStyle: _extends({ opacity: 1, bottom: 0 }, underline.idle),
+        underlineFocusStyle: _extends({ opacity: 1, bottom: 0, borderRadius: '0px 0px 3px 3px' }, underline.focus),
+        errorStyle: { position: 'absolute', bottom: 8, right: 8 }
+    }
+
+};
+
 var renderTextField = function renderTextField(_ref) {
     var input = _ref.input,
         label = _ref.label,
@@ -81,15 +150,23 @@ var renderTextField = function renderTextField(_ref) {
         error = _ref$meta.error,
         custom = _objectWithoutProperties(_ref, ['input', 'label', 'floatingLabel', 'meta']);
 
-    return _react2.default.createElement(_materialUi.TextField, _extends({
-        hintText: label,
-        floatingLabelText: floatingLabel,
-        floatingLabelFixed: true,
-        errorText: touched && error,
-        fullWidth: true,
-        hintStyle: { whiteSpace: 'nowrap' },
-        floatingLabelStyle: { whiteSpace: 'nowrap' }
-    }, input, custom));
+    if (custom && custom.multiLine) {
+        return _react2.default.createElement(_materialUi.TextField, _extends({
+            hintText: label,
+            floatingLabelText: floatingLabel,
+            floatingLabelFixed: true,
+            errorText: touched && error,
+            fullWidth: true
+        }, fieldStyles.textareaFieldV2, input, custom));
+    } else {
+        return _react2.default.createElement(_materialUi.TextField, _extends({
+            hintText: label,
+            floatingLabelText: floatingLabel,
+            floatingLabelFixed: true,
+            errorText: touched && error,
+            fullWidth: true
+        }, fieldStyles.textFieldV2, input, custom));
+    }
 };
 
 var renderPassField = function renderPassField(_ref2) {
@@ -108,10 +185,8 @@ var renderPassField = function renderPassField(_ref2) {
         errorText: error,
         fullWidth: true,
         type: "password",
-        autoComplete: "new-password",
-        hintStyle: { whiteSpace: 'nowrap' },
-        floatingLabelStyle: { whiteSpace: 'nowrap' }
-    }, input, custom));
+        autoComplete: "new-password"
+    }, fieldStyles.textFieldV2, input, custom));
 };
 
 var renderCheckbox = function renderCheckbox(_ref3) {
@@ -170,7 +245,7 @@ var renderSelectField = function renderSelectField(_ref6) {
             return input.onChange(value);
         },
         children: children
-    }, custom));
+    }, fieldStyles.selectFieldV2, custom));
 };
 
 /**
@@ -195,6 +270,7 @@ var InstallForm = function (_React$Component) {
             finished: false,
             stepIndex: 0,
             dbConnectionType: "tcp",
+            prevConnectionType: null,
             licenseAgreed: false,
             showAdvanced: false,
             installEvents: [],
@@ -289,6 +365,39 @@ var InstallForm = function (_React$Component) {
                     window.location.reload();
                 }, 5000);
             });
+        }
+    }, {
+        key: 'componentDidUpdate',
+        value: function componentDidUpdate(prevProps) {
+            var _props = this.props,
+                dbConnectionType = _props.dbConnectionType,
+                change = _props.change;
+
+            if (prevProps.dbConnectionType === dbConnectionType) {
+                return;
+            }
+            this.setState({ prevDbConnectionType: dbConnectionType });
+            // Adjust fields based on dbConnectionType
+            switch (dbConnectionType) {
+                case 'tcp':
+                case 'mysql_tcp':
+                    change('dbTCPPort', '3306');
+                    break;
+                case 'pg_tcp':
+                    change('dbTCPPort', '5432');
+                    break;
+                case 'sqlite':
+                    change('dbSocketFile', '/var/cells/cells.db');
+                    break;
+                case 'mysql_socket':
+                    change('dbSocketFile', '/tmp/mysql.sock');
+                    break;
+                case 'pg_socket':
+                    change('dbSocketFile', '/var/run/postgresql');
+                    break;
+                default:
+                    break;
+            }
         }
     }, {
         key: 'checkDbConfig',
@@ -464,11 +573,11 @@ var InstallForm = function (_React$Component) {
                 stepIndex = _state.stepIndex,
                 tablesFoundConfirm = _state.tablesFoundConfirm,
                 dbCheckSuccess = _state.dbCheckSuccess;
-            var _props = this.props,
-                handleSubmit = _props.handleSubmit,
-                licenseRequired = _props.licenseRequired,
-                invalid = _props.invalid,
-                dsType = _props.dsType;
+            var _props2 = this.props,
+                handleSubmit = _props2.handleSubmit,
+                licenseRequired = _props2.licenseRequired,
+                invalid = _props2.invalid,
+                dsType = _props2.dsType;
 
             var stepOffset = licenseRequired ? 1 : 0;
 
@@ -536,13 +645,19 @@ var InstallForm = function (_React$Component) {
                         label: this.t('stepper.button.back'),
                         disabled: stepIndex === 0,
                         onClick: this.handlePrev,
-                        style: { marginRight: 5 }
+                        style: { borderRadius: 20, marginRight: 5 },
+                        buttonStyle: { borderRadius: 20 },
+                        labelStyle: { textTransform: 'none', fontWeight: 400 }
                     }),
                     _react2.default.createElement(_materialUi.RaisedButton, {
                         label: stepIndex === 3 + stepOffset ? this.t('stepper.button.last') : this.t('stepper.button.next'),
                         primary: true,
                         onClick: nextAction,
-                        disabled: nextDisabled || invalid || nextInvalid
+                        disabled: nextDisabled || invalid || nextInvalid,
+                        style: { borderRadius: 20 },
+                        buttonStyle: { borderRadius: 20 },
+                        overlayStyle: { borderRadius: 20 },
+                        labelStyle: { textTransform: 'none', fontWeight: 400 }
                     })
                 )
             );
@@ -552,19 +667,19 @@ var InstallForm = function (_React$Component) {
         value: function render() {
             var _this8 = this;
 
-            var _props2 = this.props,
-                dbConnectionType = _props2.dbConnectionType,
-                handleSubmit = _props2.handleSubmit,
-                installPerformed = _props2.installPerformed,
-                installError = _props2.installError,
-                initialChecks = _props2.initialChecks,
-                licenseRequired = _props2.licenseRequired,
-                licenseString = _props2.licenseString,
-                frontendPassword = _props2.frontendPassword,
-                frontendLogin = _props2.frontendLogin,
-                frontendRepeatPassword = _props2.frontendRepeatPassword,
-                DocumentsDSN = _props2.DocumentsDSN,
-                change = _props2.change;
+            var _props3 = this.props,
+                dbConnectionType = _props3.dbConnectionType,
+                handleSubmit = _props3.handleSubmit,
+                installPerformed = _props3.installPerformed,
+                installError = _props3.installError,
+                initialChecks = _props3.initialChecks,
+                licenseRequired = _props3.licenseRequired,
+                licenseString = _props3.licenseString,
+                frontendPassword = _props3.frontendPassword,
+                frontendLogin = _props3.frontendLogin,
+                frontendRepeatPassword = _props3.frontendRepeatPassword,
+                DocumentsDSN = _props3.DocumentsDSN,
+                change = _props3.change;
             var _state3 = this.state,
                 stepIndex = _state3.stepIndex,
                 licenseAgreed = _state3.licenseAgreed,
@@ -616,7 +731,8 @@ var InstallForm = function (_React$Component) {
                 },
                 contentScroller: {
                     height: panelHeight - 88,
-                    overflowY: 'auto'
+                    overflowY: 'auto',
+                    overflowX: 'hidden'
                 }
             };
             var leftAction = void 0,
@@ -707,8 +823,21 @@ var InstallForm = function (_React$Component) {
                             _react2.default.createElement(
                                 'div',
                                 null,
-                                _react2.default.createElement(_materialUi.FlatButton, { label: 'Back', onClick: this.handlePrev.bind(this), style: { marginRight: 5 } }),
-                                _react2.default.createElement(_materialUi.RaisedButton, { label: 'Next', primary: true, onClick: nextAction, disabled: !licCheckPassed && !licenseString })
+                                _react2.default.createElement(_materialUi.FlatButton, {
+                                    label: 'Back',
+                                    onClick: this.handlePrev.bind(this),
+                                    style: { borderRadius: 20, marginRight: 5 },
+                                    buttonStyle: { borderRadius: 20 },
+                                    overlayStyle: { borderRadius: 20 },
+                                    labelStyle: { textTransform: 'none', fontWeight: 400 }
+                                }),
+                                _react2.default.createElement(_materialUi.RaisedButton, {
+                                    label: 'Next', primary: true, onClick: nextAction, disabled: !licCheckPassed && !licenseString,
+                                    style: { borderRadius: 20 },
+                                    buttonStyle: { borderRadius: 20 },
+                                    overlayStyle: { borderRadius: 20 },
+                                    labelStyle: { textTransform: 'none', fontWeight: 400 }
+                                })
                             )
                         )
                     )
@@ -799,16 +928,11 @@ var InstallForm = function (_React$Component) {
                                 ) })
                         ),
                         !dbUseDefaultsToggle && _react2.default.createElement(
-                            'span',
+                            'div',
                             null,
-                            this.t('database.legend'),
-                            ' ',
-                            _react2.default.createElement(
-                                'span',
-                                { style: { fontWeight: 500 } },
-                                this.t('database.legend.bold'),
-                                '.'
-                            )
+                            this.t('database.legend1'),
+                            _react2.default.createElement('br', null),
+                            this.t('database.legend2')
                         ),
                         dbCheckError && _react2.default.createElement(
                             'div',
@@ -820,12 +944,15 @@ var InstallForm = function (_React$Component) {
                             { style: flexContainer },
                             _react2.default.createElement(
                                 _reduxForm.Field,
-                                { name: 'dbConnectionType', component: renderSelectField },
-                                _react2.default.createElement(_materialUi.MenuItem, { value: 'tcp', primaryText: this.t('form.dbConnectionType.tcp') }),
-                                _react2.default.createElement(_materialUi.MenuItem, { value: 'socket', primaryText: this.t('form.dbConnectionType.socket') }),
+                                { name: 'dbConnectionType', component: renderSelectField, label: this.t('database.stepLabel') },
+                                _react2.default.createElement(_materialUi.MenuItem, { value: 'tcp', primaryText: this.t('form.dbConnectionType.mysql_tcp') }),
+                                _react2.default.createElement(_materialUi.MenuItem, { value: 'mysql_socket', primaryText: this.t('form.dbConnectionType.mysql_socket') }),
+                                _react2.default.createElement(_materialUi.MenuItem, { value: 'pg_tcp', primaryText: this.t('form.dbConnectionType.pg_tcp') }),
+                                _react2.default.createElement(_materialUi.MenuItem, { value: 'pg_socket', primaryText: this.t('form.dbConnectionType.pg_socket') }),
+                                _react2.default.createElement(_materialUi.MenuItem, { value: 'sqlite', primaryText: this.t('form.dbConnectionType.sqlite') }),
                                 _react2.default.createElement(_materialUi.MenuItem, { value: 'manual', primaryText: this.t('form.dbConnectionType.manual') })
                             ),
-                            dbConnectionType === "tcp" && _react2.default.createElement(
+                            (dbConnectionType === "tcp" || dbConnectionType === "mysql_tcp" || dbConnectionType === "pg_tcp") && _react2.default.createElement(
                                 'div',
                                 { style: flexContainer },
                                 _react2.default.createElement(
@@ -858,7 +985,7 @@ var InstallForm = function (_React$Component) {
                                     )
                                 )
                             ),
-                            dbConnectionType === "socket" && _react2.default.createElement(
+                            (dbConnectionType === "mysql_socket" || dbConnectionType === "pg_socket") && _react2.default.createElement(
                                 'div',
                                 { style: flexContainer },
                                 _react2.default.createElement(_reduxForm.Field, { name: 'dbSocketFile', component: renderTextField, floatingLabel: this.t('form.dbSocketFile.label'), label: this.t('form.dbSocketFile.legend'), defaultValue: '/tmp/mysql.sock' }),
@@ -877,6 +1004,11 @@ var InstallForm = function (_React$Component) {
                                         _react2.default.createElement(_reduxForm.Field, { name: 'dbSocketPassword', component: renderTextField, floatingLabel: this.t('form.dbPassword.label'), label: this.t('form.dbPassword.legend') })
                                     )
                                 )
+                            ),
+                            dbConnectionType === "sqlite" && _react2.default.createElement(
+                                'div',
+                                { style: flexContainer },
+                                _react2.default.createElement(_reduxForm.Field, { name: 'dbSocketFile', component: renderTextField, floatingLabel: this.t('form.dbSocketFileSQLite.label'), label: this.t('form.dbSocketFileSQLite.legend') })
                             ),
                             dbConnectionType === "manual" && _react2.default.createElement(
                                 'div',
@@ -981,7 +1113,10 @@ var InstallForm = function (_React$Component) {
             } else {
                 DSNURL = new _urlParse2.default('mongodb://localhost:27017/cells?maxPoolSize=20&w=majority');
             }
-            var DSNSearchParams = new URL(DSNURL.toString()).searchParams;
+            var DSNSearchParams = void 0;
+            try {
+                DSNSearchParams = new URL(DSNURL.toString()).searchParams;
+            } catch (e) {}
             var changeDSN = function changeDSN(url, key, value) {
                 if (key === "authSource") {
                     var sp = new URL(url.toString()).searchParams;
@@ -991,15 +1126,20 @@ var InstallForm = function (_React$Component) {
                         sp.delete("authSource");
                     }
                     url.set('query', '?' + sp.toString());
+                } else if (key === 'query') {
+                    if (value[value.length - 1] === "&") {
+                        value += 'newParam';
+                    }
+                    url.set('query', value);
                 } else {
                     url.set(key, value);
                 }
                 change('DocumentsDSN', url.toString());
             };
 
-            var _props3 = this.props,
-                dsType = _props3.dsType,
-                s3Config = _props3.s3Config;
+            var _props4 = this.props,
+                dsType = _props4.dsType,
+                s3Config = _props4.s3Config;
 
             steps.push(_react2.default.createElement(
                 _materialUi.Step,
@@ -1047,15 +1187,17 @@ var InstallForm = function (_React$Component) {
                             _react2.default.createElement(
                                 'div',
                                 { style: { display: 'flex', alignItems: 'flex-end' } },
-                                _react2.default.createElement(_materialUi.TextField, { value: DSNURL.hostname, onChange: function onChange(e, v) {
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNURL.hostname, onChange: function onChange(e, v) {
                                         return changeDSN(DSNURL, 'hostname', v);
-                                    }, floatingLabelText: this.t('advanced.mongo.host'), fullWidth: true, style: { marginRight: 10 }, floatingLabelFixed: true }),
-                                _react2.default.createElement(_materialUi.TextField, { value: DSNURL.port, onChange: function onChange(e, v) {
+                                    }, floatingLabelText: this.t('advanced.mongo.host'), fullWidth: true, floatingLabelFixed: true }, fieldStyles.textFieldV2)),
+                                _react2.default.createElement('div', { style: { marginRight: 10 } }),
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNURL.port, onChange: function onChange(e, v) {
                                         return changeDSN(DSNURL, 'port', v);
-                                    }, floatingLabelText: this.t('advanced.mongo.port'), fullWidth: true, style: { marginRight: 10 }, floatingLabelFixed: true }),
-                                _react2.default.createElement(_materialUi.TextField, { value: DSNURL.pathname.replace('/', ''), onChange: function onChange(e, v) {
+                                    }, floatingLabelText: this.t('advanced.mongo.port'), fullWidth: true, floatingLabelFixed: true }, fieldStyles.textFieldV2)),
+                                _react2.default.createElement('div', { style: { marginRight: 10 } }),
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNURL.pathname.replace('/', ''), onChange: function onChange(e, v) {
                                         return changeDSN(DSNURL, 'pathname', '/' + v);
-                                    }, floatingLabelText: this.t('advanced.mongo.db'), fullWidth: true, floatingLabelFixed: true }),
+                                    }, floatingLabelText: this.t('advanced.mongo.db'), fullWidth: true, floatingLabelFixed: true }, fieldStyles.textFieldV2)),
                                 performingCheck === 'MONGO' && _react2.default.createElement(
                                     'div',
                                     { style: { minWidth: 48, height: 48, padding: 12, boxSizing: 'border-box' } },
@@ -1087,17 +1229,27 @@ var InstallForm = function (_React$Component) {
                             _react2.default.createElement(
                                 'div',
                                 { style: { display: 'flex', alignItems: 'flex-end' } },
-                                _react2.default.createElement(_materialUi.TextField, { value: DSNURL.username, onChange: function onChange(e, v) {
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNURL.username, onChange: function onChange(e, v) {
                                         return changeDSN(DSNURL, 'username', v);
-                                    }, floatingLabelText: this.t('advanced.mongo.username'), fullWidth: true, style: { marginRight: 10 }, floatingLabelFixed: true }),
-                                _react2.default.createElement(_materialUi.TextField, { value: DSNURL.password, onChange: function onChange(e, v) {
+                                    }, floatingLabelText: this.t('advanced.mongo.username'), fullWidth: true, floatingLabelFixed: true }, fieldStyles.textFieldV2)),
+                                _react2.default.createElement('div', { style: { marginRight: 10 } }),
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNURL.password, onChange: function onChange(e, v) {
                                         return changeDSN(DSNURL, 'password', v);
-                                    }, floatingLabelText: "Password", fullWidth: true, type: this.t('advanced.mongo.password'), style: { marginRight: 10 }, floatingLabelFixed: true }),
-                                _react2.default.createElement(_materialUi.TextField, { value: DSNSearchParams.get('authSource') || "",
+                                    }, floatingLabelText: "Password", fullWidth: true, type: this.t('advanced.mongo.password'), floatingLabelFixed: true }, fieldStyles.textFieldV2)),
+                                _react2.default.createElement('div', { style: { marginRight: 10 } }),
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNSearchParams && DSNSearchParams.get('authSource') || "",
                                     onChange: function onChange(e, v) {
                                         return changeDSN(DSNURL, 'authSource', v);
                                     },
-                                    floatingLabelText: this.t('advanced.mongo.authSource'), fullWidth: true, floatingLabelFixed: true }),
+                                    floatingLabelText: this.t('advanced.mongo.authSource'), fullWidth: true, floatingLabelFixed: true }, fieldStyles.textFieldV2)),
+                                _react2.default.createElement('div', { style: { minWidth: 48 } })
+                            ),
+                            _react2.default.createElement(
+                                'div',
+                                { style: { display: 'flex' } },
+                                _react2.default.createElement(_materialUi.TextField, _extends({ value: DSNURL.query, onChange: function onChange(e, v) {
+                                        changeDSN(DSNURL, 'query', v);
+                                    }, floatingLabelText: 'Full query string (avoid edit manually, prefer copy/pasting)', fullWidth: true, floatingLabelFixed: true }, fieldStyles.textFieldV2)),
                                 _react2.default.createElement('div', { style: { minWidth: 48 } })
                             )
                         ),
@@ -1126,7 +1278,7 @@ var InstallForm = function (_React$Component) {
                                 null,
                                 _react2.default.createElement(
                                     _reduxForm.Field,
-                                    { name: 'dsType', component: renderSelectField },
+                                    { name: 'dsType', component: renderSelectField, label: this.t('form.dsType.Label') },
                                     _react2.default.createElement(_materialUi.MenuItem, { value: '', primaryText: this.t('form.dsType.FS') }),
                                     _react2.default.createElement(_materialUi.MenuItem, { value: 'S3', primaryText: this.t('form.dsType.S3') })
                                 )
@@ -1314,7 +1466,11 @@ var InstallForm = function (_React$Component) {
                                 secondary: true,
                                 onClick: function onClick() {
                                     window.location.reload();
-                                }
+                                },
+                                style: { borderRadius: 20 },
+                                buttonStyle: { borderRadius: 20 },
+                                overlayStyle: { borderRadius: 20 },
+                                labelStyle: { textTransform: 'none', fontWeight: 400 }
                             })
                         )
                     )
@@ -1323,10 +1479,10 @@ var InstallForm = function (_React$Component) {
 
             return _react2.default.createElement(
                 _materialUi.Paper,
-                { zDepth: 2, style: { width: 800, minHeight: panelHeight, margin: 'auto', position: 'relative', backgroundColor: 'rgba(255,255,255,0.96)' } },
+                { zDepth: 2, style: { width: 800, minHeight: panelHeight, margin: 'auto', position: 'relative', backgroundColor: panelBG, borderRadius: 20 } },
                 _react2.default.createElement(
                     'div',
-                    { style: { width: 256, height: panelHeight, backgroundColor: 'rgb(94, 142, 174)', fontSize: 13, display: 'flex', flexDirection: 'column' } },
+                    { style: { width: 256, height: panelHeight, backgroundColor: 'rgb(94, 142, 174)', fontSize: 13, display: 'flex', flexDirection: 'column', borderRadius: '20px 0 0 20px' } },
                     _react2.default.createElement('div', { style: { backgroundImage: 'url(res/css/PydioLogo250.png)', backgroundSize: '90%',
                             backgroundRepeat: 'no-repeat', backgroundPosition: 'center center', width: 256, height: 100 } }),
                     _react2.default.createElement(

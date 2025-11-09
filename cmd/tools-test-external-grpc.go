@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -14,8 +13,9 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
 )
 
 var (
@@ -40,7 +40,7 @@ var TestExternalGrpc = &cobra.Command{
 		cli := tree.NewNodeProviderClient(conn)
 		md := metadata.MD{}
 		md.Set("x-pydio-bearer", extToken)
-		og := metadata.NewOutgoingContext(context.Background(), md)
+		og := metadata.NewOutgoingContext(cmd.Context(), md)
 		stream, e := cli.ListNodes(og, &tree.ListNodesRequest{Node: &tree.Node{Path: "common-files"}})
 		if e != nil {
 			return e
@@ -61,14 +61,14 @@ var TestExternalGrpc = &cobra.Command{
 
 func loadTLSCredentials() (credentials.TransportCredentials, error) {
 	// Load certificate of the CA who signed server's certificate
-	pemServerCA, err := ioutil.ReadFile(filepath.Join(runtime.ApplicationWorkingDir(), runtime.DefaultCertStorePath, "rootCA.pem"))
+	pemServerCA, err := os.ReadFile(filepath.Join(runtime.ApplicationWorkingDir(), runtime.DefaultCertStorePath, "rootCA.pem"))
 	if err != nil {
 		return nil, err
 	}
 
 	certPool := x509.NewCertPool()
 	if !certPool.AppendCertsFromPEM(pemServerCA) {
-		return nil, fmt.Errorf("failed to add server CA's certificate")
+		return nil, errors.New("failed to add server CA's certificate")
 	}
 
 	// Create the credentials and return it

@@ -22,32 +22,49 @@ package meta
 
 import (
 	"context"
-	"strings"
 	"sync"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/tree"
+)
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/tree"
+var (
+	TestPresetNamespaces []*idm.UserMetaNamespace
 )
 
 // NsProvider lists all namespaces info from services declared ServiceMetaNsProvider
 // It watches events to maintain the list
 type NsProvider struct {
-	sync.RWMutex // this handles a lock for the namespaces field
-	Ctx          context.Context
-	namespaces   []*idm.UserMetaNamespace
-	loaded       bool
-	streamers    []tree.NodeProviderStreamer_ReadNodeStreamClient
-	closer       context.CancelFunc
+	sync.RWMutex    // this handles a lock for the namespaces field
+	Ctx             context.Context
+	namespaces      []*idm.UserMetaNamespace
+	typedNamespaces map[string]*idm.TypedUserMetaNamespace
+	loaded          bool
+	streamers       []tree.NodeProviderStreamer_ReadNodeStreamClient
+	closer          context.CancelFunc
 }
 
 // NewNsProvider creates a new namespace provider
 func NewNsProvider(ctx context.Context) *NsProvider {
 	ns := &NsProvider{
-		Ctx: ctx,
+		Ctx:             ctx,
+		typedNamespaces: make(map[string]*idm.TypedUserMetaNamespace),
+	}
+	if TestPresetNamespaces != nil {
+		ns.namespaces = TestPresetNamespaces
+		ns.typedNamespaces = make(map[string]*idm.TypedUserMetaNamespace)
+		for _, preset := range TestPresetNamespaces {
+			if def, err := preset.UnmarshallDefinition(); err == nil && def != nil {
+				ns.typedNamespaces[preset.Namespace] = &idm.TypedUserMetaNamespace{
+					UserMetaNamespace:       preset,
+					MetaNamespaceDefinition: def,
+				}
+			}
+		}
+		ns.loaded = true
 	}
 	ns.Watch(ctx)
 	return ns
@@ -62,6 +79,20 @@ func (p *NsProvider) Namespaces() map[string]*idm.UserMetaNamespace {
 	defer p.RUnlock()
 	ns := make(map[string]*idm.UserMetaNamespace, len(p.namespaces))
 	for _, n := range p.namespaces {
+		ns[n.Namespace] = n
+	}
+	return ns
+}
+
+// TypedNamespaces returns pre-decoded namespaces
+func (p *NsProvider) TypedNamespaces() map[string]*idm.TypedUserMetaNamespace {
+	if !p.loaded {
+		p.Load()
+	}
+	p.RLock()
+	defer p.RUnlock()
+	ns := make(map[string]*idm.TypedUserMetaNamespace, len(p.typedNamespaces))
+	for _, n := range p.typedNamespaces {
 		ns[n.Namespace] = n
 	}
 	return ns
@@ -109,10 +140,10 @@ func (p *NsProvider) Load() {
 	defer func() {
 		p.loaded = true
 	}()
-	ct, ca := context.WithCancel(context.Background())
+	ct, ca := context.WithCancel(context.WithoutCancel(p.Ctx))
 	defer ca()
 	for _, srv := range services {
-		cl := idm.NewUserMetaServiceClient(grpc.GetClientConnFromCtx(p.Ctx, strings.TrimPrefix(srv.Name(), common.ServiceGrpcNamespace_)))
+		cl := idm.NewUserMetaServiceClient(grpc.ResolveConn(p.Ctx, srv.Name()))
 		s, e := cl.ListUserMetaNamespace(ct, &idm.ListUserMetaNamespaceRequest{})
 		if e != nil {
 			continue
@@ -124,6 +155,12 @@ func (p *NsProvider) Load() {
 				break
 			}
 			p.namespaces = append(p.namespaces, r.UserMetaNamespace)
+			if def, dErr := r.GetUserMetaNamespace().UnmarshallDefinition(); dErr == nil {
+				p.typedNamespaces[r.GetUserMetaNamespace().GetNamespace()] = &idm.TypedUserMetaNamespace{
+					MetaNamespaceDefinition: def,
+					UserMetaNamespace:       r.GetUserMetaNamespace(),
+				}
+			}
 		}
 		p.Unlock()
 	}
@@ -139,7 +176,7 @@ func (p *NsProvider) InitStreamers(ctx context.Context) error {
 	ct, can := context.WithCancel(ctx)
 	p.closer = can
 	for _, srv := range services {
-		c := tree.NewNodeProviderStreamerClient(grpc.GetClientConnFromCtx(ctx, strings.TrimPrefix(srv.Name(), common.ServiceGrpcNamespace_)))
+		c := tree.NewNodeProviderStreamerClient(grpc.ResolveConn(ctx, srv.Name()))
 		if s, e := c.ReadNodeStream(ct); e == nil {
 			p.streamers = append(p.streamers, s)
 		}
@@ -163,11 +200,15 @@ func (p *NsProvider) ReadNode(node *tree.Node) (*tree.Node, error) {
 		out.MetaStore = make(map[string]string)
 	}
 	for _, s := range p.streamers {
-		s.Send(&tree.ReadNodeRequest{Node: node})
+		if er := s.Send(&tree.ReadNodeRequest{Node: node}); er != nil {
+			return node, er
+		}
 		if resp, e := s.Recv(); e == nil && resp.Node.MetaStore != nil {
 			for k, v := range resp.Node.MetaStore {
 				out.MetaStore[k] = v
 			}
+		} else if e != nil {
+			return node, e
 		}
 	}
 	return out, nil
@@ -177,17 +218,18 @@ func (p *NsProvider) ReadNode(node *tree.Node) (*tree.Node, error) {
 func (p *NsProvider) Clear() {
 	p.Lock()
 	p.namespaces = nil
+	p.typedNamespaces = map[string]*idm.TypedUserMetaNamespace{}
 	p.loaded = false
 	p.Unlock()
 }
 
 // Watch watches idm ChangeEvents to force reload when metadata namespaces are modified
 func (p *NsProvider) Watch(ctx context.Context) {
-	_ = broker.SubscribeCancellable(ctx, common.TopicIdmEvent, func(message broker.Message) error {
-		var ce idm.ChangeEvent
-		if _, e := message.Unmarshal(&ce); e == nil && ce.MetaNamespace != nil {
+	_ = broker.SubscribeCancellable(context.WithoutCancel(ctx), common.TopicIdmEvent, func(ctx context.Context, message broker.Message) error {
+		ce := &idm.ChangeEvent{}
+		if _, e := message.Unmarshal(ctx, ce); e == nil && ce.MetaNamespace != nil {
 			p.Clear()
 		}
 		return nil
-	})
+	}, broker.WithCounterName("ns_provider"))
 }

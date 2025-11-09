@@ -27,8 +27,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
 )
 
 func TestIdmSelector_Filter1(t *testing.T) {
@@ -41,7 +41,7 @@ func TestIdmSelector_Filter1(t *testing.T) {
 		}
 		ctx := context.Background()
 		// Simple test
-		input := ActionMessage{Users: []*idm.User{{Login: "test"}}}
+		input := &ActionMessage{Users: []*idm.User{{Login: "test"}}}
 		message, opposite, pass := m.Filter(ctx, input)
 		So(message, ShouldNotBeNil)
 		So(message.Users, ShouldHaveLength, 1)
@@ -49,7 +49,7 @@ func TestIdmSelector_Filter1(t *testing.T) {
 		So(opposite, ShouldBeNil)
 
 		// Opposite test
-		input = ActionMessage{Users: []*idm.User{{Login: "other"}}}
+		input = &ActionMessage{Users: []*idm.User{{Login: "other"}}}
 		message, opposite, pass = m.Filter(ctx, input)
 		So(message, ShouldNotBeNil)
 		So(message.Users, ShouldHaveLength, 0)
@@ -73,7 +73,7 @@ func TestIdmSelector_Filter2(t *testing.T) {
 		}
 		ctx := context.Background()
 		// Simple test
-		input := ActionMessage{Users: []*idm.User{{
+		input := &ActionMessage{Users: []*idm.User{{
 			Login: "test",
 			Attributes: map[string]string{
 				idm.UserAttrProfile: "standard",
@@ -102,7 +102,7 @@ func TestIdmSelector_Filter3(t *testing.T) {
 		}
 		ctx := context.Background()
 		// Simple test
-		input := ActionMessage{Users: []*idm.User{{
+		input := &ActionMessage{Users: []*idm.User{{
 			Login: "test",
 			Attributes: map[string]string{
 				idm.UserAttrProfile: "standard",

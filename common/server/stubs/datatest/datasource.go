@@ -24,18 +24,17 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/pydio/cells/v4/common"
-
-	"github.com/pydio/cells/v4/common/config"
-
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/proto/object"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/object"
 )
 
-func NewDataSourceService(dsName string) *DataSourceService {
+func NewDataSourceService(ctx context.Context, dsName string) *DataSourceService {
 	var os *object.DataSource
-	config.Get("services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+dsName).Scan(&os)
+	config.Get(ctx, "services", common.ServiceGrpcNamespace_+common.ServiceDataSync_+dsName).Scan(&os)
 	serv := &DataSourceService{
 		data: os,
 	}
@@ -53,11 +52,11 @@ func (u *DataSourceService) Invoke(ctx context.Context, method string, args inte
 	case "/object.DataSourceEndpoint/GetDataSourceConfig":
 		reply.(*object.GetDataSourceConfigResponse).DataSource = u.data
 	default:
-		e = fmt.Errorf(method + " not implemented")
+		e = errors.New(method + " not implemented")
 	}
 	return e
 }
 
 func (u *DataSourceService) NewStream(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-	return nil, fmt.Errorf(method + "  not implemented")
+	return nil, errors.New(method + "  not implemented")
 }

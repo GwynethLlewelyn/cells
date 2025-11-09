@@ -22,22 +22,27 @@ package nodes
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/runtime"
 	"io"
 	"math"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
+	"net/http"
+	"regexp"
 
 	"github.com/h2non/filetype"
-	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
-const mimeReadLimit = 8192
+const (
+	mimeReadLimit = 8192
+)
+
+var defaultRx *regexp.Regexp
+
+func init() {
+	defaultRx = regexp.MustCompile(`(application|binary)/octet-stream`)
+}
 
 type MimeResult struct {
 	mime string
@@ -52,6 +57,7 @@ func (m *MimeResult) GetError() error {
 	return m.err
 }
 
+// TeeMimeReader dynamically looks up for mimetype while consuming the io.Reader
 type TeeMimeReader struct {
 	r      io.Reader
 	cb     func(result *MimeResult)
@@ -64,6 +70,8 @@ type TeeMimeReader struct {
 	done      bool
 }
 
+// NewTeeMimeReader creates a TeeMimeReader from an existing reader and calls the callbackRoutine once
+// the mimetype is guessed
 func NewTeeMimeReader(reader io.Reader, callbackRoutine func(result *MimeResult)) *TeeMimeReader {
 	mr := &TeeMimeReader{
 		r:      reader,
@@ -77,6 +85,9 @@ func NewTeeMimeReader(reader io.Reader, callbackRoutine func(result *MimeResult)
 		//fmt.Printf("Stored %d bytes in buffer - Error: %v\n", len(mr.data), mr.loadError)
 		kind, _ := filetype.Match(mr.data)
 		mime := kind.MIME.Value
+		if mime == "" || defaultRx.MatchString(mime) {
+			mime = http.DetectContentType(mr.data)
+		}
 		if callbackRoutine != nil {
 			callbackRoutine(&MimeResult{mime: mime, err: mr.loadError})
 		}
@@ -88,15 +99,18 @@ func NewTeeMimeReader(reader io.Reader, callbackRoutine func(result *MimeResult)
 	return mr
 }
 
+// SetLimit can override default mimeReadLimit (used mainly for testing)
 func (m *TeeMimeReader) SetLimit(size int) {
 	m.limit = size
 }
 
+// Wait returns a blocking chan until a *MimeResult is returned
 func (m *TeeMimeReader) Wait() chan *MimeResult {
 	m.waiter = make(chan *MimeResult, 1)
 	return m.waiter
 }
 
+// Read implements io.Reader interface by calling underlying reader Read.
 func (m *TeeMimeReader) Read(p []byte) (n int, err error) {
 	n, err = m.r.Read(p)
 	if n > 0 && !m.done {
@@ -121,30 +135,24 @@ func (m *TeeMimeReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-var mimeMetaClient tree.NodeReceiverClient
-
-func WrapReaderForMime(ctx context.Context, clone *tree.Node, reader io.Reader) io.Reader {
+// WrapReaderForMime wraps a reader in a TeeMimeReader with a preset callback that stores detected mime in Metadata.
+func WrapReaderForMime(ctx context.Context, node *tree.Node, reader io.Reader) io.Reader {
 	if IsUnitTestEnv {
 		return reader
 	}
-	if mimeMetaClient == nil {
-		mimeMetaClient = tree.NewNodeReceiverClient(grpc.GetClientConnFromCtx(ctx, common.ServiceGrpcNamespace_+common.ServiceMeta))
-	}
-	bgCtx := metadata.NewBackgroundWithMetaCopy(ctx)
-	bgCtx = runtime.ForkContext(bgCtx, ctx)
+	clone := node.Clone()
+	bgCtx := propagator.ForkedBackgroundWithMeta(ctx)
 	return NewTeeMimeReader(reader, func(result *MimeResult) {
+		mime := "application/octet-stream"
 		if result.GetError() == nil && result.GetMime() != "" {
-			// Store in metadata service
-			clone.MetaStore = make(map[string]string, 1)
-			clone.MustSetMeta(common.MetaNamespaceMime, result.GetMime())
-			if _, e := mimeMetaClient.CreateNode(bgCtx, &tree.CreateNodeRequest{
-				Node:           clone,
-				UpdateIfExists: true,
-			}); e == nil {
-				log.Logger(ctx).Debug("Stored mime type for node", clone.ZapUuid(), clone.ZapPath(), zap.String("mime", result.GetMime()))
-			} else {
-				log.Logger(ctx).Error("Could not update mime for node", zap.Error(e), clone.ZapUuid(), clone.ZapPath(), zap.String("mime", result.GetMime()))
-			}
+			mime = result.GetMime()
 		}
+		// Store in metadata service
+		MustCoreMetaSet(bgCtx, clone, common.MetaNamespaceMime, mime, clone.HasMetaKey(common.MetaNamespaceDatasourceInternal))
 	})
+}
+
+// IsDefaultMime checks if cType is not empty and one of "application/octet-stream", "binary/octet-stream"
+func IsDefaultMime(cType string) bool {
+	return cType != "" && !defaultRx.MatchString(cType)
 }

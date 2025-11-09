@@ -29,7 +29,8 @@ import (
 
 	pm "github.com/patrickmn/go-cache"
 
-	"github.com/pydio/cells/v4/common/utils/cache"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
 )
 
 var (
@@ -51,22 +52,24 @@ type Options struct {
 
 func init() {
 	o := &URLOpener{}
-	cache.DefaultURLMux().Register(scheme, o)
+	cache_helper.RegisterCachePool(scheme, o)
 }
 
-func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (cache.Cache, error) {
+func (o *URLOpener) Open(ctx context.Context, u *url.URL) (cache.Cache, error) {
 	opt := &Options{
 		EvictionTime: time.Minute,
 		CleanWindow:  10 * time.Minute,
 	}
 	if v := u.Query().Get("evictionTime"); v != "" {
-		if i, err := time.ParseDuration(v); err != nil {
+		if v == "-1" {
+			opt.EvictionTime = pm.NoExpiration
+		} else if i, err := time.ParseDuration(v); err != nil {
 			return nil, err
 		} else {
 			opt.EvictionTime = i
 		}
 	}
-	if v := u.Query().Get("cleanWindow"); v != "" {
+	if v := u.Query().Get("cleanWindow"); v != "" && opt.EvictionTime != pm.NoExpiration {
 		if i, err := time.ParseDuration(v); err != nil {
 			return nil, err
 		} else {
@@ -125,6 +128,12 @@ func (q *pmCache) Reset() error {
 	return nil
 }
 
+func (q *pmCache) Exists(key string) (ok bool) {
+	_, ok = q.Cache.Get(key)
+
+	return
+}
+
 func (q *pmCache) KeysByPrefix(prefix string) (res []string, e error) {
 	for k := range q.Cache.Items() {
 		if strings.HasPrefix(k, prefix) {
@@ -142,6 +151,6 @@ func (q *pmCache) Iterate(it func(key string, val interface{})) error {
 	return nil
 }
 
-func (q *pmCache) Close() error {
+func (q *pmCache) Close(_ context.Context) error {
 	return nil
 }

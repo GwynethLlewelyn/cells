@@ -22,31 +22,25 @@ package datatest
 
 import (
 	"context"
+	"strings"
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/sqlite"
-	"github.com/pydio/cells/v4/common/proto/object"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/server/stubs"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/data/source/index"
-	srv "github.com/pydio/cells/v4/data/source/index/grpc"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/object"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/server/stubs"
+	"github.com/pydio/cells/v5/common/server/stubs/inject"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/propagator"
+	srv "github.com/pydio/cells/v5/data/source/index/grpc"
 )
 
-func NewIndexService(dsName string, nodes ...*tree.Node) (grpc.ClientConnInterface, error) {
+func NewIndexService(ctx context.Context, svc service.Service) (grpc.ClientConnInterface, error) {
 
-	ctx := context.Background()
-
-	mockDAO, er := dao.InitDAO(ctx, sqlite.Driver, sqlite.SharedMemDSN, "data_index_"+dsName, index.NewDAO, configx.New())
-	if er != nil {
-		return nil, er
-	}
-
-	ts := srv.NewTreeServer(&object.DataSource{Name: dsName}, common.ServiceGrpcNamespace_+common.ServiceTree, mockDAO.(index.DAO))
+	dsName := strings.TrimPrefix(svc.Name(), common.ServiceDataIndexGRPC_)
+	ts := srv.NewTreeServer(&object.DataSource{Name: dsName})
+	ctx = propagator.With(ctx, service.ContextKey, svc)
 
 	srv1 := &tree.NodeProviderStub{}
 	srv1.NodeProviderServer = ts
@@ -56,13 +50,7 @@ func NewIndexService(dsName string, nodes ...*tree.Node) (grpc.ClientConnInterfa
 	serv := &stubs.MuxService{}
 	serv.Register("tree.NodeProvider", srv1)
 	serv.Register("tree.NodeReceiver", srv2)
+	mock := &inject.SvcInjectorMock{ClientConnInterface: serv, Svc: svc, DataSource: dsName}
 
-	ctx = servicecontext.WithDAO(ctx, mockDAO)
-	for _, u := range nodes {
-		_, er := ts.CreateNode(ctx, &tree.CreateNodeRequest{Node: u})
-		if er != nil {
-			return nil, er
-		}
-	}
-	return serv, nil
+	return mock, nil
 }

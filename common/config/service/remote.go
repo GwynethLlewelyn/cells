@@ -28,70 +28,88 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	clientcontext "github.com/pydio/cells/v4/common/client/context"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	pb "github.com/pydio/cells/v4/common/proto/config"
-	"github.com/pydio/cells/v4/common/service/context/ckeys"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common"
+	cgrpc "github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/config"
+	pb "github.com/pydio/cells/v5/common/proto/config"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"github.com/pydio/cells/v5/common/utils/watch"
 )
 
 var (
-	scheme = "grpc"
+	schemes = []string{"grpc", "xds"}
 )
 
 type URLOpener struct{}
 
 func init() {
 	o := &URLOpener{}
-	config.DefaultURLMux().Register(scheme, o)
+	for _, scheme := range schemes {
+		config.DefaultURLMux().Register(scheme, o)
+	}
 }
 
-func (o *URLOpener) OpenURL(ctx context.Context, u *url.URL) (config.Store, error) {
-	// var opts []configx.Option
-
-	var conn grpc.ClientConnInterface
-
-	if clientcontext.GetClientConn(ctx) != nil {
-		conn = clientcontext.GetClientConn(ctx)
-	} else {
-		c, err := grpc.Dial(u.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return nil, err
-		}
-
-		conn = c
+func (o *URLOpener) Open(ctx context.Context, urlstr string, base config.Store) (config.Store, error) {
+	u, err := url.Parse(urlstr)
+	if err != nil {
+		return nil, err
 	}
 
-	store := New(context.Background(), conn, strings.TrimLeft(u.Path, "/"), "/")
+	conn := cgrpc.ResolveConn(ctx, common.ServiceConfigGRPC)
+	if conn == nil {
+		return nil, errors.New("empty connection")
+	}
+
+	store := New(ctx, conn, u.Query().Get("namespace"), "/")
 
 	return store, nil
 }
 
 type remote struct {
-	ctx  context.Context
-	cli  pb.ConfigClient
-	id   string
-	path []string
+	ctx            context.Context
+	cli            pb.ConfigClient
+	values         configx.Values
+	id             string
+	path           []string
+	internalLocker *sync.RWMutex
+	externalLocker *sync.RWMutex
+	watchers       []*receiver
+}
 
-	watchers []*receiver
+func (r *remote) Reset() {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (r *remote) Flush() {
+	//TODO implement me
+	panic("implement me")
 }
 
 func New(ctx context.Context, conn grpc.ClientConnInterface, id string, path string) config.Store {
+	cli := pb.NewConfigClient(conn)
 	r := &remote{
-		ctx:  metadata.AppendToOutgoingContext(ctx, ckeys.TargetServiceName, "pydio.grpc.config"),
-		cli:  pb.NewConfigClient(conn),
-		id:   id,
-		path: strings.Split(path, "/"),
+		ctx:            ctx,
+		cli:            pb.NewConfigClient(conn),
+		id:             id,
+		path:           strings.Split(path, "/"),
+		internalLocker: &sync.RWMutex{},
+		externalLocker: &sync.RWMutex{},
+		values: configx.New(configx.WithStorer(&values{
+			ctx: ctx,
+			cli: cli,
+			id:  id,
+		})),
 	}
 
 	go func() {
@@ -102,6 +120,7 @@ func New(ctx context.Context, conn grpc.ClientConnInterface, id string, path str
 			})
 
 			if err != nil {
+				fmt.Println(err)
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -120,6 +139,7 @@ func New(ctx context.Context, conn grpc.ClientConnInterface, id string, path str
 				c := configx.New(configx.WithJSON())
 				c.Set(rsp.GetValue().GetData())
 
+				r.internalLocker.RLock()
 				for _, w := range r.watchers {
 					v := c.Val(w.path...).Bytes()
 
@@ -128,6 +148,7 @@ func New(ctx context.Context, conn grpc.ClientConnInterface, id string, path str
 					default:
 					}
 				}
+				r.internalLocker.RUnlock()
 			}
 
 			stream.CloseSend()
@@ -137,52 +158,46 @@ func New(ctx context.Context, conn grpc.ClientConnInterface, id string, path str
 	return r
 }
 
+func (r *remote) Context(ctx context.Context) configx.Values {
+	return r.values.Context(ctx)
+}
+
 func (r *remote) Val(path ...string) configx.Values {
-	return &values{
-		ctx:  r.ctx,
-		cli:  r.cli,
-		id:   r.id,
-		path: append(r.path, path...),
-	}
+	return r.values.Val(path...)
 }
 
-func (r *remote) Get() configx.Value {
-	v := configx.New(configx.WithJSON())
-
-	rsp, err := r.cli.Get(r.ctx, &pb.GetRequest{
-		Namespace: r.id,
-		Path:      strings.Join(r.path, "/"),
-	})
-
-	if err != nil {
-		return v
-	}
-
-	if err := v.Set(rsp.GetValue().GetData()); err != nil {
-		fmt.Println("And the error there is ? ", err)
-	}
-
-	return v
+func (r *remote) Default(data any) configx.Values {
+	return r.values.Default(data)
 }
 
-func (r *remote) Set(data interface{}) error {
-	b, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
+func (r *remote) Options() *configx.Options {
+	return r.values.Options()
+}
 
-	if _, err := r.cli.Set(r.ctx, &pb.SetRequest{
-		Namespace: r.id,
-		Path:      strings.Join(r.path, "/"),
-		Value:     &pb.Value{Data: b},
-	}); err != nil {
-		return err
-	}
+func (r *remote) Key() []string {
+	return r.values.Key()
+}
 
-	return nil
+func (r *remote) Get() any {
+	return r.values.Get()
+}
+
+func (r *remote) Set(value interface{}) error {
+	return r.values.Set(value)
 }
 
 func (r *remote) Del() error {
+	return nil
+}
+
+func (r *remote) As(out any) bool { return false }
+
+func (r *remote) Close(_ context.Context) error {
+	return nil
+}
+
+func (r *remote) Done() <-chan struct{} {
+	// TODO - Maybe do something here ?
 	return nil
 }
 
@@ -198,13 +213,51 @@ func (r *remote) Save(ctxUser string, ctxMessage string) error {
 }
 
 func (r *remote) Lock() {
+	r.externalLocker.Lock()
 }
 
 func (r *remote) Unlock() {
+	r.externalLocker.Unlock()
 }
 
-func (r *remote) Watch(opts ...configx.WatchOption) (configx.Receiver, error) {
-	o := &configx.WatchOptions{}
+func (r *remote) NewLocker(prefix string) sync.Locker {
+	stream, _ := r.cli.NewLocker(r.ctx)
+
+	return &remoteLock{
+		prefix: prefix,
+		stream: stream,
+	}
+}
+
+type remoteLock struct {
+	prefix string
+	stream pb.Config_NewLockerClient
+}
+
+func (s *remoteLock) Lock() {
+	if s.stream != nil {
+		if err := s.stream.Send(&pb.NewLockerRequest{
+			Prefix: s.prefix,
+			Type:   pb.LockType_Lock,
+		}); err != nil {
+			log.Warn("could not lock", zap.String("prefix", s.prefix))
+		}
+	}
+}
+
+func (s *remoteLock) Unlock() {
+	if s.stream != nil {
+		if err := s.stream.Send(&pb.NewLockerRequest{
+			Prefix: s.prefix,
+			Type:   pb.LockType_Unlock,
+		}); err != nil {
+			log.Warn("could not unlock", zap.String("prefix", s.prefix))
+		}
+	}
+}
+
+func (r *remote) Watch(opts ...watch.WatchOption) (watch.Receiver, error) {
+	o := &watch.WatchOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -216,7 +269,9 @@ func (r *remote) Watch(opts ...configx.WatchOption) (configx.Receiver, error) {
 		updates: make(chan []byte),
 	}
 
+	r.internalLocker.Lock()
 	r.watchers = append(r.watchers, rcvr)
+	r.internalLocker.Unlock()
 
 	return rcvr, nil
 }
@@ -262,51 +317,67 @@ func (r *receiver) Stop() {
 }
 
 type values struct {
-	ctx  context.Context
-	cli  pb.ConfigClient
-	id   string
-	path []string
+	ctx context.Context
+	cli pb.ConfigClient
+	id  string
+	k   []string
+	d   any
+}
+
+func (v *values) Walk(f func(i int, v any) any) error {
+	return nil
+}
+
+func (v *values) Context(ctx context.Context) configx.Values {
+	return configx.New(configx.WithStorer(&values{ctx: ctx, cli: v.cli, id: v.id, k: v.k, d: v.d}))
+}
+
+func (v *values) Default(data any) configx.Values {
+	return configx.New(configx.WithStorer(&values{ctx: v.ctx, cli: v.cli, id: v.id, k: v.k, d: data}))
+}
+
+func (v *values) Options() *configx.Options {
+	c := configx.New(configx.WithJSON())
+	return c.Options()
+}
+
+func (v *values) Key() []string {
+	return v.k
 }
 
 func (v *values) Val(path ...string) configx.Values {
-	return &values{
-		ctx:  v.ctx,
-		cli:  v.cli,
-		id:   v.id,
-		path: append(v.path, path...),
-	}
+	return configx.New(configx.WithStorer(&values{ctx: v.ctx, cli: v.cli, id: v.id, k: std.StringToKeys(append(v.k, path...)...), d: v.d}))
 }
 
-func (v *values) Get() configx.Value {
-	c := configx.New(configx.WithJSON())
-
+func (v *values) Get() any {
 	rsp, err := v.cli.Get(v.ctx, &pb.GetRequest{
 		Namespace: v.id,
-		Path:      strings.Join(v.path, "/"),
+		Path:      strings.Join(v.k, "/"),
 	})
 
 	if err != nil {
 		fmt.Println("Config error (fork cannot contact remote gRPC service: ", err.Error(), ")")
-		return c
+		return nil
 	}
 
-	if err := c.Set(rsp.GetValue().GetData()); err != nil {
-		//fmt.Println("And the error is ? ", err)
+	var val any
+	if err := json.Unmarshal(rsp.GetValue().GetData(), &val); err != nil {
+		return nil
 	}
 
-	return c.Get()
+	return val
 }
 
-func (v *values) Set(val interface{}) error {
-	b, err := json.Marshal(val)
+func (v *values) Set(value interface{}) error {
+	b, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 
 	if _, err := v.cli.Set(v.ctx, &pb.SetRequest{
 		Namespace: v.id,
-		Path:      strings.Join(v.path, "/"),
-		Value:     &pb.Value{Data: b},
+		Path:      strings.Join(v.k, "/"),
+		Value:     &pb.Value{Data: b, Format: "json"},
 	}); err != nil {
 		return err
 	}
@@ -317,77 +388,10 @@ func (v *values) Set(val interface{}) error {
 func (v *values) Del() error {
 	if _, err := v.cli.Delete(v.ctx, &pb.DeleteRequest{
 		Namespace: v.id,
-		Path:      strings.Join(v.path, "/"),
+		Path:      strings.Join(v.k, "/"),
 	}); err != nil {
 		return err
 	}
 
 	return nil
-}
-
-func (v *values) Default(i interface{}) configx.Value {
-	if vv, ok := configx.GetReference(i); ok {
-		i = (&values{
-			ctx:  v.ctx,
-			cli:  v.cli,
-			id:   v.id,
-			path: configx.StringToKeys(vv.Get()),
-		}).Get()
-	}
-
-	return v.Get().Default(i)
-}
-
-func (v *values) Bool() bool {
-	return v.Get().Bool()
-}
-
-func (v *values) Bytes() []byte {
-	return v.Get().Bytes()
-}
-
-func (v *values) Key() []string {
-	return v.Get().Key()
-}
-func (v *values) Reference() configx.Ref {
-	return v.Get().Reference()
-}
-func (v *values) Interface() interface{} {
-	return v.Get().Interface()
-}
-
-func (v *values) Int() int {
-	return v.Get().Int()
-}
-
-func (v *values) Int64() int64 {
-	return v.Get().Int64()
-}
-
-func (v *values) Duration() time.Duration {
-	return v.Get().Duration()
-}
-
-func (v *values) String() string {
-	return v.Get().String()
-}
-
-func (v *values) StringMap() map[string]string {
-	return v.Get().StringMap()
-}
-
-func (v *values) StringArray() []string {
-	return v.Get().StringArray()
-}
-
-func (v *values) Slice() []interface{} {
-	return v.Get().Slice()
-}
-
-func (v *values) Map() map[string]interface{} {
-	return v.Get().Map()
-}
-
-func (v *values) Scan(i interface{}, opts ...configx.Option) error {
-	return v.Get().Scan(i, opts...)
 }

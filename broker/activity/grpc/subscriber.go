@@ -30,77 +30,65 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/broker/activity"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	activity2 "github.com/pydio/cells/v4/common/proto/activity"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/cache"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/broker/activity"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/client/commons/treec"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/permissions"
+	activity2 "github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type MicroEventsSubscriber struct {
 	sync.Mutex
-	treeClient   tree.NodeProviderClient
-	usrClient    idm.UserServiceClient
-	roleClient   idm.RoleServiceClient
-	wsClient     idm.WorkspaceServiceClient
-	parentsCache cache.Cache
-	RuntimeCtx   context.Context
-	dao          activity.DAO
+	RuntimeCtx context.Context
 
-	changeEvents []*idm.ChangeEvent
-	aclsChan     chan *idm.ChangeEvent
+	handlerName string
+	cacheConfig cache.Config
 }
 
-func NewEventsSubscriber(ctx context.Context, dao activity.DAO) *MicroEventsSubscriber {
-	c, _ := cache.OpenCache(context.TODO(), runtime.ShortCacheURL()+"?evictionTime=3m&cleanWindow=10m")
-	m := &MicroEventsSubscriber{
-		RuntimeCtx:   ctx,
-		dao:          dao,
-		aclsChan:     make(chan *idm.ChangeEvent),
-		parentsCache: c,
+func NewEventsSubscriber(ctx context.Context, handlerName string) *MicroEventsSubscriber {
+
+	return &MicroEventsSubscriber{
+		RuntimeCtx:  ctx,
+		handlerName: handlerName,
+		cacheConfig: cache.Config{
+			Prefix:      "pydio.grpc.activity/subscriber/activities",
+			Eviction:    "3m",
+			CleanWindow: "10m",
+		},
 	}
-	go m.DebounceAclsEvents()
-	return m
+
 }
 
-func (e *MicroEventsSubscriber) getTreeClient() tree.NodeProviderClient {
-	if e.treeClient == nil {
-		e.treeClient = tree.NewNodeProviderClient(grpc.GetClientConnFromCtx(e.RuntimeCtx, common.ServiceTree))
+func (e *MicroEventsSubscriber) getQueue(ctx context.Context) (broker.AsyncQueue, func() (bool, error), error) {
+	var mgr manager.Manager
+	if !propagator.Get(ctx, manager.ContextKey, &mgr) {
+		return nil, nil, errors.New("no manager in context")
 	}
-	return e.treeClient
-}
-
-func (e *MicroEventsSubscriber) getUserClient() idm.UserServiceClient {
-	if e.usrClient == nil {
-		e.usrClient = idm.NewUserServiceClient(grpc.GetClientConnFromCtx(e.RuntimeCtx, common.ServiceUser))
+	data := map[string]interface{}{
+		"debounce": "2s",
+		"idle":     "20s",
+		"max":      "2000",
 	}
-	return e.usrClient
-}
-
-func (e *MicroEventsSubscriber) getRoleClient() idm.RoleServiceClient {
-	if e.roleClient == nil {
-		e.roleClient = idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(e.RuntimeCtx, common.ServiceRole))
-	}
-	return e.roleClient
-}
-
-func (e *MicroEventsSubscriber) getWorkspaceClient() idm.WorkspaceServiceClient {
-	if e.wsClient == nil {
-		e.wsClient = idm.NewWorkspaceServiceClient(grpc.GetClientConnFromCtx(e.RuntimeCtx, common.ServiceWorkspace))
-	}
-	return e.wsClient
+	return mgr.GetQueue(ctx, common.QueueTypeDebouncer, data, "activity", func(q broker.AsyncQueue) (broker.AsyncQueue, error) {
+		er := q.Consume(e.ProcessIdmBatch)
+		return q, er
+	})
 }
 
 func (e *MicroEventsSubscriber) ignoreForInternal(node *tree.Node) bool {
@@ -110,22 +98,15 @@ func (e *MicroEventsSubscriber) ignoreForInternal(node *tree.Node) bool {
 // HandleNodeChange processes the received events and sends them to the subscriber
 func (e *MicroEventsSubscriber) HandleNodeChange(ctx context.Context, msg *tree.NodeChangeEvent) error {
 
+	dao, er := manager.Resolve[activity.DAO](ctx)
+	if er != nil {
+		return er
+	}
+
 	author := common.PydioSystemUsername
-	if u, o := metadata.CanonicalMeta(ctx, common.PydioContextUserKey); o {
+	if u, o := propagator.CanonicalMeta(ctx, common.PydioContextUserKey); o {
 		author = u
 	}
-	/*
-		meta, ok := metadata.FromContextRead(ctx)
-		if ok {
-			user, exists := meta[common.PydioContextUserKey]
-			user1, exists1 := meta[strings.ToLower(common.PydioContextUserKey)]
-			if exists {
-				author = user
-			} else if exists1 {
-				author = user1
-			}
-		}
-	*/
 	if author == common.PydioSystemUsername {
 		// Ignore events triggered by initial sync
 		return nil
@@ -140,7 +121,11 @@ func (e *MicroEventsSubscriber) HandleNodeChange(ctx context.Context, msg *tree.
 
 	loadedNode, parentUuids, err := e.parentsFromCache(ctx, node, msg.Type == tree.NodeChangeEvent_DELETE)
 	if err != nil {
-		log.Logger(ctx).Error("Error while loading parentsFromCache for node", zap.Error(err), node.ZapPath(), zap.String("eventType", msg.Type.String()))
+		if errors.Is(err, errors.StatusRequestTimeout) {
+			log.Logger(ctx).Warn("Skipping activity as deadline exceeded", node.ZapPath(), zap.String("eventType", msg.Type.String()))
+		} else {
+			log.Logger(ctx).Error("Error while loading parentsFromCache for node", zap.Error(err), node.ZapPath(), zap.String("eventType", msg.Type.String()))
+		}
 		return err
 	}
 	// Use reloaded node
@@ -163,22 +148,22 @@ func (e *MicroEventsSubscriber) HandleNodeChange(ctx context.Context, msg *tree.
 	//
 	log.Logger(ctx).Debug("Posting Activity to node outbox")
 	if msg.Type == tree.NodeChangeEvent_DELETE {
-		e.dao.Delete(nil, activity2.OwnerType_NODE, node.Uuid)
+		dao.Delete(nil, activity2.OwnerType_NODE, node.Uuid)
 	} else {
-		e.dao.PostActivity(ctx, activity2.OwnerType_NODE, node.Uuid, activity.BoxOutbox, ac, false)
+		dao.PostActivity(ctx, activity2.OwnerType_NODE, node.Uuid, activity.BoxOutbox, ac, false)
 	}
 
 	//
 	// Post to the author Outbox
 	//
 	log.Logger(ctx).Debug("Posting Activity to author outbox")
-	e.dao.PostActivity(ctx, activity2.OwnerType_USER, author, activity.BoxOutbox, ac, true)
+	dao.PostActivity(ctx, activity2.OwnerType_USER, author, activity.BoxOutbox, ac, true)
 
 	//
 	// Post to parents Outbox'es as well
 	//
 	for _, uuid := range parentUuids {
-		e.dao.PostActivity(ctx, activity2.OwnerType_NODE, uuid, activity.BoxOutbox, ac, false)
+		dao.PostActivity(ctx, activity2.OwnerType_NODE, uuid, activity.BoxOutbox, ac, false)
 	}
 
 	//
@@ -188,7 +173,7 @@ func (e *MicroEventsSubscriber) HandleNodeChange(ctx context.Context, msg *tree.
 	if msg.Type != tree.NodeChangeEvent_CREATE {
 		subUuids = append(subUuids, node.Uuid)
 	}
-	subscriptions, err := e.dao.ListSubscriptions(ctx, activity2.OwnerType_NODE, subUuids)
+	subscriptions, err := dao.ListSubscriptions(ctx, activity2.OwnerType_NODE, subUuids)
 	log.Logger(ctx).Debug("Listing followers on node and its parents", zap.Int("subs length", len(subscriptions)))
 	if err != nil {
 		return err
@@ -220,13 +205,13 @@ func (e *MicroEventsSubscriber) HandleNodeChange(ctx context.Context, msg *tree.
 			continue
 		}
 		userCtx := auth.WithImpersonate(ctx, user)
-		ancestors, ez := nodes.BuildAncestorsListOrParent(userCtx, e.getTreeClient(), loadedNode)
+		ancestors, ez := nodes.BuildAncestorsListOrParent(userCtx, treec.NodeProviderClient(userCtx), loadedNode)
 		if ez != nil {
 			log.Logger(ctx).Error("Could not load ancestors list", zap.Error(er))
 			continue
 		}
 		if accessList.CanReadWithResolver(userCtx, e.vNodeResolver, ancestors...) {
-			if er := e.dao.PostActivity(ctx, activity2.OwnerType_USER, subscription.UserId, activity.BoxInbox, ac, true); er != nil {
+			if er := dao.PostActivity(ctx, activity2.OwnerType_USER, subscription.UserId, activity.BoxInbox, ac, true); er != nil {
 				log.Logger(ctx).Error("Could not post activity", zap.Error(er))
 			}
 		}
@@ -236,24 +221,33 @@ func (e *MicroEventsSubscriber) HandleNodeChange(ctx context.Context, msg *tree.
 }
 
 func (e *MicroEventsSubscriber) vNodeResolver(ctx context.Context, n *tree.Node) (*tree.Node, bool) {
-	return abstract.GetVirtualNodesManager(e.RuntimeCtx).GetResolver(false)(ctx, n)
+	return abstract.GetVirtualProvider().GetResolver(false)(ctx, n)
 }
 
 func (e *MicroEventsSubscriber) HandleIdmChange(ctx context.Context, msg *idm.ChangeEvent) error {
 
+	dao, err := manager.Resolve[activity.DAO](ctx)
+	if err != nil {
+		return err
+	}
+
 	if msg.Acl != nil {
-		author, _ := permissions.FindUserNameInContext(ctx)
+		author := claim.UserNameFromContext(ctx)
 		if msg.Attributes == nil {
 			msg.Attributes = make(map[string]string)
 		}
 		msg.Attributes["user"] = author
-		e.aclsChan <- msg
+		q, _, er := e.getQueue(ctx) //e.muxPool.Get(ctx)
+		if er != nil {
+			return er
+		}
+		return q.Push(ctx, msg)
 	} else if msg.User != nil && msg.Type == idm.ChangeEventType_DELETE && msg.User.Login != "" {
 		// Clear activity for deleted user
-		ctx = servicecontext.WithServiceName(ctx, Name)
+		ctx = runtime.WithServiceName(ctx, e.handlerName)
 		log.Logger(ctx).Debug("Clearing activities for user", msg.User.ZapLogin())
 		go func() {
-			if er := e.dao.Delete(e.RuntimeCtx, activity2.OwnerType_USER, msg.User.Login); er != nil {
+			if er := dao.Delete(e.RuntimeCtx, activity2.OwnerType_USER, msg.User.Login); er != nil {
 				log.Logger(ctx).Error("Could not clear activities for user"+msg.User.Login, zap.Error(er))
 			}
 		}()
@@ -267,33 +261,46 @@ func (e *MicroEventsSubscriber) parentsFromCache(ctx context.Context, node *tree
 	e.Lock()
 	defer e.Unlock()
 
+	kach, err := cache_helper.ResolveCache(ctx, common.CacheTypeLocal, e.cacheConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var parentUuids []string
 	loadedNode := node
+	treeClient := treec.NodeProviderClient(ctx)
+	treeStreamer := treec.NodeProviderStreamerClient(ctx)
 
-	// Current Node
+	// Current N
 	// parentUuids = append(parentUuids, node.Uuid)
 	if node.Path == "" && !isDel {
 		// Reload by Uuid
-		if resp, err := e.getTreeClient().ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: node.Uuid}}); err == nil && resp.Node != nil {
+		if resp, err := treeClient.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Uuid: node.Uuid}}); err == nil && resp.Node != nil {
 			loadedNode = resp.Node
 		} else if err != nil {
 			return nil, []string{}, err
 		}
 	}
-	/*
-		// For long paths, this may be more optimal
+
+	// For long paths, this is more optimal
+	if len(strings.Split(node.Path, "/")) > 50 {
 		n := time.Now()
-		if pp, e := nodes.BuildAncestorsListOrParent(ctx, e.getTreeClient(), node); e != nil {
+		if pp, e := nodes.BuildAncestorsListOrParent(ctx, treeClient, node, tree.StatFlagNone); e != nil {
 			return nil, parentUuids, e
 		} else {
 			for _, p := range pp {
 				parentUuids = append(parentUuids, p.Uuid)
+				_ = kach.Set(p.GetPath(), p.GetUuid())
 			}
-			log.Logger(ctx).Info("--- Build AncestorsListOrParent Took" + time.Since(n).String())
+			log.Logger(ctx).Debug("--- Build AncestorsListOrParent Took"+time.Since(n).String(), zap.String("path", node.Path))
 			return loadedNode, parentUuids, nil
 		}
-	*/
+	}
 
+	st, er := treeStreamer.ReadNodeStream(ctx)
+	if er != nil {
+		return nil, parentUuids, er
+	}
 	// Manually load parents from Path
 	parentPath := loadedNode.Path
 	for {
@@ -302,23 +309,28 @@ func (e *MicroEventsSubscriber) parentsFromCache(ctx context.Context, node *tree
 			break
 		}
 		var pU string
-		if e.parentsCache.Get(parentPath, &pU) {
+		if kach.Get(parentPath, &pU) {
 			if pU != "**DELETED**" {
 				parentUuids = append(parentUuids, pU)
 			}
 		} else {
-			resp, err := e.getTreeClient().ReadNode(ctx, &tree.ReadNodeRequest{
+			rt := time.Now()
+			_ = st.Send(&tree.ReadNodeRequest{
 				Node:      &tree.Node{Path: parentPath},
 				StatFlags: []uint32{tree.StatFlagNone}},
 			)
-			if err == nil {
+			resp, receiveErr := st.Recv()
+			log.Logger(ctx).Debug("Read took", zap.Duration("read", time.Since(rt)), zap.String("path", parentPath))
+			if receiveErr != nil {
+				return nil, parentUuids, receiveErr
+			}
+			if resp.Success {
 				uuid := resp.Node.Uuid
-				e.parentsCache.Set(parentPath, uuid)
+				_ = kach.Set(parentPath, uuid)
 				parentUuids = append(parentUuids, uuid)
-			} else if errors.FromError(err).Code == 404 {
-				e.parentsCache.Set(parentPath, "**DELETED**")
 			} else {
-				return nil, []string{}, err
+				log.Logger(ctx).Debug("Node not found during read stream")
+				_ = kach.Set(parentPath, "**DELETED**")
 			}
 		}
 	}
@@ -326,19 +338,8 @@ func (e *MicroEventsSubscriber) parentsFromCache(ctx context.Context, node *tree
 	return loadedNode, parentUuids, nil
 }
 
-func (e *MicroEventsSubscriber) DebounceAclsEvents() {
-	for {
-		select {
-		case acl := <-e.aclsChan:
-			e.changeEvents = append(e.changeEvents, acl)
-		case <-time.After(3 * time.Second):
-			e.ProcessBuffer(e.changeEvents...)
-			e.changeEvents = []*idm.ChangeEvent{}
-		}
-	}
-}
+func (e *MicroEventsSubscriber) ProcessIdmBatch(ctx context.Context, cE ...broker.Message) {
 
-func (e *MicroEventsSubscriber) ProcessBuffer(cE ...*idm.ChangeEvent) {
 	if len(cE) == 0 {
 		return
 	}
@@ -347,10 +348,18 @@ func (e *MicroEventsSubscriber) ProcessBuffer(cE ...*idm.ChangeEvent) {
 	users := make(map[string]*idm.User)
 	workspaces := make(map[string]*idm.Workspace)
 	// Remove updates/deletes
-	for _, event := range cE {
+	for _, msg := range cE {
+		event := &idm.ChangeEvent{}
+		if _, er := msg.Unmarshal(ctx, event); er != nil {
+			continue
+		}
 		if event.Type == idm.ChangeEventType_UPDATE && (event.Acl.Action.Name == permissions.AclRead.Name || event.Acl.Action.Name == permissions.AclWrite.Name) {
 			var del bool
-			for _, e2 := range cE {
+			for _, m2 := range cE {
+				e2 := &idm.ChangeEvent{}
+				if _, er := m2.Unmarshal(ctx, e2); er != nil {
+					continue
+				}
 				if e2.Type == idm.ChangeEventType_DELETE && e2.Acl.RoleID == event.Acl.RoleID && e2.Acl.WorkspaceID == event.Acl.WorkspaceID &&
 					e2.Acl.Action.Name == event.Acl.Action.Name && e2.Acl.Action.Value == event.Acl.Action.Value {
 					del = true
@@ -374,8 +383,13 @@ func (e *MicroEventsSubscriber) ProcessBuffer(cE ...*idm.ChangeEvent) {
 	}
 
 	// Load resources
-	ctx := metadata.WithUserNameMetadata(context.Background(), common.PydioSystemUsername)
+	ctx = propagator.WithUserNameMetadata(ctx, common.PydioContextUserKey, common.PydioSystemUsername)
 	if er := e.LoadResources(ctx, roles, users, workspaces); er != nil {
+		return
+	}
+	dao, err := manager.Resolve[activity.DAO](ctx)
+	if err != nil {
+		log.Logger(ctx).Error("cannot load DAO in activity subscriber", zap.Error(err))
 		return
 	}
 
@@ -390,12 +404,12 @@ func (e *MicroEventsSubscriber) ProcessBuffer(cE ...*idm.ChangeEvent) {
 			ac := activity.AclActivity(sourceUser.Login, workspaces[r.Acl.WorkspaceID], r.Acl.Action.Name)
 			log.Logger(e.RuntimeCtx).Debug("Publishing Activity", zap.String("targetUser", targetUser.Login), zap.Any("a", ac))
 			// Post to target User Inbox
-			if er := e.dao.PostActivity(ctx, activity2.OwnerType_USER, targetUser.Login, activity.BoxInbox, ac, true); er != nil {
+			if er := dao.PostActivity(ctx, activity2.OwnerType_USER, targetUser.Login, activity.BoxInbox, ac, true); er != nil {
 				log.Logger(e.RuntimeCtx).Error("Failed publishing activity to user "+targetUser.Login+"'s inbox", zap.Error(er))
 			}
 			if workspaces[r.Acl.WorkspaceID].Scope == idm.WorkspaceScope_ROOM {
 				// Post to node Outbox
-				if er := e.dao.PostActivity(ctx, activity2.OwnerType_NODE, r.Acl.NodeID, activity.BoxOutbox, ac, false); er != nil {
+				if er := dao.PostActivity(ctx, activity2.OwnerType_NODE, r.Acl.NodeID, activity.BoxOutbox, ac, false); er != nil {
 					log.Logger(e.RuntimeCtx).Error("Failed publishing activity to node outbox", zap.Error(er))
 				}
 			}
@@ -412,7 +426,7 @@ func (e *MicroEventsSubscriber) LoadResources(ctx context.Context, roles map[str
 		rUuids = append(rUuids, k)
 	}
 	q, _ := anypb.New(&idm.RoleSingleQuery{Uuid: rUuids})
-	streamer, er := e.getRoleClient().SearchRole(ctx, &idm.SearchRoleRequest{Query: &service.Query{SubQueries: []*anypb.Any{q}}})
+	streamer, er := idmc.RoleServiceClient(ctx).SearchRole(ctx, &idm.SearchRoleRequest{Query: &service.Query{SubQueries: []*anypb.Any{q}}})
 	if er != nil {
 		return er
 	}
@@ -436,7 +450,7 @@ func (e *MicroEventsSubscriber) LoadResources(ctx context.Context, roles map[str
 			queries = append(queries, q2)
 		}
 	}
-	stream2, er := e.getUserClient().SearchUser(ctx, &idm.SearchUserRequest{Query: &service.Query{
+	stream2, er := idmc.UserServiceClient(ctx).SearchUser(ctx, &idm.SearchUserRequest{Query: &service.Query{
 		SubQueries: queries,
 		Operation:  service.OperationType_OR,
 	}})
@@ -461,7 +475,7 @@ func (e *MicroEventsSubscriber) LoadResources(ctx context.Context, roles map[str
 		q3, _ := anypb.New(&idm.WorkspaceSingleQuery{Uuid: k})
 		queriesW = append(queriesW, q3)
 	}
-	stream3, er := e.getWorkspaceClient().SearchWorkspace(ctx, &idm.SearchWorkspaceRequest{Query: &service.Query{SubQueries: queriesW}})
+	stream3, er := idmc.WorkspaceServiceClient(ctx).SearchWorkspace(ctx, &idm.SearchWorkspaceRequest{Query: &service.Query{SubQueries: queriesW}})
 	if er != nil {
 		return er
 	}
@@ -473,7 +487,7 @@ func (e *MicroEventsSubscriber) LoadResources(ctx context.Context, roles map[str
 		workspaces[resp.Workspace.UUID] = resp.Workspace
 	}
 
-	log.Logger(context.Background()).Debug("Loaded Resources", zap.Any("roles", roles), zap.Any("users", users), zap.Any("workspaces", workspaces))
+	log.Logger(ctx).Debug("Loaded Resources", zap.Any("roles", roles), zap.Any("users", users), zap.Any("workspaces", workspaces))
 
 	return nil
 }

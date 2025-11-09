@@ -23,6 +23,12 @@
   "database.legend.bold": {
     "other": "데이터베이스가 MySQL 버전 5.6 또는 그 이상의 버전을 실행 중인지 확인하세요."
   },
+  "database.legend1": {
+    "other": "Pydio requires at least one SQL storage for configuration and data indexation."
+  },
+  "database.legend2": {
+    "other": "Supported databases are MySQL/MariaDB or PostgreSQL or SQLite."
+  },
   "database.installDetected": {
     "other": "이 데이터베이스에서는 Cells 설치 과정이 이미 완료된 것으로 보입니다. 확인하여 계속하시거나"
   },
@@ -63,31 +69,31 @@
     "other": "시작할 때 계정들의 사용자 데이터와 cells 데이터를 저장하기 위한 기본 데이터 저장소가 생성됩니다. 이후에 다른 데이터 저장소를 생성할 수 있습니다."
   },
   "advanced.mongo.title": {
-    "other": "Configure a MongoDB Connection"
+    "other": "MongoDB 접속 설정"
   },
   "advanced.mongo.legend": {
-    "other": "This is better for scalability, and required for clustering deployment. If you do not have a Mongo DB ready, this can be done later."
+    "other": "이는 확장성이 뛰어나며 클러스터링 구현에 필요합니다. Mongo DB가 준비되지 않은 경우 나중에 이 작업을 수행할 수 있습니다."
   },
   "advanced.mongo.host": {
-    "other": "Server host"
+    "other": "서버 호스트"
   },
   "advanced.mongo.port": {
-    "other": "Server port"
+    "other": "서버 포트"
   },
   "advanced.mongo.db": {
-    "other": "Database Name"
+    "other": "데이터베이스 명"
   },
   "advanced.mongo.username": {
-    "other": "Username"
+    "other": "사용자명"
   },
   "advanced.mongo.password": {
-    "other": "Password"
+    "other": "비밀번호"
   },
   "advanced.mongo.authSource": {
-    "other": "Auth DB"
+    "other": "인증 DB"
   },
   "advanced.mongo.validate": {
-    "other": "Test connection"
+    "other": "테스트 연결"
   },
   "license.stepLabel": {
     "other": "기업 라이선스"
@@ -117,7 +123,7 @@
     "other": "설정 적용"
   },
   "apply.title": {
-    "other": "Please be patient while Pydio Cells is being installed..."
+    "other": "Pydio Cells를 설치하는 동안 기다려 주십시오..."
   },
   "apply.success": {
     "other": "설치가 성공적으로 완료되었으며 서비스를 시작하는 중입니다. 서비스가 시작되면 설치 관리자가 페이지 새로고칠 것입니다."
@@ -134,11 +140,20 @@
   "form.dbConnectionType.label": {
     "other": "연결 방식"
   },
-  "form.dbConnectionType.tcp": {
-    "other": "TCP"
+  "form.dbConnectionType.mysql_tcp": {
+    "other": "MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket": {
-    "other": "소켓"
+  "form.dbConnectionType.mysql_socket": {
+    "other": "MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp": {
+    "other": "PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket": {
+    "other": "PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite": {
+    "other": "SQLite (dev purpose only)"
   },
   "form.dbConnectionType.manual": {
     "other": "수동 설정"
@@ -179,6 +194,18 @@
   "form.dbSocketFile.legend": {
     "other": "연결할 소켓 파일의 위치를 입력하십시오"
   },
+  "form.dbSocketFileSQLite.label": {
+    "other": "Database Path"
+  },
+  "form.dbSocketFileSQLite.legend": {
+    "other": "Enter the location of the SQLite database"
+  },
+  "form.dbSqliteFile.label": {
+    "other": "File Path"
+  },
+  "form.dbSqliteFile.legend": {
+    "other": "Enter the location of the file to use as database"
+  },
   "form.dbManualDSN.label": {
     "other": "DSN"
   },
@@ -218,6 +245,9 @@
   "form.dsFolder.legend": {
     "other": "서버 상의 절대 경로를 사용하십시오"
   },
+  "form.dsType.Label": {
+    "other": "Storage Type"
+  },
   "form.dsType.FS": {
     "other": "로컬 FS (모든 데이터를 이 서버에 저장)"
   },
@@ -225,7 +255,7 @@
     "other": "Amazon S3 / S3 호환 형식 (S3 버킷 내부에 저장)"
   },
   "form.dsS3Custom.label": {
-    "other": "S3 호환 저장소 엔드포인트"
+    "other": "만약 Minio라면 URL에 ?minio=true를 추가해주세요."
   },
   "form.dsS3Custom.legend": {
     "other": "Amazon을 위해서라면 비워두십시오"

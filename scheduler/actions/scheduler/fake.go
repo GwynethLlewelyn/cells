@@ -22,23 +22,20 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
-	ErrTaskInterrupted = fmt.Errorf("interrupted")
+	ErrTaskInterrupted = errors.New("interrupted")
 	fakeActionName     = "actions.test.fake"
 )
 
 type FakeAction struct {
-	common.RuntimeHolder
 	timer  string
 	ticker string
 }
@@ -48,7 +45,7 @@ func (f *FakeAction) GetDescription(lang ...string) actions.ActionDescription {
 	return actions.ActionDescription{
 		ID:              fakeActionName,
 		Label:           "Sleep",
-		Icon:            "clock-end",
+		Icon:            "timer-pause-outline",
 		Category:        actions.ActionCategoryScheduler,
 		Description:     "Use as a waiter, or simulate a long-running process with progress",
 		SummaryTemplate: "",
@@ -57,7 +54,7 @@ func (f *FakeAction) GetDescription(lang ...string) actions.ActionDescription {
 }
 
 // GetParametersForm returns a UX form
-func (f *FakeAction) GetParametersForm() *forms.Form {
+func (f *FakeAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -106,7 +103,7 @@ func (f *FakeAction) ProvidesProgress() bool {
 }
 
 // Init passes parameters to the action
-func (f *FakeAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (f *FakeAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	f.timer = "10"
 	f.ticker = ""
 	if strTime, ok := action.Parameters["timer"]; ok {
@@ -119,9 +116,9 @@ func (f *FakeAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run performs the actual action code
-func (f *FakeAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (f *FakeAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
-	outputMessage := input
+	outputMessage := input.Clone()
 
 	var timer, tick int64
 	if t, err := jobs.EvaluateFieldInt64(ctx, input, f.timer); err == nil {
@@ -138,7 +135,7 @@ func (f *FakeAction) Run(ctx context.Context, channels *actions.RunnableChannels
 		tick = timer
 	}
 
-	log.TasksLogger(ctx).Info("Starting Timer")
+	//log.TasksLogger(ctx).Info("Starting Timer")
 	outputMessage.AppendOutput(&jobs.ActionOutput{StringBody: "Hello World"})
 	ticker := time.NewTicker(time.Second * time.Duration(tick))
 	finished := make(chan struct{}, 1)
@@ -146,28 +143,28 @@ func (f *FakeAction) Run(ctx context.Context, channels *actions.RunnableChannels
 		<-time.After(time.Second * time.Duration(timer))
 		close(finished)
 	}()
-	steps := float32(timer) / float32(tick)
+	//steps := float32(timer) / float32(tick)
 	step := float32(0)
 
 loop:
 	for {
 		select {
-		case t := <-ticker.C:
-			channels.Progress <- step * 100 / steps
+		case <-ticker.C:
+			//channels.Progress <- step * 100 / steps
 			step++
-			message := fmt.Sprintf("Ticking Now %v", t)
-			log.TasksLogger(ctx).Info(message)
-			channels.StatusMsg <- message
+			//message := fmt.Sprintf("Ticking Now %v", t)
+			//log.TasksLogger(ctx).Info(message)
+			//channels.StatusMsg <- message
 		case <-channels.Pause:
-			log.TasksLogger(ctx).Info("Task received pause from channels, should pause here")
+			//log.TasksLogger(ctx).Info("Task received pause from channels, should pause here")
 			<-channels.BlockUntilResume(ctx)
-			log.TasksLogger(ctx).Info("Block-until-resume passed, received resume, continue")
+			//log.TasksLogger(ctx).Info("Block-until-resume passed, received resume, continue")
 		case <-ctx.Done():
-			log.TasksLogger(ctx).Error("Context is Done: interrupting")
+			//log.TasksLogger(ctx).Error("Context is Done: interrupting")
 			ticker.Stop()
 			return outputMessage.WithError(ErrTaskInterrupted), ErrTaskInterrupted
 		case <-finished:
-			log.TasksLogger(ctx).Info("Sleep time finished")
+			//log.TasksLogger(ctx).Info("Sleep time finished")
 			ticker.Stop()
 			break loop
 		}

@@ -23,8 +23,14 @@
   "database.legend.bold": {
     "other": "Bitte stellen Sie sicher, dass Ihre Datenbank MySQL Version 5.6 oder höher läuft"
   },
+  "database.legend1": {
+    "other": "Pydio benötigt mindestens einen SQL-Speicher für Konfiguration und Daten-Indexierung."
+  },
+  "database.legend2": {
+    "other": "Unterstützte Datenbanken sind MySQL/MariaDB, PostgreSQL und SQLite."
+  },
   "database.installDetected": {
-    "other": "In dieser Datenbank scheint eine Installation der Zellen bereits eingerichtet zu sein. Bitte bestätigen Sie das Fortfahren oder "
+    "other": "Es scheint bereits eine Cells-Installation in dieser Datenbank eingerichtet zu sein. Bitte bestätigen Sie, um fortzufahren, oder "
   },
   "database.installDetected.retry": {
     "other": "mit neuem Wert erneut versuchen"
@@ -60,7 +66,7 @@
     "other": "Erweiterte Einstellungen anzeigen"
   },
   "advanced.default.datasource": {
-    "other": "Beim Start wird eine Standarddatenquelle zum Speichern persönlicher Daten und Zellendaten des Benutzers erstellt. Sie können später weitere Datenquellen erstellen."
+    "other": "Beim Start wird eine Standarddatenquelle zum Speichern persönlicher Daten und Cells-daten des Benutzers erstellt. Sie können später weitere Datenquellen erstellen."
   },
   "advanced.mongo.title": {
     "other": "MongoDB Verbindung konfigurieren"
@@ -134,11 +140,20 @@
   "form.dbConnectionType.label": {
     "other": "Verbindungstyp"
   },
-  "form.dbConnectionType.tcp": {
-    "other": "TCP"
+  "form.dbConnectionType.mysql_tcp": {
+    "other": "MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket": {
-    "other": "Socket"
+  "form.dbConnectionType.mysql_socket": {
+    "other": "MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp": {
+    "other": "PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket": {
+    "other": "PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite": {
+    "other": "SQLite (nur für Entwickler)"
   },
   "form.dbConnectionType.manual": {
     "other": "Manuell"
@@ -147,7 +162,7 @@
     "other": "Hostname"
   },
   "form.dbTCPHostname.legend": {
-    "other": "auf dem MySQL läuft"
+    "other": "Datenbankserver Host"
   },
   "form.dbName.label": {
     "other": "Name der Datenbank"
@@ -159,7 +174,7 @@
     "other": "Port"
   },
   "form.dbTCPPort.legend": {
-    "other": "Port zum Verbinden mit MySQL"
+    "other": "Datenbank-Server-Port"
   },
   "form.dbUser.label": {
     "other": "Datenbank-User"
@@ -178,6 +193,18 @@
   },
   "form.dbSocketFile.legend": {
     "other": "Geben Sie den Speicherort der Socket-Datei ein, über die eine Verbindung hergestellt werden soll"
+  },
+  "form.dbSocketFileSQLite.label": {
+    "other": "Datenbank-Pfad"
+  },
+  "form.dbSocketFileSQLite.legend": {
+    "other": "Geben Sie den Speicherort der SQLite-Datenbank ein"
+  },
+  "form.dbSqliteFile.label": {
+    "other": "Dateipfad"
+  },
+  "form.dbSqliteFile.legend": {
+    "other": "Geben Sie den Speicherort der zu verwendenden Datei ein"
   },
   "form.dbManualDSN.label": {
     "other": "DSN"
@@ -218,6 +245,9 @@
   "form.dsFolder.legend": {
     "other": "Verwenden Sie einen absoluten Pfad auf dem Server"
   },
+  "form.dsType.Label": {
+    "other": "Speicherart"
+  },
   "form.dsType.FS": {
     "other": "Lokaler FS (alle Daten auf diesem Server speichern)"
   },
@@ -225,7 +255,7 @@
     "other": "Amazon S3 / S3-kompatibel (in S3-Buckets speichern)"
   },
   "form.dsS3Custom.label": {
-    "other": "S3-kompatibler Speicher-Endpunkt"
+    "other": "URL, anhängen ?minio=true wenn Minio."
   },
   "form.dsS3Custom.legend": {
     "other": "Für Amazon leer lassen"

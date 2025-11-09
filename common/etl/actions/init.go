@@ -1,3 +1,4 @@
+//go:build !arm
 // +build !arm
 
 /*
@@ -23,7 +24,7 @@
 package actions
 
 import (
-"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 func init() {
@@ -34,20 +35,8 @@ func init() {
 		return &SyncUsersAction{}
 	})
 
-	manager.Register(SyncWorkspacesActionName, func() actions.ConcreteAction {
-		return &SyncWorkspacesAction{}
-	})
-
 	manager.Register(SyncSharesActionName, func() actions.ConcreteAction {
 		return &SyncSharesAction{}
-	})
-
-	manager.Register(MigratePydioMetaActionName, func() actions.ConcreteAction {
-		return &MigratePydioMetaAction{}
-	})
-
-	manager.Register(MigrateGlobalMetaName, func() actions.ConcreteAction {
-		return &MigrateGlobalMetaAction{}
 	})
 
 }

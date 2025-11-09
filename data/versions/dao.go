@@ -24,61 +24,46 @@ package versions
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/boltdb"
-	"github.com/pydio/cells/v4/common/dao/mongodb"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/service"
 )
 
+var Drivers = service.StorageDrivers{}
+
 type DAO interface {
-	dao.DAO
-	GetLastVersion(nodeUuid string) (*tree.ChangeLog, error)
-	GetVersions(nodeUuid string) (chan *tree.ChangeLog, error)
-	GetVersion(nodeUuid string, versionId string) (*tree.ChangeLog, error)
-	StoreVersion(nodeUuid string, log *tree.ChangeLog) error
-	DeleteVersionsForNode(nodeUuid string, versions ...*tree.ChangeLog) error
-	DeleteVersionsForNodes(nodeUuid []string) error
-	ListAllVersionedNodesUuids() (chan string, chan bool, chan error)
+	GetLastVersion(ctx context.Context, nodeUuid string) (*tree.ContentRevision, error)
+	GetVersions(ctx context.Context, nodeUuid string, offset int64, limit int64, sortField string, sortDesc bool, filters map[string]any) (chan *tree.ContentRevision, error)
+	GetVersion(ctx context.Context, nodeUuid string, versionId string) (*tree.ContentRevision, error)
+	StoreVersion(ctx context.Context, nodeUuid string, revision *tree.ContentRevision) error
+	DeleteVersionsForNode(ctx context.Context, nodeUuid string, versions ...string) error
+	DeleteVersionsForNodes(ctx context.Context, nodeUuid []string) error
+	ListAllVersionedNodesUuids(ctx context.Context) (chan string, chan bool, chan error)
 }
 
-func NewDAO(c context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case boltdb.DAO:
-		return NewBoltStore(v, v.DB().Path(), false)
-	case mongodb.DAO:
-		mStore := &mongoStore{DAO: v}
-		return mStore, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
-}
-
-func Migrate(f dao.DAO, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) (map[string]int, error) {
-	ctx := context.Background()
+func Migrate(main, fromCtx, toCtx context.Context, dryRun bool, status chan service.MigratorStatus) (map[string]int, error) {
 	out := map[string]int{
 		"Versions": 0,
 	}
-	var from, to DAO
-	if df, e := NewDAO(ctx, f); e == nil {
-		from = df.(DAO)
-	} else {
-		return out, e
+	from, er := manager.Resolve[DAO](fromCtx)
+	if er != nil {
+		return nil, er
 	}
-	if dt, e := NewDAO(ctx, t); e == nil {
-		to = dt.(DAO)
-	} else {
-		return out, e
+	to, er := manager.Resolve[DAO](toCtx)
+	if er != nil {
+		return nil, er
 	}
-	uuids, done, errs := from.ListAllVersionedNodesUuids()
+	uuids, done, errs := from.ListAllVersionedNodesUuids(fromCtx)
 	var e error
 loop1:
 	for {
 		select {
 		case id := <-uuids:
-			versions, _ := from.GetVersions(id)
+			versions, _ := from.GetVersions(fromCtx, id, 0, 0, "", false, nil)
 			for version := range versions {
 				if dryRun {
 					out["Versions"]++
-				} else if er := to.StoreVersion(id, version); er == nil {
+				} else if er := to.StoreVersion(toCtx, id, version); er == nil {
 					out["Versions"]++
 				} else {
 					continue

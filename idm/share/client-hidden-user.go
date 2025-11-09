@@ -22,50 +22,41 @@ package share
 
 import (
 	"context"
-	"fmt"
 	"strings"
-
-	"github.com/pydio/cells/v4/common/client/grpc"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	service "github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	permissions2 "github.com/pydio/cells/v4/common/utils/permissions"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	service "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 )
 
 // GetOrCreateHiddenUser will load or create a user to create a ShareLink with.
 func (sc *Client) GetOrCreateHiddenUser(ctx context.Context, ownerUser *idm.User, link *rest.ShareLink, passwordEnabled bool, updatePassword string, passwordHashed bool) (user *idm.User, err error) {
 
 	// Create or Load corresponding Hidden User
-	uClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceUser))
-	roleClient := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceRole))
+	uClient := idmc.UserServiceClient(ctx)
+	roleClient := idmc.RoleServiceClient(ctx)
 	if link.UserLogin == "" {
 		newUuid := uuid.New()
 		login := strings.Replace(newUuid, "-", "", -1)[0:16]
 		password := login + PasswordComplexitySuffix
 		if passwordEnabled {
 			if len(updatePassword) == 0 {
-				return nil, errors.BadRequest(common.ServiceShare, "Please provide a non empty password!")
+				return nil, errors.WithMessage(errors.InvalidParameters, "Please provide a non empty password!")
 			}
 			password = updatePassword
 		}
 		if len(link.Policies) == 0 {
 			// Apply default policies and make sure user can read himself
 			link.Policies = sc.OwnerResourcePolicies(ctx, ownerUser, newUuid)
-			link.Policies = append(link.Policies, &service.ResourcePolicy{
-				Resource: newUuid,
-				Subject:  fmt.Sprintf("user:%s", login),
-				Action:   service.ResourcePolicyAction_READ,
-				Effect:   service.ResourcePolicy_allow,
-			})
 		}
 		hiddenUser := &idm.User{
 			Uuid:      newUuid,
@@ -120,11 +111,11 @@ func (sc *Client) GetOrCreateHiddenUser(ctx context.Context, ownerUser *idm.User
 }
 
 // UpdateACLsForHiddenUser deletes and replaces access ACLs for a hidden user.
-func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, workspaceId string, rootNodes []*tree.Node, permissions []rest.ShareLinkAccessType, parentPolicy string, update bool) error {
+func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, workspaceId string, rootNodes []*tree.Node, perms []rest.ShareLinkAccessType, parentPolicy string, update bool) error {
 
 	HasRead := false
 	HasWrite := false
-	for _, perm := range permissions {
+	for _, perm := range perms {
 		if perm == rest.ShareLinkAccessType_Download || perm == rest.ShareLinkAccessType_Preview {
 			HasRead = true
 		}
@@ -133,7 +124,7 @@ func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, wo
 		}
 	}
 
-	aclClient := idm.NewACLServiceClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceAcl))
+	aclClient := idmc.ACLServiceClient(ctx) //idm.NewACLServiceClient(grpc.ResolveConn(sc.RuntimeContext, common.ServiceAcl))
 	if update {
 		// Delete existing acls for existing user
 		q, _ := anypb.New(&idm.ACLSingleQuery{RoleIDs: []string{roleId}})
@@ -147,7 +138,7 @@ func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, wo
 		return nil
 	}
 
-	acls, err := sc.GetTemplateACLsForMinisite(ctx, roleId, permissions, aclClient)
+	acls, err := sc.GetTemplateACLsForMinisite(ctx, roleId, perms, aclClient)
 	if err != nil {
 		return err
 	}
@@ -162,7 +153,7 @@ func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, wo
 				WorkspaceID: workspaceId,
 				NodeID:      rootNode.Uuid,
 				Action: &idm.ACLAction{
-					Name:  permissions2.AclPolicy.Name,
+					Name:  permissions.AclPolicy.Name,
 					Value: newPol,
 				},
 			})
@@ -172,7 +163,7 @@ func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, wo
 					RoleID:      roleId,
 					WorkspaceID: workspaceId,
 					NodeID:      rootNode.Uuid,
-					Action:      permissions2.AclRead,
+					Action:      permissions.AclRead,
 				})
 			}
 			if HasWrite {
@@ -180,7 +171,7 @@ func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, wo
 					RoleID:      roleId,
 					WorkspaceID: workspaceId,
 					NodeID:      rootNode.Uuid,
-					Action:      permissions2.AclWrite,
+					Action:      permissions.AclWrite,
 				})
 			}
 		}
@@ -188,7 +179,7 @@ func (sc *Client) UpdateACLsForHiddenUser(ctx context.Context, roleId string, wo
 	// Add default Repository Id for the role
 	acls = append(acls, &idm.ACL{
 		RoleID:      roleId,
-		WorkspaceID: permissions2.FrontWsScopeAll,
+		WorkspaceID: permissions.FrontWsScopeAll,
 		Action: &idm.ACLAction{
 			Name:  "parameter:core.conf:DEFAULT_START_REPOSITORY",
 			Value: workspaceId,
@@ -210,7 +201,7 @@ func (sc *Client) DeleteHiddenUser(ctx context.Context, link *rest.ShareLink) er
 	if link.UserLogin == "" {
 		return nil
 	}
-	uClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceUser))
+	uClient := idmc.UserServiceClient(ctx)
 	q1, _ := anypb.New(&idm.UserSingleQuery{Login: link.UserLogin})
 	q2, _ := anypb.New(&idm.UserSingleQuery{AttributeName: idm.UserAttrHidden, AttributeValue: "true"})
 	_, e := uClient.DeleteUser(ctx, &idm.DeleteUserRequest{Query: &service.Query{
@@ -227,7 +218,7 @@ func (sc *Client) ClearLostHiddenUsers(ctx context.Context) error {
 	log.Logger(ctx).Info("Migration: looking for hidden users unlinked from any public link")
 
 	// List hidden users and check for their associated links
-	uClient := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(sc.RuntimeContext, common.ServiceUser))
+	uClient := idmc.UserServiceClient(ctx)
 	q, _ := anypb.New(&idm.UserSingleQuery{AttributeName: idm.UserAttrHidden, AttributeValue: "true"})
 	stream, e := uClient.SearchUser(ctx, &idm.SearchUserRequest{Query: &service.Query{SubQueries: []*anypb.Any{q}}})
 	if e != nil {
@@ -239,17 +230,20 @@ func (sc *Client) ClearLostHiddenUsers(ctx context.Context) error {
 		if er != nil {
 			break
 		}
-		if doc, er := sc.SearchHashDocumentForUser(ctx, resp.User.Login); er == nil && doc != nil {
-			log.Logger(ctx).Debug("Found Link for user", resp.User.ZapLogin(), zap.Any("doc", doc))
-		} else if er == nil && doc == nil {
-			deleteQ, _ := anypb.New(&idm.UserSingleQuery{Uuid: resp.User.Uuid})
-			if _, e := uClient.DeleteUser(ctx, &idm.DeleteUserRequest{Query: &service.Query{SubQueries: []*anypb.Any{deleteQ}}}); e != nil {
-				log.Logger(ctx).Error("Error while trying to delete lost hidden user", resp.User.ZapLogin(), zap.Error(e))
-			} else {
-				log.Logger(ctx).Info("Found and deleted hidden User without any link attached!", resp.User.ZapLogin())
-			}
-		} else if er != nil {
+		doc, err := sc.SearchHashDocumentForUser(ctx, resp.User.Login)
+		if err != nil {
 			log.Logger(ctx).Error("Cannot load docs for user", resp.User.ZapLogin(), zap.Error(er))
+			continue
+		}
+		if doc != nil {
+			log.Logger(ctx).Debug("Found Link for user", resp.User.ZapLogin(), zap.Any("doc", doc))
+			continue
+		}
+		deleteQ, _ := anypb.New(&idm.UserSingleQuery{Uuid: resp.User.Uuid})
+		if _, e = uClient.DeleteUser(ctx, &idm.DeleteUserRequest{Query: &service.Query{SubQueries: []*anypb.Any{deleteQ}}}); e != nil {
+			log.Logger(ctx).Error("Error while trying to delete lost hidden user", resp.User.ZapLogin(), zap.Error(e))
+		} else {
+			log.Logger(ctx).Info("Found and deleted hidden User without any link attached!", resp.User.ZapLogin())
 		}
 	}
 	return nil

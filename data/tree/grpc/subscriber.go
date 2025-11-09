@@ -26,33 +26,37 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-	"github.com/pydio/cells/v4/common/utils/cache"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/cache"
+	cache_helper "github.com/pydio/cells/v5/common/utils/cache/helper"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 type EventSubscriber struct {
-	TreeServer  *TreeServer
-	sharedCache cache.Cache
+	TreeServer *TreeServer
 }
 
-func NewEventSubscriber(t *TreeServer) (*EventSubscriber, error) {
-	es := &EventSubscriber{
+var (
+	cacheConfig = cache.Config{
+		Prefix:      "pydio.grpc.tree/data",
+		Eviction:    "10m",
+		CleanWindow: "20m",
+	}
+)
+
+func NewEventSubscriber(t *TreeServer) *EventSubscriber {
+	return &EventSubscriber{
 		TreeServer: t,
 	}
-	var er error
-	es.sharedCache, er = cache.OpenCache(context.Background(), runtime.CacheURL()+"/pydio.grpc.tree?evictionTime=10m")
-	return es, er
 }
 
 func (s *EventSubscriber) publish(ctx context.Context, msg *tree.NodeChangeEvent) {
 	broker.MustPublish(ctx, common.TopicTreeChanges, msg)
-	s.TreeServer.PublishChange(msg)
+	s.TreeServer.PublishChange(ctx, msg)
 }
 
 func (s *EventSubscriber) enqueueInCache(ctx context.Context, moveUuid string, event *tree.NodeChangeEvent, loop bool) {
@@ -64,7 +68,8 @@ func (s *EventSubscriber) enqueueInCache(ctx context.Context, moveUuid string, e
 	} else {
 		opposite = moveUuid + "-" + tree.NodeChangeEvent_CREATE.String()
 	}
-	if d, o := s.sharedCache.GetBytes(opposite); o {
+	ca, _ := cache_helper.ResolveCache(ctx, common.CacheTypeShared, cacheConfig)
+	if d, o := ca.GetBytes(opposite); o {
 		_ = json.Unmarshal(d, &other)
 		update := &tree.NodeChangeEvent{
 			Type: tree.NodeChangeEvent_UPDATE_PATH,
@@ -85,14 +90,14 @@ func (s *EventSubscriber) enqueueInCache(ctx context.Context, moveUuid string, e
 			//log.Logger(ctx).Info(" => Complete update event", zap.Bool("loop", loop), zap.Any("update source", update.Source.Path), zap.Any("update target", update.Target.Path))
 			s.publish(ctx, update)
 		}
-		s.sharedCache.Delete(opposite)
+		_ = ca.Delete(opposite)
 		return
 	}
 
 	if !loop {
 		//log.Logger(ctx).Info("Enqueue in cache", zap.String("key", key), zap.Any("type", event.Type.String()))
 		d, _ := json.Marshal(event)
-		s.sharedCache.Set(key, d)
+		_ = ca.Set(key, d)
 		go func() {
 			<-time.After(300 * time.Millisecond)
 			// Retry once if other key was stored just at the same time
@@ -105,7 +110,7 @@ func (s *EventSubscriber) enqueueInCache(ctx context.Context, moveUuid string, e
 // are enqueued in a cache to re-create CREATE+DELETE pairs across datasources.
 func (s *EventSubscriber) Handle(ctx context.Context, msg *tree.NodeChangeEvent) error {
 	source, target := msg.Source, msg.Target
-	if meta, ok := metadata.FromContextRead(ctx); ok && (msg.Type == tree.NodeChangeEvent_CREATE || msg.Type == tree.NodeChangeEvent_DELETE) {
+	if meta, ok := propagator.FromContextRead(ctx); ok && (msg.Type == tree.NodeChangeEvent_CREATE || msg.Type == tree.NodeChangeEvent_DELETE) {
 		if moveSess, o := meta[common.XPydioMoveUuid]; o {
 			var uuid string
 			if source != nil {

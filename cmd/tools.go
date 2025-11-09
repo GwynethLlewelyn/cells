@@ -24,8 +24,9 @@ import "github.com/spf13/cobra"
 
 // ToolsCmd are tools that do not need a running Cells instance
 var ToolsCmd = &cobra.Command{
-	Use:   "tools",
-	Short: "Additional tools",
+	Use:    "tools",
+	Short:  "Additional tools",
+	Hidden: true,
 	Long: `
 DESCRIPTION
 
@@ -33,7 +34,8 @@ DESCRIPTION
 `,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		bindViperFlags(cmd.Flags())
-		_, _, er := initConfig(cmd.Context(), false)
+		ctx, er := initManagerContext(cmd.Context())
+		cmd.SetContext(ctx)
 		return er
 	},
 	Run: func(cmd *cobra.Command, args []string) {

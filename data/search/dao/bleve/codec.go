@@ -1,23 +1,28 @@
 package bleve
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/blevesearch/bleve/v2"
+	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/analysis/analyzer/keyword"
 	"github.com/blevesearch/bleve/v2/analysis/analyzer/standard"
 	"github.com/blevesearch/bleve/v2/analysis/lang/en"
 	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/blevesearch/bleve/v2/registry"
-	"github.com/blevesearch/bleve/v2/search"
+	blevesearch "github.com/blevesearch/bleve/v2/search"
 	"github.com/blevesearch/bleve/v2/search/query"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/nodes/meta"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes/meta"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	bleve2 "github.com/pydio/cells/v5/common/storage/bleve"
+	"github.com/pydio/cells/v5/common/storage/indexer"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/data/search"
+	"github.com/pydio/cells/v5/data/search/dao/commons"
 
 	_ "github.com/blevesearch/bleve/v2/analysis/lang/ar"
 	_ "github.com/blevesearch/bleve/v2/analysis/lang/bg"
@@ -55,6 +60,29 @@ const (
 	defaultContentAnalyzer  = en.AnalyzerName
 )
 
+var (
+	validSortFields = map[string]string{
+		tree.MetaSortName: "Basename",
+		tree.MetaSortTime: "ModifTime",
+		tree.MetaSortSize: "Size",
+		tree.MetaSortType: "Type",
+	}
+)
+
+func init() {
+	search.Drivers.Register(NewBleveDAO)
+}
+
+func NewBleveDAO(ctx context.Context, v *bleve2.Indexer) search.Engine {
+	v.SetCodex(&Codec{})
+	return commons.NewServer(ctx, v, createQueryCodec)
+}
+
+func FastBleveDAO(ctx context.Context, v *bleve2.Indexer) search.Engine {
+	v.SetCodex(&Codec{})
+	return commons.NewServer(ctx, v, createQueryCodec, indexer.WithExpire(10*time.Millisecond))
+}
+
 type Codec struct {
 	ResultBasenameFacetCount int32
 	ResultContentFacetCount  int32
@@ -63,11 +91,15 @@ type Codec struct {
 	queryNSProvider *meta.NsProvider
 }
 
-func NewQueryCodec(values configx.Values, provider *meta.NsProvider) *Codec {
+func createQueryCodec(values configx.Values, provider *meta.NsProvider) indexer.IndexCodex {
 	return &Codec{
 		queryConfig:     values,
 		queryNSProvider: provider,
 	}
+}
+
+func (b *Codec) RequirePreCount() bool {
+	return true
 }
 
 func (b *Codec) Marshal(input interface{}) (interface{}, error) {
@@ -77,7 +109,7 @@ func (b *Codec) Marshal(input interface{}) (interface{}, error) {
 
 func (b *Codec) Unmarshal(indexed interface{}) (interface{}, error) {
 
-	hit := indexed.(*search.DocumentMatch)
+	hit := indexed.(*blevesearch.DocumentMatch)
 	node := &tree.Node{}
 	if u, ok := hit.Fields["Uuid"]; ok {
 		node.Uuid = u.(string)
@@ -117,7 +149,7 @@ func (b *Codec) Unmarshal(indexed interface{}) (interface{}, error) {
 
 func (b *Codec) UnmarshalFacet(data interface{}, facets chan interface{}) {
 
-	f, ok := data.(*search.FacetResult)
+	f, ok := data.(*blevesearch.FacetResult)
 	if !ok {
 		return
 	}
@@ -182,7 +214,7 @@ func (b *Codec) FlushCustomFacets() (facets []interface{}) {
 	return
 }
 
-func (b *Codec) BuildQuery(qu interface{}, offset, limit int32) (interface{}, interface{}, error) {
+func (b *Codec) BuildQuery(qu interface{}, offset, limit int32, sortFields string, sortDesc bool) (interface{}, interface{}, error) {
 
 	ba, ca, _ := b.extractConfigs(b.queryConfig)
 
@@ -202,13 +234,13 @@ func (b *Codec) BuildQuery(qu interface{}, offset, limit int32) (interface{}, in
 
 	// File Size Range
 	if queryObject.MinSize > 0 || queryObject.MaxSize > 0 {
-		var min = float64(queryObject.MinSize)
-		var max = float64(queryObject.MaxSize)
+		var mi = float64(queryObject.MinSize)
+		var ma = float64(queryObject.MaxSize)
 		var numRange *query.NumericRangeQuery
-		if max == 0 {
-			numRange = bleve.NewNumericRangeQuery(&min, nil)
+		if ma == 0 {
+			numRange = bleve.NewNumericRangeQuery(&mi, nil)
 		} else {
-			numRange = bleve.NewNumericRangeQuery(&min, &max)
+			numRange = bleve.NewNumericRangeQuery(&mi, &ma)
 		}
 		numRange.SetField("Size")
 		boolean.AddMust(numRange)
@@ -227,8 +259,17 @@ func (b *Codec) BuildQuery(qu interface{}, offset, limit int32) (interface{}, in
 		dateRange.SetField("ModifTime")
 		boolean.AddMust(dateRange)
 	}
-	// Limit to a SubTree
-	if len(queryObject.PathPrefix) > 0 {
+
+	// Limit to a set of Paths or to a SubTree (PathPrefix)
+	if len(queryObject.Paths) > 0 {
+		subQ := bleve.NewBooleanQuery()
+		for _, pa := range queryObject.Paths {
+			exact := bleve.NewMatchQuery(pa)
+			exact.SetField("Path")
+			subQ.AddShould(exact)
+		}
+		boolean.AddMust(subQ)
+	} else if len(queryObject.PathPrefix) > 0 {
 		subQ := bleve.NewBooleanQuery()
 		for _, pref := range queryObject.PathPrefix {
 			prefix := bleve.NewPrefixQuery(pref)
@@ -236,6 +277,14 @@ func (b *Codec) BuildQuery(qu interface{}, offset, limit int32) (interface{}, in
 			subQ.AddShould(prefix)
 		}
 		boolean.AddMust(subQ)
+	}
+	// Exclude some specific paths, may be used to exclude recycled files
+	if len(queryObject.ExcludedPathPrefix) > 0 {
+		for _, pref := range queryObject.ExcludedPathPrefix {
+			exclude := bleve.NewPrefixQuery(pref)
+			exclude.SetField("Path")
+			boolean.AddMustNot(exclude)
+		}
 	}
 	// Limit to a given node type
 	if queryObject.Type > 0 {
@@ -248,15 +297,52 @@ func (b *Codec) BuildQuery(qu interface{}, offset, limit int32) (interface{}, in
 		boolean.AddMust(typeQuery)
 	}
 
+	if queryObject.PathDepth > 0 {
+		mind := float64(queryObject.PathDepth)
+		maxd := float64(queryObject.PathDepth + 1)
+		pDepth := bleve.NewNumericRangeQuery(&mind, &maxd)
+		pDepth.SetField("PathDepth")
+		boolean.AddMust(pDepth)
+	}
+
 	if len(queryObject.Extension) > 0 {
-		extQuery := bleve.NewTermQuery(strings.ToLower(queryObject.Extension))
-		extQuery.SetField("Extension")
-		boolean.AddMust(extQuery)
+		pp := strings.Split(strings.ReplaceAll(queryObject.Extension, "|", ","), ",")
+		if len(pp) > 1 {
+			subQ := bleve.NewBooleanQuery()
+			for _, ex := range pp {
+				extQuery := bleve.NewTermQuery(strings.ToLower(ex))
+				extQuery.SetField("Extension")
+				subQ.AddShould(extQuery)
+			}
+			boolean.AddMust(subQ)
+		} else {
+			extQuery := bleve.NewTermQuery(strings.ToLower(queryObject.Extension))
+			extQuery.SetField("Extension")
+			boolean.AddMust(extQuery)
+		}
 	}
 
 	if len(queryObject.FreeString) > 0 {
 		qStringQuery := bleve.NewQueryStringQuery(queryObject.FreeString)
 		boolean.AddMust(qStringQuery)
+	}
+
+	if len(queryObject.UUIDs) > 1 {
+		bQ := bleve.NewBooleanQuery()
+		for _, u := range queryObject.UUIDs {
+			tq := bleve.NewMatchQuery(u)
+			// This is important to avoid retrieving uuids with similar parts.
+			tq.SetOperator(query.MatchQueryOperatorAnd)
+			tq.SetField("Uuid")
+			bQ.AddShould(tq)
+		}
+		boolean.AddMust(bQ)
+	} else if len(queryObject.UUIDs) == 1 {
+		tq := bleve.NewMatchQuery(queryObject.UUIDs[0])
+		// This is important to avoid retrieving uuids with similar parts.
+		tq.SetOperator(query.MatchQueryOperatorAnd)
+		tq.SetField("Uuid")
+		boolean.AddMust(tq)
 	}
 
 	if queryObject.GeoQuery != nil {
@@ -283,6 +369,31 @@ func (b *Codec) BuildQuery(qu interface{}, offset, limit int32) (interface{}, in
 	searchRequest.From = int(offset)
 	searchRequest.Fields = []string{"Uuid", "Path", "NodeType", "Basename", "Size", "ModifTime"}
 	searchRequest.IncludeLocations = true
+
+	// Handle sorting
+	if sortFields != "" {
+		nss := b.queryNSProvider.Namespaces()
+		var sorts []string
+		for _, sf := range strings.Split(sortFields, ",") {
+			sf = strings.TrimSpace(sf)
+			if sortField, ok := validSortFields[sf]; ok {
+				if sortDesc {
+					sorts = append(sorts, "-"+sortField)
+				} else {
+					sorts = append(sorts, "+"+sortField)
+				}
+			} else if _, ok2 := nss[sf]; ok2 {
+				if sortDesc {
+					sorts = append(sorts, "-Meta."+sf)
+				} else {
+					sorts = append(sorts, "+Meta."+sf)
+				}
+			}
+		}
+		if len(sorts) > 0 {
+			searchRequest.SortBy(sorts)
+		}
+	}
 
 	searchRequest.AddFacet("Type", &bleve.FacetRequest{
 		Field: "NodeType",
@@ -386,9 +497,13 @@ func (b *Codec) extractConfigs(cfg configx.Values) (basenameAnalyzer, contentAna
 	basenameAnalyzer = defaultBasenameAnalyzer
 	contentAnalyzer = defaultContentAnalyzer
 
+	if cfg == nil {
+		return
+	}
+
 	_, tt := registry.AnalyzerTypesAndInstances()
 
-	if bA := cfg.Val("BasenameAnalyzer").String(); bA != "" {
+	if bA := cfg.Val("basenameAnalyzer").String(); bA != "" {
 		var found bool
 		for _, t := range tt {
 			if t == bA {
@@ -402,7 +517,7 @@ func (b *Codec) extractConfigs(cfg configx.Values) (basenameAnalyzer, contentAna
 		}
 	}
 
-	if cA := cfg.Val("ContentAnalyzer").String(); cA != "" {
+	if cA := cfg.Val("contentAnalyzer").String(); cA != "" {
 		var found bool
 		for _, t := range tt {
 			if t == cA {
@@ -419,23 +534,30 @@ func (b *Codec) extractConfigs(cfg configx.Values) (basenameAnalyzer, contentAna
 }
 
 func (b *Codec) makeBaseNameField(term string, boost float64, ba string) query.Query {
-	if ba == defaultBasenameAnalyzer && !strings.Contains(term, " ") {
-		term = strings.Trim(strings.ToLower(term), "* ")
-		wCard := bleve.NewWildcardQuery("*" + term + "*")
-		wCard.SetField("Basename")
-		if boost > 0 {
-			wCard.SetBoost(boost)
-		}
-		return wCard
-	} else {
-		wCard := bleve.NewMatchQuery(term)
-		wCard.Analyzer = ba
-		wCard.SetField("Basename")
-		if boost > 0 {
-			wCard.SetBoost(boost)
-		}
-		return wCard
+
+	term = strings.Trim(strings.ToLower(term), "* ")
+
+	exactMatch := bleve.NewMatchPhraseQuery(term)
+	exactMatch.Analyzer = ba
+	exactMatch.SetField("Basename")
+	exactMatch.SetBoost(boost + 5)
+
+	wCard := bleve.NewWildcardQuery("*" + term + "*")
+	wCard.SetField("Basename")
+	wCard.SetBoost(boost + 2)
+
+	match := bleve.NewMatchQuery(term)
+	match.Analyzer = ba
+	match.SetField("Basename")
+	if boost > 0 {
+		match.SetBoost(boost)
 	}
+
+	bq := bleve.NewBooleanQuery()
+	bq.AddShould(exactMatch)
+	bq.AddShould(wCard)
+	bq.AddShould(match)
+	return bq
 }
 
 func (b *Codec) makeContentField(term string, ca string) query.Query {

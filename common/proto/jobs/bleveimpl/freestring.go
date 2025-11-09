@@ -22,25 +22,26 @@ package bleveimpl
 
 import (
 	"context"
+	"sync"
 
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/search/query"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func EvalFreeString(ctx context.Context, query string, node *tree.Node) bool {
 
 	if qu, e := getQuery(query); e == nil {
 		b := getMemIndex()
-		iNode := tree.NewMemIndexableNode(node)
+		iNode := tree.NewMemIndexableNode(node.Clone())
 		if e := b.Index(node.Uuid, iNode); e == nil {
-			log.Logger(ctx).Debug("Indexed node, now performing request", zap.Any("node", iNode), zap.Any("q", qu))
+			//log.Logger(ctx).Debug("Indexed node, now performing request", zap.Any("node", iNode), zap.Any("q", qu))
 			defer b.Delete(node.Uuid)
 		} else {
-			log.Logger(ctx).Error("Cannot index node", zap.Any("node", iNode), zap.Error(e))
+			//log.Logger(ctx).Error("Cannot index node", zap.Any("node", iNode), zap.Error(e))
 			return false
 		}
 		req := bleve.NewSearchRequest(qu)
@@ -60,20 +61,24 @@ func EvalFreeString(ctx context.Context, query string, node *tree.Node) bool {
 }
 
 var (
-	memIndex        bleve.Index
-	freeStringCache map[string]query.Query
+	memIndex bleve.Index
+	fsCache  map[string]query.Query
+	fsLock   sync.Mutex
 )
 
 func getQuery(freeString string) (query.Query, error) {
-	if freeStringCache == nil {
-		freeStringCache = make(map[string]query.Query)
+	fsLock.Lock()
+	defer fsLock.Unlock()
+
+	if fsCache == nil {
+		fsCache = make(map[string]query.Query)
 	}
-	if q, ok := freeStringCache[freeString]; ok {
+	if q, ok := fsCache[freeString]; ok {
 		return q, nil
 	}
 	q := query.NewQueryStringQuery(freeString)
 	if qu, e := q.Parse(); e == nil {
-		freeStringCache[freeString] = qu
+		fsCache[freeString] = qu
 		return qu, nil
 	} else {
 		return nil, e
@@ -93,7 +98,7 @@ func getMemIndex() bleve.Index {
 	pathFieldMapping.Analyzer = "keyword"
 	nodeMapping.AddFieldMappingsAt("Path", pathFieldMapping)
 
-	// Node type to keyword
+	// N type to keyword
 	nodeType := bleve.NewTextFieldMapping()
 	nodeType.Analyzer = "keyword"
 	nodeMapping.AddFieldMappingsAt("NodeType", nodeType)

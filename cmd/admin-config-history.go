@@ -33,9 +33,9 @@ import (
 	"github.com/yudai/gojsondiff"
 	"github.com/yudai/gojsondiff/formatter"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/config/revisions"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/revisions"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 var (
@@ -61,7 +61,7 @@ DESCRIPTION
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		store := config.RevisionsStore()
+		store := config.RevisionsStore(cmd.Context())
 
 		if configVersionShow != "" {
 			if id, e := strconv.ParseUint(configVersionShow, 10, 64); e == nil {
@@ -152,8 +152,9 @@ DESCRIPTION
 				}
 				index, _, _ := prompt.Run()
 				if index == 0 {
-					config.Set(version.Data)
-					config.Save("cli", "Config Restoration to version "+configVersionRestore)
+					ctx := cmd.Context()
+					config.Set(ctx, version.Data)
+					config.Save(ctx, "cli", "Config Restoration to version "+configVersionRestore)
 				}
 			} else {
 				log.Fatal("Cannot parse version Id")

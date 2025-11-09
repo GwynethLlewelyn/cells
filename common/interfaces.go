@@ -20,8 +20,6 @@
 
 package common
 
-import "context"
-
 type Scanner interface {
 	Scan(val interface{}) error
 }
@@ -30,19 +28,6 @@ type XMLSerializableForm interface {
 	Serialize(languages ...string) interface{}
 }
 
-type RuntimeProvider interface {
-	SetRuntimeContext(ctx context.Context)
-	GetRuntimeContext() context.Context
-}
-
-type RuntimeHolder struct {
-	RuntimeContext context.Context
-}
-
-func (r *RuntimeHolder) SetRuntimeContext(ctx context.Context) {
-	r.RuntimeContext = ctx
-}
-
-func (r *RuntimeHolder) GetRuntimeContext() context.Context {
-	return r.RuntimeContext
+type ReaderMetaExtractor interface {
+	ExtractedMeta() (map[string]string, bool)
 }

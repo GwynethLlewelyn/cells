@@ -30,17 +30,17 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	grpc2 "github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/docstore"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/client/commons/docstorec"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 func WithArchives() nodes.Option {
@@ -77,7 +77,7 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 
 	originalPath := node.Path
 
-	if ok, format, archivePath, innerPath := a.isArchivePath(originalPath); ok && len(innerPath) > 0 {
+	if ok, format, archivePath, innerPath := a.isArchivePath(ctx, originalPath); ok && len(innerPath) > 0 {
 		extractor := &Reader{Router: a.Next}
 		statResp, _ := a.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: archivePath}})
 		archiveNode := statResp.Node
@@ -100,6 +100,7 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 	}
 
 	readCloser, err := a.Next.GetObject(ctx, node, requestData)
+	deferedCtx := context.WithoutCancel(ctx)
 	if err != nil {
 		if selectionUuid := a.selectionFakeName(originalPath); selectionUuid != "" {
 			ok, selection, er := a.selectionProvider.getSelectionByUuid(ctx, selectionUuid)
@@ -113,7 +114,7 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 					defer w.Close()
 					defer func() {
 						// Delete selection after download
-						a.selectionProvider.deleteSelectionByUuid(a.RuntimeCtx, selectionUuid)
+						a.selectionProvider.deleteSelectionByUuid(deferedCtx, selectionUuid)
 					}()
 					a.generateArchiveFromSelection(ctx, w, selection, ext)
 				}()
@@ -144,7 +145,7 @@ func (a *Handler) GetObject(ctx context.Context, node *tree.Node, requestData *m
 func (a *Handler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, opts ...grpc.CallOption) (*tree.ReadNodeResponse, error) {
 	originalPath := in.Node.Path
 
-	if ok, format, archivePath, innerPath := a.isArchivePath(originalPath); ok && len(innerPath) > 0 {
+	if ok, format, archivePath, innerPath := a.isArchivePath(ctx, originalPath); ok && len(innerPath) > 0 {
 		log.Logger(ctx).Debug("[ARCHIVE:READ] " + originalPath + " => " + archivePath + " -- " + innerPath)
 		extractor := &Reader{Router: a.Next}
 		statResp, _ := a.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: archivePath}})
@@ -206,7 +207,11 @@ func (a *Handler) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, opts .
 
 func (a *Handler) ListNodes(ctx context.Context, in *tree.ListNodesRequest, opts ...grpc.CallOption) (tree.NodeProvider_ListNodesClient, error) {
 
-	if ok, format, archivePath, innerPath := a.isArchivePath(in.Node.Path); ok {
+	if in.WithVersions {
+		return a.Next.ListNodes(ctx, in, opts...)
+	}
+
+	if ok, format, archivePath, innerPath := a.isArchivePath(ctx, in.Node.Path); ok {
 		extractor := &Reader{Router: a.Next}
 		statResp, e := a.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: archivePath}})
 		if e != nil {
@@ -254,18 +259,35 @@ func (a *Handler) ListNodes(ctx context.Context, in *tree.ListNodesRequest, opts
 	return a.Next.ListNodes(ctx, in, opts...)
 }
 
-func (a *Handler) isArchivePath(nodePath string) (ok bool, format string, archivePath string, innerPath string) {
+func (a *Handler) isArchivePath(ctx context.Context, nodePath string) (ok bool, format string, archivePath string, innerPath string) {
 	formats := []string{"zip", "tar", "tar.gz"}
 	for _, f := range formats {
 		test := strings.SplitN(nodePath, "."+f+"/", 2)
 		if len(test) == 2 {
-			return true, f, test[0] + "." + f, test[1]
+			archivePath = test[0] + "." + f
+			innerPath = test[1]
+			format = f
+			break
 		}
 		if strings.HasSuffix(nodePath, "."+f) {
-			return true, f, nodePath, ""
+			format = f
+			archivePath = nodePath
+			break
 		}
 	}
-	return false, "", "", ""
+	if archivePath != "" {
+		// TEST CASE ONLY
+		if a.Next == nil {
+			ok = true
+			return
+		}
+		// Read node and make sure it is a zip FILE, not a folder named toto.zip !
+		if resp, er := a.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: &tree.Node{Path: archivePath}}); er == nil && resp.GetNode().IsLeaf() {
+			ok = true
+			return
+		}
+	}
+	return
 }
 
 func (a *Handler) selectionFakeName(nodePath string) string {
@@ -300,7 +322,7 @@ func (a *Handler) archiveFakeStat(ctx context.Context, nodePath string) (node *t
 
 	}
 
-	return nil, nodes.ErrFileNotFound("Could not find corresponding folder for archive " + nodePath)
+	return nil, errors.WithMessage(errors.NodeNotFound, "Could not find corresponding folder for archive "+nodePath)
 
 }
 
@@ -345,15 +367,14 @@ func (a *Handler) generateArchiveFromSelection(ctx context.Context, writer io.Wr
 func (a *Handler) getSelectionByUuid(ctx context.Context, selectionUuid string) (bool, []*tree.Node, error) {
 
 	var data []*tree.Node
-	dcClient := docstore.NewDocStoreClient(grpc2.GetClientConnFromCtx(ctx, common.ServiceDocStore))
-	if resp, e := dcClient.GetDocument(ctx, &docstore.GetDocumentRequest{
+	if resp, e := docstorec.DocStoreClient(ctx).GetDocument(ctx, &docstore.GetDocumentRequest{
 		StoreID:    common.DocStoreIdSelections,
 		DocumentID: selectionUuid,
 	}); e == nil {
 		doc := resp.Document
-		username, _ := permissions.FindUserNameInContext(ctx)
+		username := claim.UserNameFromContext(ctx)
 		if username != doc.Owner {
-			return false, data, errors.Forbidden("selection.forbidden", "this selection does not belong to you")
+			return false, data, errors.WithMessage(errors.StatusForbidden, "this selection does not belong to you")
 		}
 		if er := json.Unmarshal([]byte(doc.Data), &data); er != nil {
 			return false, data, er
@@ -368,8 +389,8 @@ func (a *Handler) getSelectionByUuid(ctx context.Context, selectionUuid string) 
 
 // deleteSelectionByUuid Delete selection
 func (a *Handler) deleteSelectionByUuid(ctx context.Context, selectionUuid string) {
-	dcClient := docstore.NewDocStoreClient(grpc2.GetClientConnFromCtx(ctx, common.ServiceDocStore))
-	_, e := dcClient.DeleteDocuments(ctx, &docstore.DeleteDocumentsRequest{
+
+	_, e := docstorec.DocStoreClient(ctx).DeleteDocuments(ctx, &docstore.DeleteDocumentsRequest{
 		StoreID:    common.DocStoreIdSelections,
 		DocumentID: selectionUuid,
 	})

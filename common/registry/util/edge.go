@@ -21,14 +21,17 @@
 package util
 
 import (
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/utils/merger"
+	"github.com/pydio/cells/v5/common/utils/std"
+	"golang.org/x/exp/maps"
+
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/utils/merger"
 )
 
 func ToProtoEdge(e registry.Edge) *pb.Edge {
 	if dd, ok := e.(*edge); ok {
-		return dd.e
+		return dd.E
 	}
 	return &pb.Edge{
 		Vertices: e.Vertices(),
@@ -36,12 +39,12 @@ func ToProtoEdge(e registry.Edge) *pb.Edge {
 }
 
 func ToEdge(i *pb.Item, e *pb.Edge) registry.Edge {
-	return &edge{i: i, e: e}
+	return &edge{I: i, E: e}
 }
 
 type edge struct {
-	i *pb.Item
-	e *pb.Edge
+	I *pb.Item
+	E *pb.Edge
 }
 
 func (d *edge) Equals(differ merger.Differ) bool {
@@ -68,15 +71,18 @@ func (d *edge) Merge(differ merger.Differ, m map[string]string) (merger.Differ, 
 }
 
 func (d *edge) Name() string {
-	return d.i.Name
+	return d.I.Name
 }
 
 func (d *edge) ID() string {
-	return d.i.Id
+	return d.I.Id
 }
 
 func (d *edge) Metadata() map[string]string {
-	return d.i.Metadata
+	if d.I.Metadata == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(d.I.Metadata)
 }
 
 func (d *edge) As(i interface{}) bool {
@@ -88,5 +94,14 @@ func (d *edge) As(i interface{}) bool {
 }
 
 func (d *edge) Vertices() []string {
-	return d.e.Vertices
+	return d.E.Vertices
+}
+
+func (d *edge) Clone() interface{} {
+	clone := &edge{}
+
+	clone.I = std.DeepClone(d.I)
+	clone.E = std.DeepClone(d.E)
+
+	return clone
 }

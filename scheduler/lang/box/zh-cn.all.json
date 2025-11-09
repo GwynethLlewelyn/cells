@@ -1,6 +1,6 @@
 {
   "Jobs.Default.Thumbs": {
-    "other": "提取图像缩略图和EXIF数据"
+    "other": "提取图像缩略图和Exif数据"
   },
   "Jobs.Default.ThumbsCache": {
     "other": "清除已删除文件的缩略图缓存"
@@ -23,11 +23,20 @@
   "Jobs.Default.ArchiveJobs": {
     "other": "自动存档更改服务"
   },
+  "Jobs.Default.CleanUserData": {
+    "other": "删除时清理或传输用户数据"
+  },
+  "Jobs.Default.CleanOrphanFiles": {
+    "other": "24小时后清理孤立文件"
+  },
+  "Jobs.Default.CleanExpiredACLs": {
+    "other": "10天后清理过期的 ACL"
+  },
   "Jobs.User.Compress": {
     "other": "压缩选项..."
   },
   "Jobs.User.Extract": {
-    "other": "解压缩到..."
+    "other": "正在提取存档..."
   },
   "Jobs.User.Delete": {
     "other": "正在后台删除选择的文件..."
@@ -48,13 +57,13 @@
     "other": "正在后台复制选择的文件..."
   },
   "Jobs.User.MultipleMove": {
-    "other": "正在后台移动选择的文件..."
+    "other": "在后台移动选择..."
   },
   "Jobs.User.MoveRecycle": {
     "other": "在后台移动到回收站..."
   },
   "Jobs.User.ResyncDS": {
-    "other": "正在重新索引数据源 {{.DsName}}..."
+    "other": "同步数据源 {{.DsName}} 然后对新文件重新分配哈希值"
   },
   "Jobs.User.Wget": {
     "other": "正在后台下载文件..."

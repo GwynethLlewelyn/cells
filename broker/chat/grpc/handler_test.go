@@ -23,20 +23,30 @@ package grpc
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
-	. "github.com/smartystreets/goconvey/convey"
+	chat2 "github.com/pydio/cells/v5/broker/chat"
+	"github.com/pydio/cells/v5/broker/chat/dao/bolt"
+	"github.com/pydio/cells/v5/broker/chat/dao/mongo"
+	"github.com/pydio/cells/v5/common/nodes/mocks"
+	"github.com/pydio/cells/v5/common/proto/chat"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/server/stubs"
+	"github.com/pydio/cells/v5/common/storage/test"
+	"github.com/pydio/cells/v5/common/utils/uuid"
 
-	chat2 "github.com/pydio/cells/v4/broker/chat"
-	"github.com/pydio/cells/v4/common/dao/test"
-	"github.com/pydio/cells/v4/common/nodes/mocks"
-	"github.com/pydio/cells/v4/common/proto/chat"
-	"github.com/pydio/cells/v4/common/server/stubs"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/utils/uuid"
+	_ "github.com/pydio/cells/v5/common/storage/boltdb"
+	_ "github.com/pydio/cells/v5/common/storage/mongodb"
+
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+var (
+	testcases = []test.StorageTestCase{
+		test.TemplateBoltWithPrefix(bolt.NewBoltDAO, "chat_bolt_"),
+		test.TemplateMongoEnvWithPrefix(mongo.NewMongoDAO, "broker_"+uuid.New()[:6]+"_"),
+	}
 )
 
 type msgSrvStub struct {
@@ -59,195 +69,228 @@ func (s *roomsSrvStub) Send(response *chat.ListRoomsResponse) error {
 	return nil
 }
 
-func initializedHandler() (context.Context, *ChatHandler, func(), error) {
-
-	d, c, e := test.OnFileTestDAO("boltdb", filepath.Join(os.TempDir(), uuid.New()+".db"), "", "chat-test", false, chat2.NewDAO)
-	if e != nil {
-		return nil, nil, nil, e
-	}
-	return servicecontext.WithDAO(context.Background(), d), &ChatHandler{dao: d.(chat2.DAO)}, c, nil
-
-}
-
 func TestChatHandler_PutRoom(t *testing.T) {
 
-	roomUuid := uuid.New()
-	nodeUuid := uuid.New()
+	handler := &ChatHandler{}
 
-	Convey("Test Chat DAO / CRUD ROOMS", t, func() {
-		ctx, handler, closer, e := initializedHandler()
-		So(e, ShouldBeNil)
-		defer closer()
-		_, e = handler.PutRoom(ctx, &chat.PutRoomRequest{Room: &chat.ChatRoom{
-			Type:           chat.RoomType_NODE,
-			Uuid:           roomUuid,
-			RoomTypeObject: nodeUuid,
-			RoomLabel:      "Comments",
-		}})
-		So(e, ShouldBeNil)
+	test.RunStorageTests(testcases, t, func(ctx context.Context) {
 
-		stub := &roomsSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListRooms(&chat.ListRoomsRequest{
-			ByType:     chat.RoomType_NODE,
-			TypeObject: nodeUuid,
-		}, stub)
-		So(e, ShouldBeNil)
-		So(stub.rr, ShouldHaveLength, 1)
+		roomUuid := uuid.New()
+		nodeUuid := uuid.New()
 
-		stub = &roomsSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListRooms(&chat.ListRoomsRequest{
-			ByType: chat.RoomType_NODE,
-		}, stub)
-		So(e, ShouldBeNil)
-		So(len(stub.rr), ShouldBeGreaterThanOrEqualTo, 1)
+		Convey("Test Chat DAO / CRUD ROOMS", t, func() {
+			cd, err := manager.Resolve[chat2.DAO](ctx)
+			So(err, ShouldBeNil)
+			So(cd, ShouldNotBeNil)
 
-		_, e = handler.DeleteRoom(ctx, &chat.DeleteRoomRequest{Room: &chat.ChatRoom{
-			Type:           chat.RoomType_NODE,
-			Uuid:           roomUuid,
-			RoomTypeObject: nodeUuid,
-		}})
-		So(e, ShouldBeNil)
+			_, e := handler.PutRoom(ctx, &chat.PutRoomRequest{Room: &chat.ChatRoom{
+				Type:           chat.RoomType_NODE,
+				Uuid:           roomUuid,
+				RoomTypeObject: nodeUuid,
+				RoomLabel:      "Comments",
+			}})
+			So(e, ShouldBeNil)
 
-		_, e = handler.DeleteRoom(ctx, &chat.DeleteRoomRequest{Room: &chat.ChatRoom{
-			Type:           chat.RoomType_NODE,
-			Uuid:           "non-existing-uuid",
-			RoomTypeObject: "non-existing-uuid",
-		}})
-		So(e, ShouldBeNil)
+			stub := &roomsSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListRooms(&chat.ListRoomsRequest{
+				ByType:     chat.RoomType_NODE,
+				TypeObject: nodeUuid,
+			}, stub)
+			So(e, ShouldBeNil)
+			So(stub.rr, ShouldHaveLength, 1)
 
-		stub = &roomsSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListRooms(&chat.ListRoomsRequest{
-			ByType:     chat.RoomType_NODE,
-			TypeObject: nodeUuid,
-		}, stub)
-		So(e, ShouldBeNil)
-		So(stub.rr, ShouldHaveLength, 0)
+			stub = &roomsSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListRooms(&chat.ListRoomsRequest{
+				ByType: chat.RoomType_NODE,
+			}, stub)
+			So(e, ShouldBeNil)
+			So(len(stub.rr), ShouldBeGreaterThanOrEqualTo, 1)
 
+			_, e = handler.DeleteRoom(ctx, &chat.DeleteRoomRequest{Room: &chat.ChatRoom{
+				Type:           chat.RoomType_NODE,
+				Uuid:           roomUuid,
+				RoomTypeObject: nodeUuid,
+			}})
+			So(e, ShouldBeNil)
+
+			_, e = handler.DeleteRoom(ctx, &chat.DeleteRoomRequest{Room: &chat.ChatRoom{
+				Type:           chat.RoomType_NODE,
+				Uuid:           "non-existing-uuid",
+				RoomTypeObject: "non-existing-uuid",
+			}})
+			So(e, ShouldBeNil)
+
+			stub = &roomsSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListRooms(&chat.ListRoomsRequest{
+				ByType:     chat.RoomType_NODE,
+				TypeObject: nodeUuid,
+			}, stub)
+			So(e, ShouldBeNil)
+			So(stub.rr, ShouldHaveLength, 0)
+
+		})
 	})
-
 }
 
 func TestChatHandler_PutMessage(t *testing.T) {
 
-	Convey("Test Chat DAO / CRUD MESSAGES", t, func() {
-		metaClient = &mocks.NodeReceiverClient{}
-		ctx, handler, closer, e := initializedHandler()
-		So(e, ShouldBeNil)
-		defer closer()
-		_, e = handler.PutRoom(ctx, &chat.PutRoomRequest{Room: &chat.ChatRoom{
-			Type:           chat.RoomType_NODE,
-			Uuid:           "room",
-			RoomTypeObject: "node",
-			RoomLabel:      "Comments",
-		}})
-		So(e, ShouldBeNil)
+	handler := &ChatHandler{}
 
-		resp, e := handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
-			RoomUuid: "room",
-			Message:  "Hello World",
-			Author:   "tester",
-		}}})
-		So(e, ShouldBeNil)
-		So(resp.Messages, ShouldHaveLength, 1)
-		storedUuid := resp.Messages[0].Uuid
+	test.RunStorageTests(testcases, t, func(ctx context.Context) {
 
-		stub := &msgSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: "room"}, stub)
-		So(e, ShouldBeNil)
-		So(stub.mm, ShouldHaveLength, 1)
+		ctx = context.WithValue(ctx, "resolved-meta-client", &mocks.NodeReceiverClient{})
 
-		_, ee := handler.DeleteMessage(ctx, &chat.DeleteMessageRequest{Messages: []*chat.ChatMessage{{
-			RoomUuid: "room",
-		}}})
-		So(ee, ShouldNotBeNil)
+		Convey("Test Chat DAO / CRUD MESSAGES", t, func() {
+			cd, err := manager.Resolve[chat2.DAO](ctx)
+			So(err, ShouldBeNil)
+			So(cd, ShouldNotBeNil)
 
-		dR, e := handler.DeleteMessage(ctx, &chat.DeleteMessageRequest{Messages: []*chat.ChatMessage{{
-			Uuid:     storedUuid,
-			RoomUuid: "room",
-		}}})
-		So(e, ShouldBeNil)
-		So(dR.Success, ShouldBeTrue)
+			_, e := handler.PutRoom(ctx, &chat.PutRoomRequest{Room: &chat.ChatRoom{
+				Type:           chat.RoomType_NODE,
+				Uuid:           "room",
+				RoomTypeObject: "node",
+				RoomLabel:      "Comments",
+			}})
+			So(e, ShouldBeNil)
 
-		stub = &msgSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: "room"}, stub)
-		So(e, ShouldBeNil)
-		So(stub.mm, ShouldHaveLength, 0)
+			resp, e := handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
+				RoomUuid: "room",
+				Message:  "Hello World",
+				Author:   "tester",
+			}}})
+			So(e, ShouldBeNil)
+			So(resp.Messages, ShouldHaveLength, 1)
+			storedUuid := resp.Messages[0].Uuid
 
+			// Update Message content: post with UUID - author must be the same!
+			resp, e = handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
+				Uuid:     storedUuid,
+				RoomUuid: "room",
+				Message:  "Hello World - Updated",
+				Author:   "tester",
+			}}})
+			So(e, ShouldBeNil)
+			So(resp.Messages, ShouldHaveLength, 1)
+
+			resp, e = handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
+				Uuid:     storedUuid,
+				RoomUuid: "room",
+				Message:  "Hello World - Updated Fail",
+				Author:   "author",
+			}}})
+			So(e, ShouldNotBeNil)
+
+			resp, e = handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
+				Uuid:     "unknown-uuid",
+				RoomUuid: "room",
+				Message:  "Hello World - Updated Fail",
+				Author:   "tester",
+			}}})
+			So(e, ShouldNotBeNil)
+
+			stub := &msgSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: "room"}, stub)
+			So(e, ShouldBeNil)
+			So(stub.mm, ShouldHaveLength, 1)
+			So(stub.mm[0].Message.Message, ShouldEqual, "Hello World - Updated")
+
+			_, ee := handler.DeleteMessage(ctx, &chat.DeleteMessageRequest{Messages: []*chat.ChatMessage{{
+				RoomUuid: "room",
+			}}})
+			So(ee, ShouldNotBeNil)
+
+			dR, e := handler.DeleteMessage(ctx, &chat.DeleteMessageRequest{Messages: []*chat.ChatMessage{{
+				Uuid:     storedUuid,
+				RoomUuid: "room",
+			}}})
+			So(e, ShouldBeNil)
+			So(dR.Success, ShouldBeTrue)
+
+			stub = &msgSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: "room"}, stub)
+			So(e, ShouldBeNil)
+			So(stub.mm, ShouldHaveLength, 0)
+
+		})
 	})
-
 }
 
 func TestChatHandler_ListMessages(t *testing.T) {
 
-	roomUuid := uuid.New()
+	handler := &ChatHandler{}
 
-	Convey("Test Chat DAO / CRUD MESSAGES", t, func() {
-		metaClient = &mocks.NodeReceiverClient{}
-		ctx, handler, closer, e := initializedHandler()
-		So(e, ShouldBeNil)
-		defer closer()
-		_, e = handler.PutRoom(ctx, &chat.PutRoomRequest{Room: &chat.ChatRoom{
-			Type:           chat.RoomType_NODE,
-			Uuid:           roomUuid,
-			RoomTypeObject: "node",
-			RoomLabel:      "Comments",
-		}})
-		So(e, ShouldBeNil)
+	test.RunStorageTests(testcases, t, func(ctx context.Context) {
 
-		var ids []string
-		size := 35
-		for i := 0; i < size; i++ {
-			resp, e := handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
-				RoomUuid:  roomUuid,
-				Message:   fmt.Sprintf("Hello World %d", i),
-				Author:    "tester",
-				Timestamp: time.Now().UnixNano(),
+		roomUuid := uuid.New()
+		ctx = context.WithValue(ctx, "resolved-meta-client", &mocks.NodeReceiverClient{})
+
+		Convey("Test Chat DAO / CRUD MESSAGES", t, func() {
+			cd, err := manager.Resolve[chat2.DAO](ctx)
+			So(err, ShouldBeNil)
+			So(cd, ShouldNotBeNil)
+
+			_, e := handler.PutRoom(ctx, &chat.PutRoomRequest{Room: &chat.ChatRoom{
+				Type:           chat.RoomType_NODE,
+				Uuid:           roomUuid,
+				RoomTypeObject: "node",
+				RoomLabel:      "Comments",
+			}})
+			So(e, ShouldBeNil)
+
+			var ids []string
+			size := 35
+			for i := 0; i < size; i++ {
+				resp, e := handler.PostMessage(ctx, &chat.PostMessageRequest{Messages: []*chat.ChatMessage{{
+					RoomUuid:  roomUuid,
+					Message:   fmt.Sprintf("Hello World %d", i),
+					Author:    "tester",
+					Timestamp: time.Now().UnixNano(),
+				}}})
+				So(e, ShouldBeNil)
+				ids = append(ids, resp.Messages[0].Uuid)
+			}
+			So(ids, ShouldHaveLength, size)
+
+			// Returns the last N starting from the last, but in ASC order
+			stub := &msgSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: roomUuid, Offset: 0, Limit: 10}, stub)
+			So(e, ShouldBeNil)
+			So(stub.mm, ShouldHaveLength, 10)
+			So(stub.mm[0].Message.Uuid, ShouldEqual, ids[size-10])
+			So(stub.mm[9].Message.Uuid, ShouldEqual, ids[size-1])
+
+			stub = &msgSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: roomUuid, Offset: 10, Limit: 10}, stub)
+			So(e, ShouldBeNil)
+			So(stub.mm, ShouldHaveLength, 10)
+			So(stub.mm[0].Message.Uuid, ShouldEqual, ids[size-10-10])
+			So(stub.mm[9].Message.Uuid, ShouldEqual, ids[size-1-10])
+
+			stub = &msgSrvStub{}
+			stub.Ctx = ctx
+			e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: roomUuid, Offset: 30, Limit: 10}, stub)
+			So(e, ShouldBeNil)
+			So(stub.mm, ShouldHaveLength, 5)
+			So(stub.mm[0].Message.Uuid, ShouldEqual, ids[0])
+			So(stub.mm[4].Message.Uuid, ShouldEqual, ids[4])
+
+			dR, e := handler.DeleteMessage(ctx, &chat.DeleteMessageRequest{Messages: []*chat.ChatMessage{{
+				Uuid:     ids[0],
+				RoomUuid: roomUuid,
+			}, {
+				Uuid:     ids[1],
+				RoomUuid: roomUuid,
 			}}})
 			So(e, ShouldBeNil)
-			ids = append(ids, resp.Messages[0].Uuid)
-		}
-		So(ids, ShouldHaveLength, size)
+			So(dR.Success, ShouldBeTrue)
 
-		// Returns the last N starting from the last, but in ASC order
-		stub := &msgSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: roomUuid, Offset: 0, Limit: 10}, stub)
-		So(e, ShouldBeNil)
-		So(stub.mm, ShouldHaveLength, 10)
-		So(stub.mm[0].Message.Uuid, ShouldEqual, ids[size-10])
-		So(stub.mm[9].Message.Uuid, ShouldEqual, ids[size-1])
-
-		stub = &msgSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: roomUuid, Offset: 10, Limit: 10}, stub)
-		So(e, ShouldBeNil)
-		So(stub.mm, ShouldHaveLength, 10)
-		So(stub.mm[0].Message.Uuid, ShouldEqual, ids[size-10-10])
-		So(stub.mm[9].Message.Uuid, ShouldEqual, ids[size-1-10])
-
-		stub = &msgSrvStub{}
-		stub.Ctx = ctx
-		e = handler.ListMessages(&chat.ListMessagesRequest{RoomUuid: roomUuid, Offset: 30, Limit: 10}, stub)
-		So(e, ShouldBeNil)
-		So(stub.mm, ShouldHaveLength, 5)
-		So(stub.mm[0].Message.Uuid, ShouldEqual, ids[0])
-		So(stub.mm[4].Message.Uuid, ShouldEqual, ids[4])
-
-		dR, e := handler.DeleteMessage(ctx, &chat.DeleteMessageRequest{Messages: []*chat.ChatMessage{{
-			Uuid:     ids[0],
-			RoomUuid: roomUuid,
-		}, {
-			Uuid:     ids[1],
-			RoomUuid: roomUuid,
-		}}})
-		So(e, ShouldBeNil)
-		So(dR.Success, ShouldBeTrue)
-
+		})
 	})
-
 }

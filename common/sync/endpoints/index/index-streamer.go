@@ -26,12 +26,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 type Streamer struct {
@@ -92,7 +92,7 @@ func (i *Streamer) Stop() {
 func (i *Streamer) StartReader(ctx context.Context) error {
 
 	//fmt.Println("Starting Reader for service " + i.serviceName)
-	reader := tree.NewNodeProviderStreamerClient(grpc.GetClientConnFromCtx(ctx, i.serviceName))
+	reader := tree.NewNodeProviderStreamerClient(grpc.ResolveConn(ctx, i.serviceName))
 	streamer, err := reader.ReadNodeStream(ctx)
 	if err != nil {
 		fmt.Println("Error starting for service "+i.serviceName, err)
@@ -141,7 +141,7 @@ func (i *Streamer) StartReader(ctx context.Context) error {
 func (i *Streamer) StartDeleter(ctx context.Context) error {
 
 	//fmt.Println("Starting Deleter for service " + i.serviceName)
-	delClient := tree.NewNodeReceiverStreamClient(grpc.GetClientConnFromCtx(ctx, i.serviceName))
+	delClient := tree.NewNodeReceiverStreamClient(grpc.ResolveConn(ctx, i.serviceName))
 	streamer, err := delClient.DeleteNodeStream(ctx)
 	if err != nil {
 		fmt.Println("Error starting Deleter for service "+i.serviceName, err)
@@ -184,7 +184,7 @@ func (i *Streamer) StartDeleter(ctx context.Context) error {
 func (i *Streamer) StartCreator(ctx context.Context) error {
 
 	//fmt.Println("Starting Creator for service " + i.serviceName)
-	createClient := tree.NewNodeReceiverStreamClient(grpc.GetClientConnFromCtx(ctx, i.serviceName))
+	createClient := tree.NewNodeReceiverStreamClient(grpc.ResolveConn(ctx, i.serviceName))
 	streamer, err := createClient.CreateNodeStream(ctx)
 	if err != nil {
 		//fmt.Println("Error starting for service " + i.serviceName, err)
@@ -228,7 +228,7 @@ func (i *Streamer) StartCreator(ctx context.Context) error {
 func (i *Streamer) StartUpdater(ctx context.Context) error {
 
 	//fmt.Println("Starting Updater for service " + i.serviceName)
-	updateClient := tree.NewNodeReceiverStreamClient(grpc.GetClientConnFromCtx(ctx, i.serviceName))
+	updateClient := tree.NewNodeReceiverStreamClient(grpc.ResolveConn(ctx, i.serviceName))
 	streamer, err := updateClient.UpdateNodeStream(ctx)
 	if err != nil {
 		//fmt.Println("Error starting for service " + i.serviceName, err)
@@ -287,7 +287,7 @@ func (i *Streamer) ReadNode(ctx context.Context, request *tree.ReadNodeRequest) 
 			case err = <-i.readErrors:
 				return
 			case <-time.After(10 * time.Second):
-				err = fmt.Errorf("read node stream timeout after 10s")
+				err = errors.New("read node stream timeout after 10s")
 				return
 			}
 		}
@@ -320,7 +320,7 @@ func (i *Streamer) DeleteNode(ctx context.Context, request *tree.DeleteNodeReque
 			case err = <-i.delErrors:
 				return
 			case <-time.After(10 * time.Second):
-				err = fmt.Errorf("delete node stream timeout after 10s")
+				err = errors.New("delete node stream timeout after 10s")
 				return
 			}
 		}
@@ -353,7 +353,7 @@ func (i *Streamer) CreateNode(ctx context.Context, request *tree.CreateNodeReque
 			case err = <-i.createErrors:
 				return
 			case <-time.After(10 * time.Second):
-				err = fmt.Errorf("create node stream timeout after 10s")
+				err = errors.New("create node stream timeout after 10s")
 				return
 			}
 		}
@@ -386,7 +386,7 @@ func (i *Streamer) UpdateNode(ctx context.Context, request *tree.UpdateNodeReque
 			case err = <-i.updateErrors:
 				return
 			case <-time.After(10 * time.Second):
-				err = fmt.Errorf("update node stream timeout after 10s")
+				err = errors.New("update node stream timeout after 10s")
 				return
 			}
 		}

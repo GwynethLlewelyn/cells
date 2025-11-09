@@ -21,17 +21,18 @@
 package idm
 
 import (
-	"fmt"
+	"context"
 	"path"
 	"strings"
 	"time"
 
-	"github.com/pydio/cells/v4/common/proto/service"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/std"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/service"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/std"
 )
 
-func (m *RoleSingleQuery) Matches(idmObject interface{}) bool {
+func (m *RoleSingleQuery) Matches(ctx context.Context, idmObject interface{}) bool {
 	if role, ok := idmObject.(*Role); !ok {
 		return false
 	} else {
@@ -64,7 +65,7 @@ func (m *RoleSingleQuery) matches(role *Role) bool {
 	return flattenBool(bb, m.Not)
 }
 
-func (m *WorkspaceSingleQuery) Matches(idmObject interface{}) bool {
+func (m *WorkspaceSingleQuery) Matches(ctx context.Context, idmObject interface{}) bool {
 	if ws, ok := idmObject.(*Workspace); !ok {
 		return false
 	} else {
@@ -125,7 +126,7 @@ func (m *WorkspaceSingleQuery) matches(ws *Workspace) bool {
 func (m *WorkspaceSingleQuery) ParseLastUpdated() (lt bool, d time.Duration, e error) {
 	firstChar := m.LastUpdated[0:1]
 	if firstChar != "<" && firstChar != ">" {
-		e = fmt.Errorf("please start with < or > character")
+		e = errors.New("please start with < or > character")
 		return
 	}
 	lt = firstChar == ">" // Duration bigger than => date lower than
@@ -133,7 +134,7 @@ func (m *WorkspaceSingleQuery) ParseLastUpdated() (lt bool, d time.Duration, e e
 	return
 }
 
-func (m *ACLSingleQuery) Matches(idmObject interface{}) bool {
+func (m *ACLSingleQuery) Matches(ctx context.Context, idmObject interface{}) bool {
 	if acl, ok := idmObject.(*ACL); !ok {
 		return false
 	} else {
@@ -167,7 +168,7 @@ func (m *ACLSingleQuery) matches(acl *ACL) bool {
 	return flattenBool(bb, m.Not)
 }
 
-func (m *UserSingleQuery) Matches(idmObject interface{}) bool {
+func (m *UserSingleQuery) Matches(ctx context.Context, idmObject interface{}) bool {
 	if u, ok := idmObject.(*User); !ok {
 		return false
 	} else {
@@ -223,7 +224,7 @@ func (m *UserSingleQuery) matches(user *User) bool {
 			if m.AttributeAnyValue {
 				bb = append(bb, true)
 			} else {
-				bb = append(bb, uA == m.AttributeValue)
+				bb = append(bb, compareStrings(uA, m.AttributeValue))
 			}
 		} else {
 			bb = append(bb, false)
@@ -235,7 +236,7 @@ func (m *UserSingleQuery) matches(user *User) bool {
 func (m *UserSingleQuery) ParseLastConnected() (lt bool, d time.Duration, e error) {
 	firstChar := m.ConnectedSince[0:1]
 	if firstChar != "<" && firstChar != ">" {
-		e = fmt.Errorf("please start with < or > character")
+		e = errors.New("please start with < or > character")
 		return
 	}
 	lt = firstChar == ">"

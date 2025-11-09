@@ -39,15 +39,19 @@ import (
 	"github.com/sethvargo/go-limiter/httplimit"
 	"github.com/sethvargo/go-limiter/memorystore"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	"github.com/pydio/cells/v4/common/server"
-	"github.com/pydio/cells/v4/common/server/middleware"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/frontend"
-	dao2 "github.com/pydio/cells/v4/common/service/frontend/sessions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/middleware"
+	"github.com/pydio/cells/v5/common/middleware/authorizations"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/server"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 var (
@@ -55,8 +59,8 @@ var (
 	swaggerJSONStrings    []string
 	swaggerMergedDocument *loads.Document
 
-	wm     []func(context.Context, http.Handler) http.Handler
-	wmOnce = &sync.Once{}
+	wmCore, wmTop []func(http.Handler) http.Handler
+	wmOnce        = &sync.Once{}
 )
 
 // RegisterSwaggerJSON receives a json string and adds it to the swagger definition
@@ -67,7 +71,22 @@ func RegisterSwaggerJSON(json string) {
 
 func init() {
 	// Instanciate restful framework
-	restful.RegisterEntityAccessor("application/json", new(ProtoEntityReaderWriter))
+	routing.RegisterRoute(common.RouteApiREST, "Initial REST API Endpoint", common.DefaultRouteREST)
+	routing.RegisterRoute(common.RouteApiRESTv2, "REST API v2 Endpoint", common.DefaultRouteRESTv2)
+	runtime.RegisterEnvVariable("CELLS_WEB_RATE_LIMIT", "0", "Http API rate-limiter, as a number of token allowed per seconds. 0 means no limit.")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOW_ALL", "false", "Should be used for DEV only, allow all CORS requests")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOWED_ORIGINS", "", "Define the origins allowed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOWED_METHODS", "", "Define the methods allowed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOWED_HEADERS", "", "Define the headers allowed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_EXPOSED_HEADERS", "", "Define the headers exposed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_MAX_AGE", "", "Define the Max Age allowed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOW_CREDENTIALS", "false", "Define if credentials are used by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOW_PRIVATE_NETWORK", "false", "Define if use of a private network is allowed by CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH", "", "Define if options has a passthrough with CORS")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT", "", "Define the status content returned by CORS for an OPTIONS request")
+	runtime.RegisterEnvVariable("CELLS_WEB_CORS_ALLOW_DEBUG", "", "Debug CORS")
+
+	restful.RegisterEntityAccessor("application/json", new(middleware.ProtoEntityReaderWriter))
 }
 
 // WebHandler defines what functions a web handler must answer to
@@ -76,47 +95,88 @@ type WebHandler interface {
 	Filter() func(string) string
 }
 
-func getWebMiddlewares(serviceName string) []func(ctx context.Context, handler http.Handler) http.Handler {
+func getWebMiddlewares(serviceName string, pos string) []func(handler http.Handler) http.Handler {
 	wmOnce.Do(func() {
-		wm = append(wm,
-			servicecontext.HttpWrapperMetrics,
-			middleware.HttpWrapperPolicy,
-			middleware.HttpWrapperJWT,
-			servicecontext.HttpWrapperSpan,
-			servicecontext.HttpWrapperMeta,
+		wmCore = append(wmCore,
+			middleware.HttpWrapperMetrics,
+			authorizations.HttpWrapperPolicy,
+			authorizations.HttpWrapperJWT,
+		)
+		wmTop = append(wmTop,
+			authorizations.HttpWrapperLanguage,
 		)
 	})
-	// Append dynamic wrapper to append service name to context
-	sw := func(ctx context.Context, handler http.Handler) http.Handler {
-		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			c := servicecontext.WithServiceName(request.Context(), serviceName)
-			handler.ServeHTTP(writer, request.WithContext(c))
-		})
+	if serviceName == common.ServiceRestNamespace_+common.ServiceInstall {
+		return []func(handler http.Handler) http.Handler{}
 	}
-	return append(wm, sw)
+
+	if pos == "core" {
+		return wmCore
+	} else {
+		// Append dynamic wrapper to append service name to context
+		sw := func(handler http.Handler) http.Handler {
+			return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				c := runtime.WithServiceName(request.Context(), serviceName)
+				handler.ServeHTTP(writer, request.WithContext(c))
+			})
+		}
+		return append(wmTop, sw)
+	}
+
+}
+
+type swaggerRestMapper struct {
+	name         string
+	operation    *spec.Operation
+	routeBuilder func(string) *restful.RouteBuilder
+}
+
+type WebOptions struct {
+	route string
+}
+
+type WebOption func(*WebOptions)
+
+func WithWebRoute(customRoute string) WebOption {
+	return func(o *WebOptions) {
+		o.route = customRoute
+	}
 }
 
 // WithWeb returns a web handler
-func WithWeb(handler func(ctx context.Context) WebHandler) ServiceOption {
+func WithWeb(handler func(ctx context.Context) WebHandler, options ...WebOption) ServiceOption {
+	// Init route with default
+	wo := &WebOptions{
+		route: common.RouteApiREST,
+	}
+	for _, option := range options {
+		option(wo)
+	}
 
 	return func(o *ServiceOptions) {
 
-		rootPath := "/a/" + strings.TrimPrefix(o.Name, common.ServiceRestNamespace_)
+		serviceRoute := "/" + strings.TrimPrefix(o.Name, common.ServiceRestNamespace_)
 
 		o.serverType = server.TypeHttp
-		o.serverStart = func() error {
-			var mux server.HttpMux
+		o.serverStart = func(ctx context.Context) error {
+			var mux routing.RouteRegistrar
 			if !o.Server.As(&mux) {
 				return fmt.Errorf("server %s is not a mux", o.Name)
 			}
 
-			ctx := o.Context
-			log.Logger(ctx).Info("starting", zap.String("service", o.Name), zap.String("hook router to", rootPath))
+			mux = &httpServiceRegistrar{
+				RouteRegistrar: mux,
+				reg:            o.GetRegistry(),
+				srvId:          o.Server.ID(),
+				svcId:          o.ID,
+			}
+
+			log.Logger(runtime.WithServiceName(ctx, o.Name)).Info("starting", zap.String("service", o.Name), zap.String("hook router to", serviceRoute))
 
 			ws := new(restful.WebService)
 			ws.Consumes(restful.MIME_JSON, "application/x-www-form-urlencoded", "multipart/form-data")
 			ws.Produces(restful.MIME_JSON, restful.MIME_OCTET, restful.MIME_XML)
-			ws.Path(rootPath)
+			ws.Path("/")
 
 			h := handler(ctx)
 			swaggerTags := h.SwaggerTags()
@@ -125,40 +185,19 @@ func WithWeb(handler func(ctx context.Context) WebHandler) ServiceOption {
 			f := reflect.ValueOf(h)
 
 			for path, pathItem := range SwaggerSpec().Spec().Paths.Paths {
-				if pathItem.Get != nil {
-					shortPath, method := operationToRoute(rootPath, swaggerTags, path, pathItem.Get, filter, f)
-					if shortPath != "" {
-						ws.Route(ws.GET(shortPath).To(method))
-					}
-				}
-				if pathItem.Delete != nil {
-					shortPath, method := operationToRoute(rootPath, swaggerTags, path, pathItem.Delete, filter, f)
-					if shortPath != "" {
-						ws.Route(ws.DELETE(shortPath).To(method))
-					}
-				}
-				if pathItem.Put != nil {
-					shortPath, method := operationToRoute(rootPath, swaggerTags, path, pathItem.Put, filter, f)
-					if shortPath != "" {
-						ws.Route(ws.PUT(shortPath).To(method))
-					}
-				}
-				if pathItem.Patch != nil {
-					shortPath, method := operationToRoute(rootPath, swaggerTags, path, pathItem.Patch, filter, f)
-					if shortPath != "" {
-						ws.Route(ws.PATCH(shortPath).To(method))
-					}
-				}
-				if pathItem.Head != nil {
-					shortPath, method := operationToRoute(rootPath, swaggerTags, path, pathItem.Head, filter, f)
-					if shortPath != "" {
-						ws.Route(ws.HEAD(shortPath).To(method))
-					}
-				}
-				if pathItem.Post != nil {
-					shortPath, method := operationToRoute(rootPath, swaggerTags, path, pathItem.Post, filter, f)
-					if shortPath != "" {
-						ws.Route(ws.POST(shortPath).To(method))
+				for _, route := range []swaggerRestMapper{
+					{name: "GET", operation: pathItem.Get, routeBuilder: ws.GET},
+					{name: "DELETE", operation: pathItem.Delete, routeBuilder: ws.DELETE},
+					{name: "PUT", operation: pathItem.Put, routeBuilder: ws.PUT},
+					{name: "PATCH", operation: pathItem.Patch, routeBuilder: ws.PATCH},
+					{name: "HEAD", operation: pathItem.Head, routeBuilder: ws.HEAD},
+					{name: "POST", operation: pathItem.Post, routeBuilder: ws.POST},
+				} {
+					if route.operation != nil {
+						shortPath, method := operationToRoute(ctx, serviceRoute, route.name, swaggerTags, path, route.operation, filter, f)
+						if shortPath != "" {
+							ws.Route(route.routeBuilder(shortPath).To(method))
+						}
 					}
 				}
 			}
@@ -173,26 +212,67 @@ func WithWeb(handler func(ctx context.Context) WebHandler) ServiceOption {
 				writer.Write([]byte("Internal Server Error"))
 			})
 
-			// var e error
 			wrapped := http.Handler(wc)
 
-			if o.Name != common.ServiceRestNamespace_+common.ServiceInstall {
-				for _, wrap := range getWebMiddlewares(o.Name) {
-					wrapped = wrap(o.Context, wrapped)
-				}
-			}
-			if o.UseWebSession {
-				if dao := servicecontext.GetDAO(o.Context); dao != nil {
-					if sd, ok := dao.(dao2.DAO); ok {
-						wrapped = frontend.NewSessionWrapper(wrapped, sd, o.WebSessionExcludes...)
-					} else {
-						fmt.Println("-- Not a SessionDAO, cannot wrap with SessionWrapper")
-					}
+			mm := getWebMiddlewares(o.Name, "core")
+			mm = append(mm, o.WebMiddlewares...)
+			mm = append(mm, getWebMiddlewares(o.Name, "top")...)
+
+			// If CORS "*" is expected, do not set cors defaults
+			if co := os.Getenv("CELLS_WEB_CORS_ALLOW_ALL"); co != "true" {
+				if os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS") == "" {
+					mm = append(mm, cors.Default().Handler)
 				} else {
-					fmt.Println("-- No DAO found, cannot wrap with SessionWrapper")
+					corsMaxAge, err := strconv.Atoi("CELLS_WEB_CORS_MAX_AGE")
+					if err != nil {
+						corsMaxAge = 30
+					}
+
+					corsOptionsStatusContent, err := strconv.Atoi("CELLS_WEB_CORS_OPTIONS_STATUS_CONTENT")
+					if err != nil {
+						corsOptionsStatusContent = http.StatusNoContent
+					}
+
+					zl := zap.New(log.Logger(ctx).Core())
+					zsl, err := zap.NewStdLogAt(zl, zapcore.DebugLevel)
+					if err != nil {
+						log.Logger(ctx).Warn("error setting stdlog", zap.Error(err))
+					}
+
+					corsOptions := cors.Options{
+						AllowedOrigins:       []string{"*"}, // Can be replaced by the function AllowOriginVary if the env variable is set
+						AllowedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_HEADERS"), ","),
+						AllowedMethods:       strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_METHODS"), ","),
+						ExposedHeaders:       strings.Split(os.Getenv("CELLS_WEB_CORS_EXPOSED_HEADERS"), ","),
+						MaxAge:               corsMaxAge,
+						AllowCredentials:     os.Getenv("CELLS_WEB_CORS_ALLOW_CREDENTIALS") == "true",
+						AllowPrivateNetwork:  os.Getenv("CELLS_WEB_CORS_ALLOW_PRIVATE_NETWORK") == "true",
+						OptionsPassthrough:   os.Getenv("CELLS_WEB_CORS_OPTIONS_PASSTHROUGH") == "true",
+						OptionsSuccessStatus: corsOptionsStatusContent,
+						Debug:                os.Getenv("CELLS_WEB_CORS_ALLOW_DEBUG") == "true",
+						Logger:               zsl,
+					}
+
+					allowedOrigins := strings.Split(os.Getenv("CELLS_WEB_CORS_ALLOWED_ORIGINS"), ",")
+					if len(allowedOrigins) > 0 {
+						corsOptions.AllowOriginVaryRequestFunc = func(_ *http.Request, origin string) (bool, []string) {
+							for _, allowedOrigin := range allowedOrigins {
+								if origin == allowedOrigin {
+									return true, []string{}
+								}
+							}
+							return false, []string{}
+						}
+
+					}
+					mm = append(mm, cors.New(corsOptions).Handler)
+
 				}
 			}
-			wrapped = cors.Default().Handler(wrapped)
+
+			for _, wrap := range mm {
+				wrapped = wrap(wrapped)
+			}
 
 			if rateLimit, err := strconv.Atoi(os.Getenv("CELLS_WEB_RATE_LIMIT")); err == nil {
 				limiterConfig := &memorystore.Config{
@@ -213,20 +293,19 @@ func WithWeb(handler func(ctx context.Context) WebHandler) ServiceOption {
 				}
 			}
 
-			mux.Handle(ws.RootPath(), wrapped)
-			mux.Handle(ws.RootPath()+"/", wrapped)
+			wrapped = middleware.WebIncomingContextMiddleware(ctx, "", ContextKey, o.Server, wrapped)
 
+			sub := mux.Route(wo.route)
+			sub.Handle(serviceRoute, wrapped, routing.WithStripPrefix(), routing.WithEnsureTrailing())
 			return nil
 		}
 
-		o.serverStop = func() error {
-			var mux server.PatternsProvider
+		o.serverStop = func(c context.Context) error {
+			var mux routing.RouteRegistrar
 			if !o.Server.As(&mux) {
 				return fmt.Errorf("server %s is not a mux", o.Name)
 			}
-			log.Logger(o.Context).Info("Deregistering pattern " + rootPath)
-			mux.DeregisterPattern(rootPath)
-			mux.DeregisterPattern(rootPath + "/")
+			mux.Route(wo.route).Deregister(serviceRoute)
 			return nil
 		}
 
@@ -238,22 +317,29 @@ func WithWeb(handler func(ctx context.Context) WebHandler) ServiceOption {
 // WithWeb already registers a serverStop callback to remove rest patterns
 func WithWebStop(handler func(ctx context.Context) error) ServiceOption {
 	return func(o *ServiceOptions) {
-		o.serverStop = func() error {
-			return handler(o.Context)
+		o.serverStop = func(c context.Context) error {
+			return handler(c)
 		}
 	}
 }
 
-func operationToRoute(rootPath string, swaggerTags []string, path string, operation *spec.Operation, pathFilter func(string) string, handlerValue reflect.Value) (string, func(req *restful.Request, rsp *restful.Response)) {
+func operationToRoute(ctx context.Context, rootPath, httpMethod string, swaggerTags []string, path string, operation *spec.Operation, pathFilter func(string) string, handlerValue reflect.Value) (shortPath string, handleFunc restful.RouteFunction) {
 
 	if !containsTags(operation, swaggerTags) {
-		return "", nil
+		return
 	}
 
 	method := handlerValue.MethodByName(operation.ID)
 	if method.IsValid() {
-		casted := method.Interface().(func(req *restful.Request, rsp *restful.Response))
-		shortPath := strings.TrimPrefix(common.DefaultRouteREST+path, rootPath)
+		if casted, ok := method.Interface().(func(req *restful.Request, rsp *restful.Response)); ok {
+			handleFunc = casted
+		} else if erHandler, ok2 := method.Interface().(func(req *restful.Request, rsp *restful.Response) error); ok2 {
+			handleFunc = middleware.WrapErrorHandlerToRoute(erHandler)
+		} else {
+			log.Logger(ctx).Warn("Cannot map method " + operation.ID + " type, ignoring " + httpMethod + " for path " + path)
+			return "", nil
+		}
+		shortPath = strings.TrimPrefix(path, rootPath)
 		if shortPath == "" {
 			shortPath = "/"
 		}
@@ -261,12 +347,12 @@ func operationToRoute(rootPath string, swaggerTags []string, path string, operat
 			shortPath = pathFilter(shortPath)
 		}
 
-		log.Logger(context.Background()).Debug("Registering path " + shortPath + " to handler method " + operation.ID)
-		return shortPath, casted
+		log.Logger(ctx).Debug("Registering path " + shortPath + " to handler method " + operation.ID)
+		return
 	}
 
-	log.Logger(context.Background()).Debug("Cannot find method " + operation.ID + " on handler, ignoring GET for path " + path)
-	return "", nil
+	log.Logger(ctx).Warn("Cannot find method " + operation.ID + " on handler, ignoring " + httpMethod + " for path " + path)
+	return
 }
 
 func containsTags(operation *spec.Operation, filtersTags []string) (found bool) {
@@ -285,7 +371,7 @@ func containsTags(operation *spec.Operation, filtersTags []string) (found bool) 
 func SwaggerSpec() *loads.Document {
 	swaggerSyncOnce.Do(func() {
 		var swaggerDocuments []*loads.Document
-		for _, data := range append([]string{rest.SwaggerJson}, swaggerJSONStrings...) {
+		for _, data := range append([]string{rest.SwaggerJson, rest.SwaggerV2}, swaggerJSONStrings...) {
 			// Reading swagger json
 			rawMessage := new(json.RawMessage)
 			if e := json.Unmarshal([]byte(data), rawMessage); e != nil {
@@ -323,6 +409,9 @@ func SwaggerSpec() *loads.Document {
 						if i.Head != nil {
 							existing.Head = i.Head
 						}
+						if i.Patch != nil {
+							existing.Patch = i.Patch
+						}
 						swaggerMergedDocument.Spec().Paths.Paths[p] = existing
 					} else {
 						swaggerMergedDocument.Spec().Paths.Paths[p] = i
@@ -336,8 +425,55 @@ func SwaggerSpec() *loads.Document {
 	})
 
 	if swaggerMergedDocument == nil {
-		// log.Logger(context.Background()).Fatal("Could not find any valid json spec for swagger")
+		// log.Logger(ctx).Fatal("Could not find any valid json spec for swagger")
 	}
 
 	return swaggerMergedDocument
+}
+
+type httpServiceRegistrar struct {
+	routing.RouteRegistrar
+	reg   registry.Registry
+	srvId string
+	svcId string
+}
+
+type regRoute struct {
+	routing.Route
+	reg   registry.Registry
+	svcId string
+	srvId string
+}
+
+// Route overrides parent to wrap Route
+func (r *httpServiceRegistrar) Route(id string) routing.Route {
+
+	route := r.RouteRegistrar.Route(id)
+
+	return &regRoute{
+		Route: route,
+		svcId: r.svcId,
+		srvId: r.srvId,
+		reg:   r.reg,
+	}
+}
+
+func (r *regRoute) Handle(pattern string, handler http.Handler, opts ...routing.HandleOption) {
+	r.Route.Handle(pattern, handler, opts...)
+
+	name := r.Route.Endpoint(pattern)
+
+	eps := r.reg.ListAdjacentItems(
+		registry.WithAdjacentSourceOptions(registry.WithID(r.srvId), registry.WithType(pb.ItemType_SERVER)),
+		registry.WithAdjacentTargetOptions(registry.WithName(name), registry.WithType(pb.ItemType_ENDPOINT)),
+	)
+
+	var ep registry.Item
+	if len(eps) == 1 {
+		ep = eps[0]
+	} else {
+		ep = util.CreateEndpoint(r.Route.Endpoint(pattern), handler, map[string]string{"type": "http"})
+	}
+
+	_ = r.reg.Register(ep, registry.WithEdgeTo(r.svcId, "handler", map[string]string{}))
 }

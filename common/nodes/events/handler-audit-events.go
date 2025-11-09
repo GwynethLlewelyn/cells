@@ -29,12 +29,12 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 func WithAudit() nodes.Option {
@@ -66,21 +66,31 @@ func (h *HandlerAudit) GetObject(ctx context.Context, node *tree.Node, requestDa
 		return reader, e // do not audit thumbnail events
 	}
 	if e == nil && requestData.StartOffset == 0 {
-		auditer.Info(
-			fmt.Sprintf("Retrieved object at %s", node.Path),
-			log.GetAuditId(common.AuditObjectGet),
-			node.ZapUuid(),
-			node.ZapPath(),
-			wsInfo,
-			wsScope,
-		)
+		cl := node.Clone()
+		go func() {
+			l := requestData.Length
+			if l == -1 {
+				if rsp, er := h.Next.ReadNode(ctx, &tree.ReadNodeRequest{Node: cl}); er == nil {
+					l = rsp.GetNode().GetSize()
+				}
+			}
+			auditer.Info(
+				fmt.Sprintf("Retrieved object at %s", node.Path),
+				log.GetAuditId(common.AuditObjectGet),
+				node.ZapUuid(),
+				node.ZapPath(),
+				zap.Int64(common.KeyTransferSize, l),
+				wsInfo,
+				wsScope,
+			)
+		}()
 	}
 
 	return reader, e
 }
 
 // PutObject logs an audit message after calling following handlers.
-func (h *HandlerAudit) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (h *HandlerAudit) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	auditer := log.Auditer(ctx)
 	written, e := h.Next.PutObject(ctx, node, reader, requestData)
 	if e != nil {
@@ -93,10 +103,11 @@ func (h *HandlerAudit) PutObject(ctx context.Context, node *tree.Node, reader io
 	}
 
 	auditer.Info(
-		fmt.Sprintf("Modified %s, put %d bytes", node.Path, written),
+		fmt.Sprintf("Uploaded %s, put %d bytes", node.Path, written.Size),
 		log.GetAuditId(common.AuditObjectPut),
 		node.ZapUuid(),
 		node.ZapPath(),
+		zap.Int64(common.KeyTransferSize, written.Size),
 		wsInfo,
 		wsScope,
 		zap.Error(e), // empty if e == nil
@@ -119,8 +130,8 @@ func (h *HandlerAudit) ReadNode(ctx context.Context, in *tree.ReadNodeRequest, o
 	// log.Auditer(ctx).Info(
 	// 	"[handler-audit-event] ReadNode",
 	// 	log.GetAuditId(common.AuditNodeRead),
-	// 	in.Node.ZapUuid(),
-	// 	in.Node.ZapPath(),
+	// 	in.N.ZapUuid(),
+	// 	in.N.ZapPath(),
 	// 	wsInfo,
 	// 	wsScope,
 	// 	zap.Any("ReadNodeRequest", in),
@@ -206,7 +217,7 @@ func (h *HandlerAudit) DeleteNode(ctx context.Context, in *tree.DeleteNodeReques
 	return response, e
 }
 
-func (h *HandlerAudit) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (h *HandlerAudit) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 	size, e := h.Next.CopyObject(ctx, from, to, requestData)
 	if e != nil {
 		return size, e
@@ -217,6 +228,7 @@ func (h *HandlerAudit) CopyObject(ctx context.Context, from *tree.Node, to *tree
 		log.GetAuditId(common.AuditNodeCreate),
 		from.ZapUuid(),
 		from.ZapPath(),
+		from.ZapSize(),
 		wsInfo,
 		wsScope,
 	)
@@ -241,9 +253,10 @@ func (h *HandlerAudit) MultipartComplete(ctx context.Context, target *tree.Node,
 	_, wsInfo, wsScope := checkBranchInfoForAudit(ctx, "in")
 	log.Auditer(ctx).Info(
 		fmt.Sprintf("Uploaded node %s", target.Path),
-		log.GetAuditId(common.AuditNodeCreate),
+		log.GetAuditId(common.AuditObjectPut),
 		target.ZapUuid(),
 		target.ZapPath(),
+		zap.Int64(common.KeyTransferSize, oi.Size),
 		wsInfo,
 		wsScope,
 	)
@@ -270,13 +283,13 @@ func checkBranchInfoForAudit(ctx context.Context, identifier string) (isBinary b
 	wsInfo = zap.String(common.KeyWorkspaceUuid, "")
 	wsScope = zap.String(common.KeyWorkspaceScope, "")
 
-	branchInfo, ok := nodes.GetBranchInfo(ctx, identifier)
-	if ok && branchInfo.IsInternal() {
+	branchInfo, er := nodes.GetBranchInfo(ctx, identifier)
+	if er == nil && branchInfo.IsInternal() {
 		return true, wsInfo, wsScope
 	}
 
 	// Try to retrieve Wksp UUID
-	if ok && branchInfo.Workspace != nil && branchInfo.Workspace.UUID != "" {
+	if er == nil && branchInfo.Workspace != nil && branchInfo.Workspace.UUID != "" {
 		wsInfo = zap.String(common.KeyWorkspaceUuid, branchInfo.Workspace.UUID)
 		wsScope = zap.String(common.KeyWorkspaceScope, branchInfo.Scope.String())
 	}

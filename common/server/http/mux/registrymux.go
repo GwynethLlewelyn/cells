@@ -25,19 +25,19 @@ import (
 	"fmt"
 	"net/http"
 
-	clienthttp "github.com/pydio/cells/v4/common/client/http"
-	"github.com/pydio/cells/v4/common/server"
+	clienthttp "github.com/pydio/cells/v5/common/client/http"
+	"github.com/pydio/cells/v5/common/config/routing"
 )
 
 type Middleware struct {
 	clienthttp.Resolver
 }
 
-func NewMiddleware(ctx context.Context, s server.HttpMux) Middleware {
+func NewMiddleware(ctx context.Context, serverID string, r routing.RouteRegistrar) Middleware {
 	m := Middleware{
 		Resolver: clienthttp.NewResolver(),
 	}
-	m.Resolver.Init(ctx, s)
+	m.Resolver.Init(ctx, serverID, r)
 	return m
 }
 

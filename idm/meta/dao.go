@@ -27,29 +27,34 @@ package meta
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/sql"
-	"github.com/pydio/cells/v4/common/sql/resources"
-	"github.com/pydio/cells/v4/idm/meta/namespace"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	service2 "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/storage/sql/resources"
 )
+
+var Drivers = service.StorageDrivers{}
 
 // DAO interface
 type DAO interface {
 	resources.DAO
+	GetNamespaceDao() NamespaceDAO
 
-	GetNamespaceDao() namespace.DAO
-
-	Set(meta *idm.UserMeta) (*idm.UserMeta, string, error)
-	Del(meta *idm.UserMeta) (prevValue string, e error)
-	Search(metaIds []string, nodeUuids []string, namespace string, ownerSubject string, q *service.ResourcePolicyQuery) ([]*idm.UserMeta, error)
+	Migrate(ctx context.Context) error
+	Set(ctx context.Context, meta *idm.UserMeta) (*idm.UserMeta, string, error)
+	Del(ctx context.Context, meta *idm.UserMeta) (prevValue string, e error)
+	Search(ctx context.Context, query service2.Enquirer) ([]*idm.UserMeta, error)
 }
 
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlimpl{Handler: v.(*sql.Handler)}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+const (
+	ReservedNamespaceBookmark = "bookmark"
+)
+
+// NamespaceDAO interface
+type NamespaceDAO interface {
+	resources.DAO
+
+	Add(ctx context.Context, ns *idm.UserMetaNamespace) error
+	Del(ctx context.Context, ns *idm.UserMetaNamespace) (e error)
+	List(ctx context.Context) (map[string]*idm.UserMetaNamespace, error)
 }

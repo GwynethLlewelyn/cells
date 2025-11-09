@@ -2,64 +2,43 @@ package jobs
 
 import (
 	"context"
+	"io"
+	"os"
 	"path/filepath"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	config2 "github.com/pydio/cells/v4/common/runtime"
-)
-
-var (
-	logger    *zap.Logger
-	logSyncer *log.LogSyncer
+	rt "github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/telemetry/otel"
 )
 
 func init() {
-	log.SetTasksLoggerInit(initTasksLogger, func(ctx context.Context) {
-		logSyncer = log.NewLogSyncer(ctx, common.ServiceJobs)
-	})
+	rt.RegisterEnvVariable("CELLS_JOBS_LOG_LEVEL", "info", "Log level used for scheduler jobs - to be used carefully as it may produce a large volume of logs.")
+	log.SetTasksLoggerInit(initTasksLogger, func(ctx context.Context) {})
 }
 
-func initTasksLogger() *zap.Logger {
+var TasksLogsDirProvider = func() string {
+	return rt.ApplicationWorkingDir(rt.ApplicationDirLogs)
+}
 
-	var syncers []zapcore.WriteSyncer
+func initTasksLogger(ctx context.Context) (*zap.Logger, []io.Closer) {
 
-	if logSyncer != nil {
-		// Logger that forwards the messages to a bleve DB via gRPC
-		serverSync := zapcore.AddSync(logSyncer)
-		syncers = append(syncers, serverSync)
+	level := "info"
+	if os.Getenv("CELLS_JOBS_LOG_LEVEL") == "debug" {
+		level = "debug"
 	}
-
-	logDir := config2.ApplicationWorkingDir(config2.ApplicationDirLogs)
-
-	// Additional Logger: stores messages in local file
-	rotaterSync := zapcore.AddSync(&lumberjack.Logger{
-		Filename:   filepath.Join(logDir, "tasks.log"),
-		MaxSize:    10, // megabytes
-		MaxBackups: 30,
-		MaxAge:     28, // days
-	})
-
-	syncers = append(syncers, rotaterSync)
-
-	w := zapcore.NewMultiWriteSyncer(syncers...)
-	config := zap.NewProductionEncoderConfig()
-
-	// This is important: rather use a standard format that is correctly handled by our gRPC layer as string
-	// otherwise the Unix seconds float64 format triggers some glitches upon deserialization
-	config.EncodeTime = log.RFC3369TimeEncoder
-
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(config),
-		w,
-		zap.InfoLevel,
-	)
-
-	logger = zap.New(core)
-
-	return logger
+	cfg := []log.LoggerConfig{
+		{
+			Level:    level,
+			Encoding: "json",
+			Outputs: []string{
+				"file://" + filepath.Join(TasksLogsDirProvider(), "tasks.log"),
+				"service:///?service=pydio.grpc.jobs",
+			},
+		},
+	}
+	cores, closers, _ := log.LoadCores(ctx, otel.Service{}, cfg)
+	return zap.New(zapcore.NewTee(cores...)), closers
 }

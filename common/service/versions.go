@@ -23,15 +23,31 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	version "github.com/hashicorp/go-version"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
+
+var (
+	firstRun   *version.Version
+	allUpdates *version.Version
+	runAlways  *version.Version
+)
+
+func init() {
+	firstRun, _ = version.NewVersion("0.0.0")
+	allUpdates, _ = version.NewVersion("0.0.0+all")
+	runAlways, _ = version.NewVersion("0.0.0+always")
+}
 
 // Migration defines a target version and functions to upgrade and/or downgrade.
 type Migration struct {
@@ -48,56 +64,125 @@ func ValidVersion(v string) *version.Version {
 
 // FirstRun returns version "zero".
 func FirstRun() *version.Version {
-	obj, _ := version.NewVersion("0.0.0")
-	return obj
+	return firstRun
 }
 
-// Latest retrieves current common Cells version.
-func Latest() *version.Version {
-	return common.Version()
+// FirstRunOrChange is interpreted to run on each version change
+func FirstRunOrChange() *version.Version {
+	return allUpdates
+}
+
+// RunAlways is performed at every start
+func RunAlways() *version.Version {
+	return runAlways
+}
+
+// DefaultConfigMigration registers a FirstRun to set configuration for service
+func DefaultConfigMigration(serviceName string, data interface{}) *Migration {
+	return &Migration{
+		TargetVersion: FirstRun(),
+		Up: func(ctx context.Context) error {
+			return config.Set(ctx, data, "services", serviceName)
+		},
+	}
 }
 
 // UpdateServiceVersion applies migration(s) if necessary and stores new current version for future use.
-func UpdateServiceVersion(opts *ServiceOptions) error {
-	newVersion, _ := version.NewVersion(opts.Version)
-	lastVersion, e := lastKnownVersion(opts.Name)
-	if e != nil {
-		return fmt.Errorf("cannot update service version for %s (%v)", opts.Name, e)
-	}
+func UpdateServiceVersion(ctx context.Context, opts *ServiceOptions) (bool, error) {
 
-	writeVersion, err := applyMigrations(opts.Context, lastVersion, newVersion, opts.Migrations)
-	if writeVersion != nil {
-		if e := updateVersion(opts.Name, writeVersion); e != nil {
-			log.Logger(opts.Context).Error("could not write version file", zap.Error(e))
+	//tID := runtime.MultiContextManager().Current(ctx)
+	refName := opts.Name
+	if opts.MigrateIterator.ContextKey != nil {
+		var s string
+		if propagator.Get[string](ctx, opts.MigrateIterator.ContextKey, &s) {
+			refName += "." + s
 		}
 	}
-	if err != nil {
-		return fmt.Errorf("cannot update service version for %s (%v)", opts.Name, err)
+
+	/*var run bool
+	opts.migrateOnceL.Lock()
+	if !opts.migrateOnce[tID+"-"+refName] {
+		run = true
+		opts.migrateOnce[tID+"-"+refName] = true
 	}
-	return nil
+	opts.migrateOnceL.Unlock()
+	if !run {
+		return nil
+	}*/
+
+	prefix := []string{"versions", refName}
+
+	var store config.Store
+	if !propagator.Get(ctx, config.ContextKey, &store) {
+		return false, fmt.Errorf("could not find config for %s during updateServiceVersion", refName)
+	}
+
+	newVersion, _ := version.NewVersion(opts.Version)
+	lastVersion, e := lastKnownVersion(ctx, store, refName, prefix...)
+	if e != nil {
+		return false, fmt.Errorf("cannot update service version for %s (%v)", refName, e)
+	}
+
+	if len(opts.Migrations) > 0 {
+		writeVersion, err := applyMigrations(ctx, lastVersion, newVersion, opts.Migrations)
+		if err != nil {
+			return false, fmt.Errorf("cannot update service version for %s (%v)", refName, err)
+		}
+		if writeVersion != nil {
+			if e := updateVersion(ctx, store, refName, writeVersion, prefix...); e != nil {
+				log.Logger(ctx).Error("could not write version file", zap.Error(e))
+				return false, fmt.Errorf("cannot write version to file: %v", err)
+			} else {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// legacyVersionFile points to the old workingdir/services/serviceName/version
+func legacyVersionFile(serviceName string) string {
+	return filepath.Join(runtime.ApplicationWorkingDir(runtime.ApplicationDirServices), serviceName, "version")
 }
 
 // lastKnownVersion looks on this server if there was a previous version of this service
-func lastKnownVersion(serviceName string) (v *version.Version, e error) {
-	// TODO - Check for legacy files
-	//versionFile := runtime.ConfigURL() + "/" + filepath.Join("services", serviceName, "version")
-	//store, err := config.OpenStore(context.Background(), versionFile+"?encode=string")
-	//if err != nil {
-	//	fmt.Println("Could not open store ?", err)
-	//	return nil, err
-	//}
+func lastKnownVersion(ctx context.Context, store config.Store, serviceName string, prefix ...string) (v *version.Version, e error) {
 
-	return version.NewVersion(strings.TrimSpace(config.Get("versions", serviceName).Default("0.0.0").String()))
+	def := strings.TrimSpace(store.Context(ctx).Val(prefix...).Default("0.0.0").String())
+	if def == "0.0.0" {
+		if data, err := os.ReadFile(legacyVersionFile(serviceName)); err == nil && len(data) > 0 {
+			fileVersion := strings.TrimSpace(string(data))
+			return version.NewVersion(fileVersion)
+		}
+	}
+	return version.NewVersion(strings.TrimSpace(store.Context(ctx).Val(prefix...).Default("0.0.0").String()))
 }
 
-// updateVersion writes the version string to file
-func updateVersion(serviceName string, v *version.Version) error {
-	if err := config.Get("versions", serviceName).Set(v.String()); err != nil {
+// updateVersion writes the version string to config, and eventually removes legacy version file
+func updateVersion(ctx context.Context, store config.Store, serviceName string, v *version.Version, prefix ...string) error {
+	if err := store.Context(ctx).Val(prefix...).Set(v.String()); err != nil {
 		return err
 	}
 
-	if err := config.Save("system", "updating system version "+serviceName); err != nil {
+	if err := store.Save("system", "updating system version "+serviceName); err != nil {
 		return err
+	}
+
+	legacy := legacyVersionFile(serviceName)
+	if _, e := os.Stat(legacy); e == nil {
+		// File exist, remove it now
+		if os.Remove(legacy) == nil {
+			// We can also remove parent folder now
+			parent := filepath.Dir(legacy)
+			if entries, er := os.ReadDir(parent); er == nil && len(entries) == 0 {
+				fmt.Println("[config] Migrated legacy version file for " + serviceName + " (and its empty folder)")
+				_ = os.Remove(parent)
+			} else {
+				fmt.Println("[config] Migrated legacy version file for " + serviceName)
+			}
+		} else {
+			fmt.Println("[config] Could not remove legacy version file for " + serviceName + ": " + e.Error())
+		}
 	}
 
 	return nil
@@ -108,36 +193,86 @@ func updateVersion(serviceName string, v *version.Version) error {
 // current version is 0.0.0 (first run), it only applies first run migration (if any) and returns target version.
 func applyMigrations(ctx context.Context, current *version.Version, target *version.Version, migrations []*Migration) (*version.Version, error) {
 
-	if target.Equal(current) {
-		return nil, nil
-	}
-
-	// Special case if we're in dev and moving from 0.2.0 to a dev
-	if strings.HasSuffix(target.String(), "-dev") && current.String() == "0.2.0" {
-		return target, nil
-	}
-
 	if migrations == nil {
 		return target, nil
 	}
 
+	var allRuns []*Migration
+	for _, m := range migrations {
+		if m.TargetVersion == runAlways {
+			allRuns = append(allRuns, m)
+		}
+	}
+	applyAlways := func() error {
+		return nil
+	}
+	if len(allRuns) > 0 {
+		applyAlways = func() error {
+			// Apply allRuns if there are some
+			for _, m := range allRuns {
+				if err := m.Up(ctx); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+
+	if target.Equal(current) {
+		return nil, applyAlways()
+	}
+
+	// Handle AllUpdates case, a.k.a run at every versions updates
+	// If first run, make it a FirstRun() and prepend it to the beginning,
+	// otherwise make it a Latest() and push it to the end of the list
+	var mm, tcs, fr []*Migration
+	isFirstRun := current.Equal(FirstRun())
+	for _, m := range migrations {
+		// ignore runAlways, already gathered before
+		if m.TargetVersion == runAlways {
+			continue
+		}
+		// if AllUpdates && firstRun, consider it as a FirstRun() and replace it to make sure it
+		// appears in the right order
+		if m.TargetVersion == allUpdates && isFirstRun {
+			m = &Migration{TargetVersion: FirstRun(), Up: m.Up, Down: m.Down}
+		}
+		if m.TargetVersion == FirstRun() {
+			fr = append(fr, m)
+		} else if m.TargetVersion == allUpdates {
+			// not first run, register for current and push to the end
+			tcs = append(tcs, &Migration{TargetVersion: common.Version(), Up: m.Up, Down: m.Down})
+		} else {
+			mm = append(mm, m)
+		}
+	}
+	if isFirstRun {
+		// first runs + migrations
+		migrations = append(fr, mm...)
+	} else {
+		// migrations + latest updates
+		migrations = append(mm, tcs...)
+	}
+
 	// corner case of the fresh install, returns the current target version to be stored
 	if current.Equal(FirstRun()) {
-		m := migrations[0]
 
-		// Double check to insure we really only perform FirstRun initialisation
-		if !m.TargetVersion.Equal(FirstRun()) {
-			// no first run init, doing nothing
-			return target, nil
+		for _, m := range migrations {
+			// Double check to insure we really only perform FirstRun initialisation
+			if !m.TargetVersion.Equal(FirstRun()) {
+				// no first run init, doing nothing or applyAlways()
+				return target, applyAlways()
+			}
+
+			log.Logger(ctx).Debug(fmt.Sprintf("About to initialise service at version %s", target.String()))
+			err := m.Up(ctx)
+			if err != nil {
+				log.Logger(ctx).Error(fmt.Sprintf("could not initialise service at version %s", target.String()), zap.Error(err))
+				return current, err
+			}
 		}
 
-		log.Logger(ctx).Debug(fmt.Sprintf("About to initialise service at version %s", target.String()))
-		err := m.Up(ctx)
-		if err != nil {
-			log.Logger(ctx).Error(fmt.Sprintf("could not initialise service at version %s", target.String()), zap.Error(err))
-			return current, err
-		}
-		return target, nil
+		return target, applyAlways()
 	}
 
 	log.Logger(ctx).Debug(fmt.Sprintf("About to perform migration from %s to %s", current.String(), target.String()))
@@ -173,5 +308,5 @@ func applyMigrations(ctx context.Context, current *version.Version, target *vers
 
 	}
 
-	return target, nil
+	return target, applyAlways()
 }

@@ -20,21 +20,23 @@
 
 package tasks
 
+import "fmt"
+
 // Worker represents the worker that executes the jobs.
 type Worker struct {
-	workerPool chan chan Runnable
-	jobChannel chan Runnable
+	workerPool chan chan RunnerFunc
+	jobChannel chan RunnerFunc
 	quit       chan bool
-	jobRequeue chan Runnable
+	jobRequeue chan RunnerFunc
 	activeChan chan int
 	tags       map[string]string
 }
 
 // NewWorker creates and configures a new worker.
-func NewWorker(workerPool chan chan Runnable, requeue chan Runnable, activeChan chan int, tags map[string]string) Worker {
+func NewWorker(workerPool chan chan RunnerFunc, requeue chan RunnerFunc, activeChan chan int, tags map[string]string) Worker {
 	return Worker{
 		workerPool: workerPool,
-		jobChannel: make(chan Runnable),
+		jobChannel: make(chan RunnerFunc),
 		jobRequeue: requeue,
 		tags:       tags,
 		activeChan: activeChan,
@@ -45,19 +47,31 @@ func NewWorker(workerPool chan chan Runnable, requeue chan Runnable, activeChan 
 // case we need to stop it.
 func (w Worker) Start() {
 	go func() {
+		defer func() {
+			recover() // ignore send on close
+		}()
 		for {
 			// register the current worker into the worker queue.
 			w.workerPool <- w.jobChannel
 
 			select {
-			case runnable := <-w.jobChannel:
+			case runnerFunc := <-w.jobChannel:
 				// we have received a work request.
-				w.activeChan <- 1
-				runnable.RunAction(w.jobRequeue)
-				w.activeChan <- -1
-
+				select {
+				case w.activeChan <- 1:
+				default:
+					fmt.Println("[debug] dispatcher-worker could not update activeChan value +1")
+				}
+				//runnable.RunAction(w.jobRequeue)
+				runnerFunc(w.jobRequeue)
+				select {
+				case w.activeChan <- -1:
+				default:
+					fmt.Println("[debug] dispatcher-worker could not update activeChan value -1")
+				}
 			case <-w.quit:
 				// we have received a signal to stop
+				close(w.jobChannel)
 				return
 			}
 		}
@@ -67,6 +81,6 @@ func (w Worker) Start() {
 // Stop signals the worker to stop listening for work requests.
 func (w Worker) Stop() {
 	go func() {
-		w.quit <- true
+		close(w.quit)
 	}()
 }

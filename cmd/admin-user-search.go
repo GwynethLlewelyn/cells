@@ -21,20 +21,24 @@
 package cmd
 
 import (
-	"context"
+	"fmt"
 	"os"
+	"path"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	service "github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	service "github.com/pydio/cells/v5/common/proto/service"
 )
 
 var userSearchLogin string
+
+var userSearchOffset int
+
+var userSearchLimit int
 
 var userSearchCmd = &cobra.Command{
 	Use:   "search",
@@ -47,15 +51,19 @@ DESCRIPTION
 EXAMPLES
 
   1. Search a specific user
-  $ ` + os.Args[0] + ` admin user search --login "user"
+  $ ` + os.Args[0] + ` admin user search --user "alice"
 
-  2. List all users (default --login is "*") 
+  2. List all users (default --user is "*") 
   $ ` + os.Args[0] + ` admin user search
+
+  3. List users with a pattern 
+  $ ` + os.Args[0] + ` admin user search -u "a*"
 
 `,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client := idm.NewUserServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceUser))
+		ctx := cmd.Context()
+		client := idmc.UserServiceClient(ctx, longGrpcCallTimeout())
 
 		if userSearchLogin == "*" {
 			userSearchLogin = ""
@@ -66,56 +74,78 @@ EXAMPLES
 		})
 
 		table := tablewriter.NewWriter(cmd.OutOrStdout())
-		table.SetHeader([]string{"Login", "Name", "Is Group", "Profile", "Path", "UUID"}) // "Roles",
+		table.SetHeader([]string{"Name", "Is Group", "Profile", "Path", "UUID"})
 
-		stream, err := client.SearchUser(context.Background(), &idm.SearchUserRequest{
+		stream, err := client.SearchUser(ctx, &idm.SearchUserRequest{
 			Query: &service.Query{
 				SubQueries: []*anypb.Any{query},
+				Limit:      int64(userSearchLimit),
+				Offset:     int64(userSearchOffset),
 			},
 		})
 		if err != nil {
 			return err
 		}
 
+		currNb := 0
 		for {
 			response, err := stream.Recv()
-
 			if err != nil {
 				break
-			}
-
-			if response.User.Uuid == "ROOT_GROUP" {
-				// do not display root group
-				continue
-			}
-
-			var id, isGroup string
-			if response.User.IsGroup {
-				isGroup = "  X  "
-				id = response.User.GroupLabel
-			} else {
-				isGroup = ""
-				id = response.User.Login
 			}
 
 			prof, ok := response.User.Attributes["profile"]
 			if !ok && !response.User.IsGroup {
 				prof = "standard"
 			}
-			name := response.User.Attributes["displayName"]
 
-			table.Append([]string{id, name, isGroup, prof, response.User.GroupPath, response.User.Uuid}) // roles,
+			var label, isGroup string
+			if response.User.IsGroup {
+				isGroup = "  X  "
+				label = response.User.GroupLabel
+				if label == "" {
+					label = path.Base(response.User.GroupPath)
+				}
+			} else {
+				isGroup = ""
+				label = response.User.Login
+				if dname := response.User.Attributes["displayName"]; dname != "" {
+					label += " (" + dname + ")"
+				}
+			}
+			table.Append([]string{label, isGroup, prof, response.User.GroupPath, response.User.Uuid})
+
+			currNb++
+			if userSearchLimit > 0 && userSearchLimit == currNb {
+				break
+			}
 		}
-		cmd.Println(" ")
-
 		table.Render()
-		cmd.Println(" ")
 
+		if currNb == 0 {
+			cmd.Printf("No result found\n")
+		} else {
+			msg := fmt.Sprintf("Showing %d result", currNb)
+			if currNb > 1 {
+				msg += "s"
+			}
+			if userSearchOffset > 0 {
+				msg += fmt.Sprintf(" at offset %d", userSearchOffset)
+			}
+			if userSearchLimit == currNb {
+				msg += " (Max. row number limit has been hit)"
+			}
+			cmd.Println(msg)
+		}
+
+		cmd.Println(" ")
 		return nil
 	},
 }
 
 func init() {
-	userSearchCmd.Flags().StringVarP(&userSearchLogin, "login", "l", "", "Select a user by login (will list all users and groups if empty)")
+	userSearchCmd.Flags().StringVarP(&userSearchLogin, "user", "u", "", "Select a user by login (list all users and groups if empty)")
+	userSearchCmd.Flags().IntVarP(&userSearchOffset, "offset", "o", 0, "Add an offset to the query when necessary")
+	userSearchCmd.Flags().IntVarP(&userSearchLimit, "limit", "l", 100, "Max. number of returned rows, 0 for unlimited")
 	UserCmd.AddCommand(userSearchCmd)
 }

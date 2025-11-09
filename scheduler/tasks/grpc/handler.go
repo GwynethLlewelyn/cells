@@ -23,23 +23,27 @@ package grpc
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/scheduler/tasks"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/scheduler/tasks"
 )
 
-// Handler implements the TaskService API
-type Handler struct {
+// TaskHandler implements the TaskService API
+type TaskHandler struct {
 	jobs.UnimplementedTaskServiceServer
 }
 
-func (h *Handler) Name() string {
-	return ServiceName
-}
-
 // Control publishes the passed command
-func (h *Handler) Control(ctx context.Context, command *jobs.CtrlCommand) (*jobs.CtrlCommandResponse, error) {
+func (h *TaskHandler) Control(ctx context.Context, command *jobs.CtrlCommand) (*jobs.CtrlCommandResponse, error) {
 
-	tasks.PubSub.Pub(command, tasks.PubSubTopicControl)
+	tasks.GetBus(ctx).Pub(command, tasks.PubSubTopicControl)
 	return &jobs.CtrlCommandResponse{Msg: "Published"}, nil
 
+}
+
+// GetRegisteredMiddlewares can serve the currently stored middlewares
+func (h *TaskHandler) GetRegisteredMiddlewares(ctx context.Context, _ *jobs.RegisteredMiddlewaresRequest) (*jobs.RegisteredMiddlewaresResponse, error) {
+	dd := tasks.ListJobsMiddlewares(ctx)
+	return &jobs.RegisteredMiddlewaresResponse{
+		Descriptors: dd,
+	}, nil
 }

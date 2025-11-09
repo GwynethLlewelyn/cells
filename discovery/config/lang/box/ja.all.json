@@ -80,6 +80,9 @@
   "actionOutputSingleQuery.FreeCondition": {
     "other": "自由条件"
   },
+  "dataSelectorSingleQuery.JsonPath": {
+    "other": "JSON パス"
+  },
   "conditionCIDRCondition.CIDR": {
     "other": "CIDR"
   },
@@ -154,6 +157,12 @@
   },
   "contextMetaField.RequestHostname": {
     "other": "ホスト名をリクエスト"
+  },
+  "contextMetaField.RequestHost": {
+    "other": "リクエストホスト"
+  },
+  "contextMetaField.RequestPort": {
+    "other": "リクエストポート"
   },
   "contextMetaField.RequestMethod": {
     "other": "リクエストメソッド"
@@ -256,6 +265,9 @@
   },
   "treeQuery.UUIDs": {
     "other": "ノードUUID"
+  },
+  "treeQuery.ETag": {
+    "other": "ETag"
   },
   "userSingleQuery.AttributeAnyValue": {
     "other": "任意の値があります"
@@ -439,6 +451,18 @@
   },
   "triggerFilterQuery.IsSchedule": {
     "other": "スケジュールされたトリガー"
+  },
+  "triggerFilterQuery.IsApiHook": {
+    "other": "Webhook トリガー"
+  },
+  "triggerFilterQuery.ApiHookSlug": {
+    "other": "Webhook API スラグ"
+  },
+  "triggerFilterQuery.RunParameterName": {
+    "other": "パラメーター名"
+  },
+  "triggerFilterQuery.RunParameterValue": {
+    "other": "パラメーター値"
   },
   "triggerFilterQuery.IsManual": {
     "other": "手動トリガー"

@@ -23,6 +23,15 @@
   "Jobs.Default.ArchiveJobs": {
     "other": "Automatisch archiveren van wijzigingen service"
   },
+  "Jobs.Default.CleanUserData": {
+    "other": "Clean or transfer user data on deletion"
+  },
+  "Jobs.Default.CleanOrphanFiles": {
+    "other": "Clean orphan files after 24h"
+  },
+  "Jobs.Default.CleanExpiredACLs": {
+    "other": "Clean expired ACLs after 10 days"
+  },
   "Jobs.User.Compress": {
     "other": "Selectie comprimeren..."
   },
@@ -54,7 +63,7 @@
     "other": "Verplaatsen naar prullenbak op de achtergrond..."
   },
   "Jobs.User.ResyncDS": {
-    "other": "Herindexeren van datasource {{.DsName}}..."
+    "other": "Sync datasource {{.DsName}} then rehash new files"
   },
   "Jobs.User.Wget": {
     "other": "Bestand downloaden op de achtergrond..."

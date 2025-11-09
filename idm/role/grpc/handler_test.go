@@ -1,3 +1,5 @@
+//go:build storage || sql
+
 /*
  * Copyright (c) 2018. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
@@ -22,190 +24,176 @@ package grpc
 
 import (
 	"context"
-	"sync"
 	"testing"
 
-	"github.com/spf13/viper"
-	. "github.com/smartystreets/goconvey/convey"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/sqlite"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	service "github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/idm/role"
-	"github.com/pydio/cells/v4/common/runtime"
-	_ "github.com/pydio/cells/v4/common/utils/cache/gocache"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	service "github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/storage/test"
+	"github.com/pydio/cells/v5/idm/role"
+	"github.com/pydio/cells/v5/idm/role/dao/sql"
+
+	_ "github.com/pydio/cells/v5/common/utils/cache/gocache"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 var (
-	ctx     context.Context
-	wg      sync.WaitGroup
-	roleDAO role.DAO
+	testcases = test.TemplateSQL(sql.NewDAO)
 )
-
-func TestMain(m *testing.M) {
-	v := viper.New()
-	v.SetDefault(runtime.KeyCache, "pm://")
-	v.SetDefault(runtime.KeyShortCache, "pm://")
-	runtime.SetRuntime(v)
-
-	ctx = context.Background()
-	options := configx.New()
-	options.Val("database").Set(roleDAO)
-	options.Val("exclusive").Set(true)
-	options.Val("prepare").Set(true)
-	// Instantiate and initialise the role DAO Mock
-	if d, e := dao.InitDAO(ctx, sqlite.Driver, sqlite.SharedMemDSN, "", role.NewDAO, options); e != nil {
-		panic(e)
-	} else {
-		roleDAO = d.(role.DAO)
-	}
-
-	m.Run()
-	wg.Wait()
-}
 
 func TestRole(t *testing.T) {
 
 	s := new(Handler)
-	s.dao = roleDAO
+	test.RunStorageTests(testcases, t, func(ctx context.Context) {
+		Convey("Create Roles", t, func() {
+			resp, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "role1", Label: "Role 1"}})
 
-	Convey("Create Roles", t, func() {
-		resp, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "role1", Label: "Role 1"}})
+			So(err, ShouldBeNil)
+			So(resp.GetRole().GetUuid(), ShouldEqual, "role1")
 
-		So(err, ShouldBeNil)
-		So(resp.GetRole().GetUuid(), ShouldEqual, "role1")
+		})
+
+		Convey("Create Roles", t, func() {
+			resp, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "role2", Label: "Role 2"}})
+
+			So(err, ShouldBeNil)
+			So(resp.GetRole().GetUuid(), ShouldEqual, "role2")
+		})
+
+		Convey("Create Role with Comma", t, func() {
+			_, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "dn=toto,dn=zz", Label: "Role Fail"}})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("Get Role", t, func() {
+			mock := &roleStreamMock{ctx: ctx}
+			err := s.StreamRole(mock)
+
+			So(err, ShouldBeNil)
+			So(len(mock.InternalBuffer), ShouldEqual, 0)
+		})
+
+		Convey("Search Role", t, func() {
+			mock := &roleStreamMock{ctx: ctx}
+			err := s.SearchRole(&idm.SearchRoleRequest{}, mock)
+
+			So(err, ShouldBeNil)
+			So(len(mock.InternalBuffer), ShouldEqual, 2)
+		})
+
+		Convey("Delete Role", t, func() {
+			_, err := s.DeleteRole(ctx, &idm.DeleteRoleRequest{})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("Delete Role", t, func() {
+			singleQ1 := new(idm.RoleSingleQuery)
+			singleQ1.Uuid = []string{"role1"}
+			singleQ1Any, err := anypb.New(singleQ1)
+			So(err, ShouldBeNil)
+
+			query := &service.Query{
+				SubQueries: []*anypb.Any{singleQ1Any},
+			}
+
+			_, err = s.DeleteRole(ctx, &idm.DeleteRoleRequest{Query: query})
+			So(err, ShouldBeNil)
+		})
+
+		Convey("Search Role", t, func() {
+			mock := &roleStreamMock{ctx: ctx}
+			err := s.SearchRole(&idm.SearchRoleRequest{}, mock)
+
+			So(err, ShouldBeNil)
+			So(len(mock.InternalBuffer), ShouldEqual, 1)
+		})
 
 	})
 
-	Convey("Create Roles", t, func() {
-		resp, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "role2", Label: "Role 2"}})
-
-		So(err, ShouldBeNil)
-		So(resp.GetRole().GetUuid(), ShouldEqual, "role2")
-	})
-
-	Convey("Create Role with Comma", t, func() {
-		_, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "dn=toto,dn=zz", Label: "Role Fail"}})
-		So(err, ShouldNotBeNil)
-	})
-
-	Convey("Get Role", t, func() {
-		mock := &roleStreamMock{ctx: ctx}
-		err := s.StreamRole(mock)
-
-		So(err, ShouldBeNil)
-		So(len(mock.InternalBuffer), ShouldEqual, 0)
-	})
-
-	Convey("Search Role", t, func() {
-		mock := &roleStreamMock{ctx: ctx}
-		err := s.SearchRole(&idm.SearchRoleRequest{}, mock)
-
-		So(err, ShouldBeNil)
-		So(len(mock.InternalBuffer), ShouldEqual, 2)
-	})
-
-	Convey("Delete Role", t, func() {
-		_, err := s.DeleteRole(ctx, &idm.DeleteRoleRequest{})
-		So(err, ShouldNotBeNil)
-	})
-
-	Convey("Delete Role", t, func() {
-		singleQ1 := new(idm.RoleSingleQuery)
-		singleQ1.Uuid = []string{"role1"}
-		singleQ1Any, err := anypb.New(singleQ1)
-		So(err, ShouldBeNil)
-
-		query := &service.Query{
-			SubQueries: []*anypb.Any{singleQ1Any},
-		}
-
-		_, err = s.DeleteRole(ctx, &idm.DeleteRoleRequest{Query: query})
-		So(err, ShouldBeNil)
-	})
-
-	Convey("Search Role", t, func() {
-		mock := &roleStreamMock{ctx: ctx}
-		err := s.SearchRole(&idm.SearchRoleRequest{}, mock)
-
-		So(err, ShouldBeNil)
-		So(len(mock.InternalBuffer), ShouldEqual, 1)
-	})
 }
 
 func TestRoleWithRules(t *testing.T) {
 
-	s := &Handler{dao: roleDAO}
-	Convey("Create Roles with Resource Rule", t, func() {
+	s := new(Handler)
 
-		resp, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "role-res", Label: "Role 1"}})
+	test.RunStorageTests(testcases, t, func(ctx context.Context) {
+		dao, err := manager.Resolve[role.DAO](ctx)
+		if err != nil {
+			panic(err)
+		}
 
-		So(err, ShouldBeNil)
-		So(resp.GetRole().GetUuid(), ShouldEqual, "role-res")
+		Convey("Create Roles with Resource Rule", t, func() {
 
-		err = roleDAO.AddPolicy("role-res", &service.ResourcePolicy{
-			Action:  service.ResourcePolicyAction_READ,
-			Subject: "user:subject-name",
+			resp, err := s.CreateRole(ctx, &idm.CreateRoleRequest{Role: &idm.Role{Uuid: "role-res", Label: "Role 1"}})
+
+			So(err, ShouldBeNil)
+			So(resp.GetRole().GetUuid(), ShouldEqual, "role-res")
+
+			_, err = dao.AddPolicies(ctx, false, "role-res", []*service.ResourcePolicy{
+				{Action: service.ResourcePolicyAction_READ, Subject: "user:subject-name"},
+			})
+			So(err, ShouldBeNil)
+
 		})
-		So(err, ShouldBeNil)
 
+		Convey("Find Roles with Resource", t, func() {
+
+			singleQ, _ := anypb.New(&idm.RoleSingleQuery{Uuid: []string{"role-res"}})
+
+			// Search with wrong context
+			simpleQuery := &service.Query{
+				SubQueries: []*anypb.Any{singleQ},
+				Offset:     0,
+				Limit:      10,
+				ResourcePolicyQuery: &service.ResourcePolicyQuery{
+					Subjects: []string{"profile:anon"},
+				},
+			}
+
+			mock := &roleStreamMock{ctx: ctx}
+			err := s.SearchRole(&idm.SearchRoleRequest{
+				Query: simpleQuery,
+			}, mock)
+
+			So(err, ShouldBeNil)
+			So(len(mock.InternalBuffer), ShouldEqual, 0)
+
+			// Search with "ANY"
+			simpleQuery.ResourcePolicyQuery = &service.ResourcePolicyQuery{
+				Subjects: []string{},
+			}
+			mock = &roleStreamMock{ctx: ctx}
+			err = s.SearchRole(&idm.SearchRoleRequest{
+				Query: simpleQuery,
+			}, mock)
+
+			So(err, ShouldBeNil)
+			So(len(mock.InternalBuffer), ShouldEqual, 1)
+
+			// Search with correct context
+			// Build context with fake claims
+			simpleQuery.ResourcePolicyQuery = &service.ResourcePolicyQuery{
+				Subjects: []string{
+					"user:subject-name",
+					"profile:standard",
+					"role:role1",
+					"role:role2",
+				},
+			}
+			mock = &roleStreamMock{ctx: ctx}
+			err = s.SearchRole(&idm.SearchRoleRequest{
+				Query: simpleQuery,
+			}, mock)
+
+			So(err, ShouldBeNil)
+			So(len(mock.InternalBuffer), ShouldEqual, 1)
+
+		})
 	})
-
-	Convey("Find Roles with Resource", t, func() {
-
-		singleQ, _ := anypb.New(&idm.RoleSingleQuery{Uuid: []string{"role-res"}})
-
-		// Search with wrong context
-		simpleQuery := &service.Query{
-			SubQueries: []*anypb.Any{singleQ},
-			Offset:     0,
-			Limit:      10,
-			ResourcePolicyQuery: &service.ResourcePolicyQuery{
-				Subjects: []string{"profile:anon"},
-			},
-		}
-
-		mock := &roleStreamMock{ctx: ctx}
-		err := s.SearchRole(&idm.SearchRoleRequest{
-			Query: simpleQuery,
-		}, mock)
-
-		So(err, ShouldBeNil)
-		So(len(mock.InternalBuffer), ShouldEqual, 0)
-
-		// Search with "ANY"
-		simpleQuery.ResourcePolicyQuery.Subjects = []string{}
-		mock = &roleStreamMock{ctx: ctx}
-		err = s.SearchRole(&idm.SearchRoleRequest{
-			Query: simpleQuery,
-		}, mock)
-
-		So(err, ShouldBeNil)
-		So(len(mock.InternalBuffer), ShouldEqual, 1)
-
-		// Search with correct context
-		// Build context with fake claims
-		simpleQuery.ResourcePolicyQuery.Subjects = []string{
-			"user:subject-name",
-			"profile:standard",
-			"role:role1",
-			"role:role2",
-		}
-
-		mock = &roleStreamMock{ctx: ctx}
-		err = s.SearchRole(&idm.SearchRoleRequest{
-			Query: simpleQuery,
-		}, mock)
-
-		So(err, ShouldBeNil)
-		So(len(mock.InternalBuffer), ShouldEqual, 1)
-
-	})
-
 }
 
 // =================================================

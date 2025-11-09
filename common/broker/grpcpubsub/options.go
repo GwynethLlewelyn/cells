@@ -23,7 +23,7 @@ package grpcpubsub
 import (
 	"context"
 
-	pb "github.com/pydio/cells/v4/common/proto/broker"
+	pb "github.com/pydio/cells/v5/common/proto/broker"
 )
 
 type publisherKey struct{}
@@ -39,6 +39,7 @@ type Options struct {
 
 type Publisher interface {
 	Send(*pb.PublishRequest) error
+	CloseSend() error
 }
 
 type Subscriber interface {

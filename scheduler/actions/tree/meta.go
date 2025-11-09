@@ -25,15 +25,15 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 var (
@@ -41,7 +41,6 @@ var (
 )
 
 type MetaAction struct {
-	common.RuntimeHolder
 	Client   tree.NodeReceiverClient
 	MetaJSON string
 }
@@ -49,8 +48,8 @@ type MetaAction struct {
 func (c *MetaAction) GetDescription(lang ...string) actions.ActionDescription {
 	return actions.ActionDescription{
 		ID:                metaActionName,
-		Label:             "Store Internal Meta",
-		Icon:              "tag-multiple",
+		Label:             "Internal Metadata",
+		Icon:              "file-cog",
 		Category:          actions.ActionCategoryTree,
 		Description:       "Update internal metadata on files or folders passed in input",
 		InputDescription:  "Multiple selection of files or folders",
@@ -60,7 +59,7 @@ func (c *MetaAction) GetDescription(lang ...string) actions.ActionDescription {
 	}
 }
 
-func (c *MetaAction) GetParametersForm() *forms.Form {
+func (c *MetaAction) GetParametersForm(context.Context) *forms.Form {
 	return &forms.Form{Groups: []*forms.Group{
 		{
 			Fields: []forms.Field{
@@ -84,10 +83,10 @@ func (c *MetaAction) GetName() string {
 }
 
 // Init passes parameters to the action
-func (c *MetaAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (c *MetaAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 
 	if !nodes.IsUnitTestEnv {
-		c.Client = tree.NewNodeReceiverClient(grpc.GetClientConnFromCtx(c.GetRuntimeContext(), common.ServiceMeta))
+		c.Client = tree.NewNodeReceiverClient(grpc.ResolveConn(ctx, common.ServiceMetaGRPC))
 	}
 	c.MetaJSON = action.Parameters["metaJSON"]
 
@@ -95,7 +94,7 @@ func (c *MetaAction) Init(job *jobs.Job, action *jobs.Action) error {
 }
 
 // Run the actual action code
-func (c *MetaAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func (c *MetaAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
 
 	if len(input.Nodes) == 0 {
 		return input.WithIgnore(), nil // Ignore
@@ -122,7 +121,7 @@ func (c *MetaAction) Run(ctx context.Context, channels *actions.RunnableChannels
 		}
 	}
 
-	input.AppendOutput(&jobs.ActionOutput{Success: true})
+	output := input.WithOutput(&jobs.ActionOutput{Success: true})
 
-	return input, nil
+	return output, nil
 }

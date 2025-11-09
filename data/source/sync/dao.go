@@ -24,22 +24,13 @@ package sync
 import (
 	"context"
 
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/sql"
-	"github.com/pydio/cells/v4/common/sync/endpoints/s3"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/sync/endpoints/s3"
 )
 
+var Drivers = service.StorageDrivers{}
+
 type DAO interface {
-	dao.DAO
 	s3.ChecksumMapper
-
-	CleanResourcesOnDeletion() (string, error)
-}
-
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case sql.DAO:
-		return &sqlImpl{DAO: v}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
+	CleanResourcesOnDeletion(ctx context.Context) (string, error)
 }

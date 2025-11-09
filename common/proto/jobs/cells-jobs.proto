@@ -7,10 +7,25 @@ import "cells-tree.proto";
 import "cells-idm.proto";
 import "cells-activitystream.proto";
 import "cells-object.proto";
+import "cells-chat.proto";
+import "cells-setter.proto";
 
 package jobs;
 
-option go_package="github.com/pydio/cells/common/proto/jobs";
+option go_package="github.com/pydio/cells/v5/common/proto/jobs";
+
+message SelectorRange {
+    // Limit number of results - use string to allow templating
+    string Limit = 10;
+    // Start offset - use string to allow templating
+    string Offset = 11;
+    // OrderBy a given field of the object
+    string OrderBy = 12;
+    // Order direction (asc/desc)
+    string OrderDir = 13;
+
+}
+
 ///////////////////
 // JOB  SERVICE  //
 ///////////////////
@@ -24,12 +39,18 @@ message NodesSelector {
     // Whether to trigger one action per node or one action
     // with all nodes as selection
     bool Collect = 5;
+    // Ignore query and just fan out input.Nodes
+    bool FanOutInput = 9;
     // Selector custom label
     string Label = 6;
     // Selector additional description
     string Description = 7;
     // Optional Timeout for this selector
     string Timeout = 8;
+    // Clear previous selection
+    bool ClearInput = 10;
+    // Handle ranges
+    SelectorRange Range = 11;
 }
 
 // Possible values for IdmSelector.Type
@@ -50,12 +71,18 @@ message IdmSelector {
     service.Query Query = 3;
     // Pass a slice of objects to one action, or trigger all actions in parallel
     bool Collect = 4;
+    // Ignore query and just fan out input.[Type]
+    bool FanOutInput = 8;
     // Selector custom label
     string Label = 5;
     // Selector additional description
     string Description = 6;
     // Optional Timeout for this selector
     string Timeout = 7;
+    // Clear previous selection
+    bool ClearInput = 9;
+    // Handle ranges
+    SelectorRange Range = 11;
 }
 
 // Select or filter users - should be replaced by more generic IdmSelector
@@ -75,6 +102,8 @@ message UsersSelector {
     string Description = 7;
     // Optional Timeout for this selector
     string Timeout = 8;
+    // Clear previous selection
+    bool ClearInput = 9;
 }
 
 enum DataSourceSelectorType {
@@ -94,15 +123,31 @@ message DataSourceSelector {
     bool All = 4;
     // Collect results
     bool Collect = 5;
+    // Ignore query and just fan out input.DataSources
+    bool FanOutInput = 8;
     // Composition of DataSourceSingleQueries
     service.Query Query = 6;
     // Optional Timeout for this selector
     string Timeout = 7;
+    // Clear previous selection
+    bool ClearInput = 9;
 }
 
+// Atomic query for TriggerFilter
 message TriggerFilterQuery {
+    // Event was triggered by a programed schedule
     bool IsSchedule = 1;
+    // Event was triggered manually in the CellsFlows/Scheduler console
     bool IsManual = 2;
+    // Event was triggered by a WebHook (can be in the user space)
+    bool IsApiHook = 4;
+    // Event was triggered by a specific WebHook (by its unique slug)
+    string ApiHookSlug = 5;
+    // Filter by a name/value on a runtime defined parameter
+    string RunParameterName = 6;
+    // Combined with RunParameterName, value used for comparison
+    string RunParameterValue = 7;
+    // Event was trigger by one of these Events
     repeated string EventNames = 3;
 }
 
@@ -144,10 +189,68 @@ message ContextMetaFilter {
 
 // ContextMetaSingleQuery uses idm.PolicyCondition
 message ContextMetaSingleQuery {
-    // Condition applies to FieldName
+    // Field on which the Condition test will be applied
     string FieldName = 1;
-    // PolicyCondition
+    // One of the available conditions as defined for Security Policies
     idm.PolicyCondition Condition = 2;
+}
+
+message DataSelector {
+    // Selector custom label
+    string Label = 1;
+    // Selector additional description
+    string Description = 2;
+    // Query used to compute output object or list of objects
+    service.Query Query = 3;
+    // Collect results
+    bool Collect = 4;
+    // Ignore query and just fan out input.LastOutput.JsonBody
+    bool FanOutInput = 5;
+    // Optional Timeout for this selector
+    string Timeout = 6;
+    // Clear previous selection
+    bool ClearInput = 7;
+}
+
+message DataSelectorSingleQuery {
+    // Perform a JsonPath query. Input data exposes JsonBody and Vars.
+    string JsonPath = 1;
+}
+
+message ChatEventFilter {
+    // Selector custom label
+    string Label = 1;
+    // Selector additional description
+    string Description = 2;
+    // Query used to compute output object or list of objects
+    service.Query Query = 3;
+}
+
+message ChatEventFilterQuery {
+    // EventType, inferred from ChatEvent Details field and presence of Message or Room in event
+    string EventType = 1;
+    // Room UUID
+    string RoomUuid = 2;
+    // Room Type
+    chat.RoomType RoomType = 3;
+    // Room Associated Object
+    string RoomTypeObject = 4;
+    // Room Label
+    string RoomLabelRegexp = 5;
+    // Message Regexp
+    string MessageRegexp = 6;
+    // Message Author
+    string MessageAuthor = 7;
+}
+
+message GenericFilter {
+    oneof Filter {
+        NodesSelector NodeSelector = 1;
+        IdmSelector IdmSelector = 2;
+        DataSourceSelector DataSourceSelector = 3;
+        ContextMetaFilter ContextMetaFilter = 4;
+        DataSelector DataSelector = 5;
+    }
 }
 
 message Schedule {
@@ -160,6 +263,8 @@ message Schedule {
 }
 
 message Action {
+    option (setter.all_fields) = true;
+
     // String Identifier for specific action
     string ID = 1;
 
@@ -177,10 +282,11 @@ message Action {
 
     // Nodes Selector
     NodesSelector NodesSelector = 2;
-    // Users Selector (deprecated in favor of IdmSelector)
-    UsersSelector UsersSelector = 3;
     // Node Filter
     NodesSelector NodesFilter = 4;
+
+    // Users Selector (deprecated in favor of IdmSelector)
+    UsersSelector UsersSelector = 3;
     // User Filter (deprecated in favor of IdmSelector)
     UsersSelector UsersFilter = 5;
 
@@ -200,6 +306,12 @@ message Action {
     ContextMetaFilter ContextMetaFilter = 11;
     // Filter on specific triggers
     TriggerFilter TriggerFilter = 19;
+    // Collect/select values from JsonBody
+    DataSelector DataSelector = 22;
+    // Filter values from JsonBody
+    DataSelector DataFilter = 23;
+    // Filter values from ChatEvent
+    ChatEventFilter ChatEventFilter = 24;
 
     // Defined parameters for this action
     map<string, string> Parameters = 7;
@@ -212,15 +324,28 @@ message Action {
     // If any Filter is used, next actions can be triggered on Failure
     // This adds ability to create conditional Yes/No branches
     repeated Action FailedFilterActions = 12;
+
+    // CollectAction adds starts another chain after the whole ChainedAction/FailedFilterActions have been performed
+    Action MergeAction = 21;
 }
 
 message Job {
+    option (setter.all_fields) = true;
+
     // Unique ID for this Job
     string ID = 1;
     // Human-readable Label
     string Label = 2;
     // Who created this Job
     string Owner = 3;
+    // Additional user-defined metadata, can be used for icon, documentation, pre-requisites, etc.
+    map<string,string> Metadata = 30;
+
+    // Timestamp for creation time
+    int32 CreatedAt = 25;
+    // Timestamp for modification time
+    int32 ModifiedAt = 26;
+
     // Admin can temporarily disable this job
     bool Inactive = 4;
     // Job created by application or by administrator
@@ -236,11 +361,16 @@ message Job {
     Schedule Schedule = 6;
     // Start task as soon as job is inserted
     bool AutoStart = 7;
+    // Start task as soon as server is started
+    bool AutoRestart = 29;
     // Remove job automatically once it is finished (success only)
     bool AutoClean = 11;
 
     // Chain of actions to perform
     repeated Action Actions = 8;
+
+    // Collect chain of actions into a merged output
+    Action MergeAction = 24;
 
     // Task properties
     int32 MaxConcurrency = 9;
@@ -261,6 +391,8 @@ message Job {
     ContextMetaFilter ContextMetaFilter = 18;
     // DataSource objects filter
     DataSourceSelector DataSourceFilter = 21;
+    // Filter values from ChatEvent
+    ChatEventFilter ChatEventFilter = 31;
 
     // Job-level parameters that can be passed to underlying actions
     repeated JobParameter Parameters = 19;
@@ -269,9 +401,33 @@ message Job {
     repeated google.protobuf.Any ResourcesDependencies = 22;
     // Optional Timeout any running job
     string Timeout = 23;
+
+    // Additional Versioning Metadata
+    map<string,string>VersionMeta = 27;
+
+    // Expose this job through one or more-userspace APIs
+    repeated JobHook Hooks = 28;
+}
+
+// Dynamically expose a job trigger via API
+message JobHook {
+    option (setter.all_fields) = true;
+
+    // Custom ApiSlug, otherwise use the job UUID
+    string ApiSlug = 1;
+    // Preset parameters values when calling this endpoint. May be overriden by a map[string]string in the body
+    map<string,string> PresetParameters = 2;
+    // Allow trigger parameters to override default presets
+    bool AllowOverridePresets = 3;
+    // Additional arbitrary metadata attached to this hook
+    map<string,string> Metadata = 4;
+    // Set permissions for accessing this endpoint
+    repeated service.ResourcePolicy Policies = 5;
 }
 
 message JobParameter {
+    option (setter.all_fields) = true;
+
     // Parameter name
     string Name = 1;
     // Additional description
@@ -295,6 +451,8 @@ message JobChangeEvent {
 message TaskChangeEvent {
     Task TaskUpdated = 1;
     Job Job = 2;
+    int64 NanoStamp = 3;
+    map<string, string> StatusMeta = 4;
 }
 
 message PutJobRequest {
@@ -358,6 +516,7 @@ message ListTasksResponse {
 
 message PutTaskRequest {
     Task Task = 1;
+    map<string, string> StatusMeta = 2;
 }
 
 message PutTaskResponse {
@@ -408,6 +567,8 @@ service JobService {
 ///////////////////
 // TASK SERVICE  //
 ///////////////////
+
+// Known statuses
 enum TaskStatus {
     Unknown     = 0;
     Idle        = 1;
@@ -493,6 +654,10 @@ message JobTriggerEvent {
     string RunTaskId = 4;
     // Use specific parameters values for this run
     map<string,string> RunParameters = 5;
+    // This was triggered by the hooks API
+    string HookSlug = 6;
+    // Predefined custom message
+    ActionMessage TriggerMessage = 7;
 }
 
 // Standard output of an action. Success value is required
@@ -512,6 +677,8 @@ message ActionOutput {
     bool Ignored = 6;
     // Time taken to run the action
     int32 Time = 7;
+    // Vars container, values are json-encoded.
+    map<string, string> Vars = 8;
 }
 
 // ActionOutputSingleQuery provides a unitary query to filter ActionOutput messages
@@ -575,6 +742,24 @@ message ActionMessage {
     repeated ActionOutput OutputChain = 5;
 }
 
+message MiddlewareDescriptor {
+    // Where this descriptor comes from
+    string JobID = 1;
+    // All filters will be applied
+    repeated GenericFilter Filters = 2;
+    // All actions will be applied
+    repeated Action Actions = 3;
+}
+
+message RegisteredMiddlewaresRequest {
+    string MiddlewareType = 1;
+}
+
+message RegisteredMiddlewaresResponse {
+    repeated MiddlewareDescriptor Descriptors = 1;
+}
+
 service TaskService {
     rpc Control(CtrlCommand) returns (CtrlCommandResponse) {};
+    rpc GetRegisteredMiddlewares(RegisteredMiddlewaresRequest) returns (RegisteredMiddlewaresResponse) {};
 }

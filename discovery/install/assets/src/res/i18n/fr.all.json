@@ -23,6 +23,12 @@
   "database.legend.bold": {
     "other": "Veuillez vous assurer que votre base de données utilise MySQL version 5.6 ou supérieure"
   },
+  "database.legend1": {
+    "other": "L'installation nécessite une base de données SQL pour la configuration et l'indexation des données."
+  },
+  "database.legend2": {
+    "other": "Les bases de données supportées sont MySQL/MariaDB, PostgreSQL ou SQLite."
+  },
   "database.installDetected": {
     "other": "Il semble y avoir une instance de Cells déjà installée dans cette base de données. Veuillez confirmer pour continuer ou "
   },
@@ -134,11 +140,20 @@
   "form.dbConnectionType.label": {
     "other": "Type de connexion"
   },
-  "form.dbConnectionType.tcp": {
-    "other": "TCP"
+  "form.dbConnectionType.mysql_tcp": {
+    "other": "MySQL/MariaDB - TCP"
   },
-  "form.dbConnectionType.socket": {
-    "other": "Socket"
+  "form.dbConnectionType.mysql_socket": {
+    "other": "MySQL/MariaDB - Socket"
+  },
+  "form.dbConnectionType.pg_tcp": {
+    "other": "PostGreSQL - TCP"
+  },
+  "form.dbConnectionType.pg_socket": {
+    "other": "PostGreSQL - Socket"
+  },
+  "form.dbConnectionType.sqlite": {
+    "other": "SQLite (test ou développement)"
   },
   "form.dbConnectionType.manual": {
     "other": "Manuel"
@@ -179,6 +194,18 @@
   "form.dbSocketFile.legend": {
     "other": "Entrez l'emplacement du fichier de socket à utiliser pour se connecter"
   },
+  "form.dbSocketFileSQLite.label": {
+    "other": "Chemin de la base de données"
+  },
+  "form.dbSocketFileSQLite.legend": {
+    "other": "Emplacement du fichier pour la base de données SQLite"
+  },
+  "form.dbSqliteFile.label": {
+    "other": "Chemin"
+  },
+  "form.dbSqliteFile.legend": {
+    "other": "Emplacement du fichier source pour la base de données"
+  },
   "form.dbManualDSN.label": {
     "other": "DSN"
   },
@@ -218,6 +245,9 @@
   "form.dsFolder.legend": {
     "other": "Utiliser un chemin absolu sur le serveur"
   },
+  "form.dsType.Label": {
+    "other": "Type de Stockage"
+  },
   "form.dsType.FS": {
     "other": "Fichiers locaux (stocker les données sur ce serveur)"
   },
@@ -225,7 +255,7 @@
     "other": "Amazon / Compatible S3 (stocker dans des buckets S3)"
   },
   "form.dsS3Custom.label": {
-    "other": "URL d'un stockage compatible S3"
+    "other": "URL, ajouter ?minio=true pour Minio."
   },
   "form.dsS3Custom.legend": {
     "other": "Laissez vide pour AWS"

@@ -395,6 +395,125 @@ var NodeChangesStreamer_ServiceDesc = grpc.ServiceDesc{
 	Metadata: "cells-tree.proto",
 }
 
+// NodeChangesReceiverStreamerClient is the client API for NodeChangesReceiverStreamer service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type NodeChangesReceiverStreamerClient interface {
+	PostNodeChanges(ctx context.Context, opts ...grpc.CallOption) (NodeChangesReceiverStreamer_PostNodeChangesClient, error)
+}
+
+type nodeChangesReceiverStreamerClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewNodeChangesReceiverStreamerClient(cc grpc.ClientConnInterface) NodeChangesReceiverStreamerClient {
+	return &nodeChangesReceiverStreamerClient{cc}
+}
+
+func (c *nodeChangesReceiverStreamerClient) PostNodeChanges(ctx context.Context, opts ...grpc.CallOption) (NodeChangesReceiverStreamer_PostNodeChangesClient, error) {
+	stream, err := c.cc.NewStream(ctx, &NodeChangesReceiverStreamer_ServiceDesc.Streams[0], "/tree.NodeChangesReceiverStreamer/PostNodeChanges", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &nodeChangesReceiverStreamerPostNodeChangesClient{stream}
+	return x, nil
+}
+
+type NodeChangesReceiverStreamer_PostNodeChangesClient interface {
+	Send(*NodeChangeEvent) error
+	Recv() (*NodeChangeEvent, error)
+	grpc.ClientStream
+}
+
+type nodeChangesReceiverStreamerPostNodeChangesClient struct {
+	grpc.ClientStream
+}
+
+func (x *nodeChangesReceiverStreamerPostNodeChangesClient) Send(m *NodeChangeEvent) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *nodeChangesReceiverStreamerPostNodeChangesClient) Recv() (*NodeChangeEvent, error) {
+	m := new(NodeChangeEvent)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// NodeChangesReceiverStreamerServer is the server API for NodeChangesReceiverStreamer service.
+// All implementations must embed UnimplementedNodeChangesReceiverStreamerServer
+// for forward compatibility
+type NodeChangesReceiverStreamerServer interface {
+	PostNodeChanges(NodeChangesReceiverStreamer_PostNodeChangesServer) error
+	mustEmbedUnimplementedNodeChangesReceiverStreamerServer()
+}
+
+// UnimplementedNodeChangesReceiverStreamerServer must be embedded to have forward compatible implementations.
+type UnimplementedNodeChangesReceiverStreamerServer struct {
+}
+
+func (UnimplementedNodeChangesReceiverStreamerServer) PostNodeChanges(NodeChangesReceiverStreamer_PostNodeChangesServer) error {
+	return status.Errorf(codes.Unimplemented, "method PostNodeChanges not implemented")
+}
+func (UnimplementedNodeChangesReceiverStreamerServer) mustEmbedUnimplementedNodeChangesReceiverStreamerServer() {
+}
+
+// UnsafeNodeChangesReceiverStreamerServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to NodeChangesReceiverStreamerServer will
+// result in compilation errors.
+type UnsafeNodeChangesReceiverStreamerServer interface {
+	mustEmbedUnimplementedNodeChangesReceiverStreamerServer()
+}
+
+func RegisterNodeChangesReceiverStreamerServer(s grpc.ServiceRegistrar, srv NodeChangesReceiverStreamerServer) {
+	s.RegisterService(&NodeChangesReceiverStreamer_ServiceDesc, srv)
+}
+
+func _NodeChangesReceiverStreamer_PostNodeChanges_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeChangesReceiverStreamerServer).PostNodeChanges(&nodeChangesReceiverStreamerPostNodeChangesServer{stream})
+}
+
+type NodeChangesReceiverStreamer_PostNodeChangesServer interface {
+	Send(*NodeChangeEvent) error
+	Recv() (*NodeChangeEvent, error)
+	grpc.ServerStream
+}
+
+type nodeChangesReceiverStreamerPostNodeChangesServer struct {
+	grpc.ServerStream
+}
+
+func (x *nodeChangesReceiverStreamerPostNodeChangesServer) Send(m *NodeChangeEvent) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *nodeChangesReceiverStreamerPostNodeChangesServer) Recv() (*NodeChangeEvent, error) {
+	m := new(NodeChangeEvent)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// NodeChangesReceiverStreamer_ServiceDesc is the grpc.ServiceDesc for NodeChangesReceiverStreamer service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var NodeChangesReceiverStreamer_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "tree.NodeChangesReceiverStreamer",
+	HandlerType: (*NodeChangesReceiverStreamerServer)(nil),
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "PostNodeChanges",
+			Handler:       _NodeChangesReceiverStreamer_PostNodeChanges_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
+	Metadata: "cells-tree.proto",
+}
+
 // NodeReceiverClient is the client API for NodeReceiver service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
@@ -1297,7 +1416,9 @@ type NodeVersionerClient interface {
 	StoreVersion(ctx context.Context, in *StoreVersionRequest, opts ...grpc.CallOption) (*StoreVersionResponse, error)
 	ListVersions(ctx context.Context, in *ListVersionsRequest, opts ...grpc.CallOption) (NodeVersioner_ListVersionsClient, error)
 	HeadVersion(ctx context.Context, in *HeadVersionRequest, opts ...grpc.CallOption) (*HeadVersionResponse, error)
+	DeleteVersion(ctx context.Context, in *HeadVersionRequest, opts ...grpc.CallOption) (*DeleteVersionResponse, error)
 	PruneVersions(ctx context.Context, in *PruneVersionsRequest, opts ...grpc.CallOption) (*PruneVersionsResponse, error)
+	ListVersioningPolicies(ctx context.Context, in *ListVersioningPoliciesRequest, opts ...grpc.CallOption) (NodeVersioner_ListVersioningPoliciesClient, error)
 }
 
 type nodeVersionerClient struct {
@@ -1367,6 +1488,15 @@ func (c *nodeVersionerClient) HeadVersion(ctx context.Context, in *HeadVersionRe
 	return out, nil
 }
 
+func (c *nodeVersionerClient) DeleteVersion(ctx context.Context, in *HeadVersionRequest, opts ...grpc.CallOption) (*DeleteVersionResponse, error) {
+	out := new(DeleteVersionResponse)
+	err := c.cc.Invoke(ctx, "/tree.NodeVersioner/DeleteVersion", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeVersionerClient) PruneVersions(ctx context.Context, in *PruneVersionsRequest, opts ...grpc.CallOption) (*PruneVersionsResponse, error) {
 	out := new(PruneVersionsResponse)
 	err := c.cc.Invoke(ctx, "/tree.NodeVersioner/PruneVersions", in, out, opts...)
@@ -1374,6 +1504,38 @@ func (c *nodeVersionerClient) PruneVersions(ctx context.Context, in *PruneVersio
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *nodeVersionerClient) ListVersioningPolicies(ctx context.Context, in *ListVersioningPoliciesRequest, opts ...grpc.CallOption) (NodeVersioner_ListVersioningPoliciesClient, error) {
+	stream, err := c.cc.NewStream(ctx, &NodeVersioner_ServiceDesc.Streams[1], "/tree.NodeVersioner/ListVersioningPolicies", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &nodeVersionerListVersioningPoliciesClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type NodeVersioner_ListVersioningPoliciesClient interface {
+	Recv() (*VersioningPolicy, error)
+	grpc.ClientStream
+}
+
+type nodeVersionerListVersioningPoliciesClient struct {
+	grpc.ClientStream
+}
+
+func (x *nodeVersionerListVersioningPoliciesClient) Recv() (*VersioningPolicy, error) {
+	m := new(VersioningPolicy)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // NodeVersionerServer is the server API for NodeVersioner service.
@@ -1384,7 +1546,9 @@ type NodeVersionerServer interface {
 	StoreVersion(context.Context, *StoreVersionRequest) (*StoreVersionResponse, error)
 	ListVersions(*ListVersionsRequest, NodeVersioner_ListVersionsServer) error
 	HeadVersion(context.Context, *HeadVersionRequest) (*HeadVersionResponse, error)
+	DeleteVersion(context.Context, *HeadVersionRequest) (*DeleteVersionResponse, error)
 	PruneVersions(context.Context, *PruneVersionsRequest) (*PruneVersionsResponse, error)
+	ListVersioningPolicies(*ListVersioningPoliciesRequest, NodeVersioner_ListVersioningPoliciesServer) error
 	mustEmbedUnimplementedNodeVersionerServer()
 }
 
@@ -1404,8 +1568,14 @@ func (UnimplementedNodeVersionerServer) ListVersions(*ListVersionsRequest, NodeV
 func (UnimplementedNodeVersionerServer) HeadVersion(context.Context, *HeadVersionRequest) (*HeadVersionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HeadVersion not implemented")
 }
+func (UnimplementedNodeVersionerServer) DeleteVersion(context.Context, *HeadVersionRequest) (*DeleteVersionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteVersion not implemented")
+}
 func (UnimplementedNodeVersionerServer) PruneVersions(context.Context, *PruneVersionsRequest) (*PruneVersionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PruneVersions not implemented")
+}
+func (UnimplementedNodeVersionerServer) ListVersioningPolicies(*ListVersioningPoliciesRequest, NodeVersioner_ListVersioningPoliciesServer) error {
+	return status.Errorf(codes.Unimplemented, "method ListVersioningPolicies not implemented")
 }
 func (UnimplementedNodeVersionerServer) mustEmbedUnimplementedNodeVersionerServer() {}
 
@@ -1495,6 +1665,24 @@ func _NodeVersioner_HeadVersion_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeVersioner_DeleteVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HeadVersionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeVersionerServer).DeleteVersion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/tree.NodeVersioner/DeleteVersion",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeVersionerServer).DeleteVersion(ctx, req.(*HeadVersionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeVersioner_PruneVersions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PruneVersionsRequest)
 	if err := dec(in); err != nil {
@@ -1511,6 +1699,27 @@ func _NodeVersioner_PruneVersions_Handler(srv interface{}, ctx context.Context, 
 		return srv.(NodeVersionerServer).PruneVersions(ctx, req.(*PruneVersionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeVersioner_ListVersioningPolicies_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ListVersioningPoliciesRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(NodeVersionerServer).ListVersioningPolicies(m, &nodeVersionerListVersioningPoliciesServer{stream})
+}
+
+type NodeVersioner_ListVersioningPoliciesServer interface {
+	Send(*VersioningPolicy) error
+	grpc.ServerStream
+}
+
+type nodeVersionerListVersioningPoliciesServer struct {
+	grpc.ServerStream
+}
+
+func (x *nodeVersionerListVersioningPoliciesServer) Send(m *VersioningPolicy) error {
+	return x.ServerStream.SendMsg(m)
 }
 
 // NodeVersioner_ServiceDesc is the grpc.ServiceDesc for NodeVersioner service.
@@ -1533,6 +1742,10 @@ var NodeVersioner_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _NodeVersioner_HeadVersion_Handler,
 		},
 		{
+			MethodName: "DeleteVersion",
+			Handler:    _NodeVersioner_DeleteVersion_Handler,
+		},
+		{
 			MethodName: "PruneVersions",
 			Handler:    _NodeVersioner_PruneVersions_Handler,
 		},
@@ -1541,6 +1754,11 @@ var NodeVersioner_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "ListVersions",
 			Handler:       _NodeVersioner_ListVersions_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "ListVersioningPolicies",
+			Handler:       _NodeVersioner_ListVersioningPolicies_Handler,
 			ServerStreams: true,
 		},
 	},

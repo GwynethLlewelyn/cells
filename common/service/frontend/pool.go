@@ -24,19 +24,21 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"path"
 	"strings"
 
 	"github.com/jinzhu/copier"
-	"github.com/philopon/go-toposort"
+	toposort "github.com/philopon/go-toposort"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/telemetry/tracing"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
 )
 
 type PluginsPool struct {
@@ -59,7 +61,7 @@ func (p *PluginsPool) Load(fs *UnionHttpFs) error {
 		return e
 	}
 	defer index.Close()
-	data, e := ioutil.ReadAll(index)
+	data, e := io.ReadAll(index)
 	if e != nil {
 		return e
 	}
@@ -72,16 +74,16 @@ func (p *PluginsPool) Load(fs *UnionHttpFs) error {
 	for _, plugin := range plugs {
 		object, e := p.readManifest(fs, plugin)
 		if e != nil {
-			log.Logger(context.Background()).Error("Ignoring "+plugin, zap.Error(e))
+			log.Logger(runtime.CoreBackground()).Error("Ignoring "+plugin, zap.Error(e))
 			continue
 		}
 		p.Plugins[plugin] = object
 	}
 
 	p.Messages = make(map[string]I18nMessages)
-	for lang := range i18n.AvailableLanguages {
-		p.Messages[lang] = p.I18nMessages(lang)
-		log.Logger(context.Background()).Debug("Loading messages for "+lang, zap.Int("m", len(p.Messages[lang].Messages)), zap.Int("conf", len(p.Messages[lang].ConfMessages)))
+	for lang := range languages.AvailableLanguages {
+		p.Messages[lang] = p.loadI18nMessages(lang)
+		log.Logger(runtime.CoreBackground()).Debug("Loading base messages for "+lang, zap.Int("m", len(p.Messages[lang].Messages)), zap.Int("conf", len(p.Messages[lang].ConfMessages)))
 	}
 
 	return nil
@@ -90,13 +92,17 @@ func (p *PluginsPool) Load(fs *UnionHttpFs) error {
 
 func (p *PluginsPool) RegistryForStatus(ctx context.Context, status RequestStatus) (*Cpydio_registry, error) {
 
+	var span trace.Span
+	ctx, span = tracing.StartLocalSpan(ctx, "RegistryForStatus")
+	defer span.End()
+
 	plugins := p.pluginsForStatus(ctx, status)
 	registry := &Cpydio_registry{}
 	registry.Cplugins = &Cplugins{}
 	registry.Cactions = &Cactions{}
 	registry.Cextensions = &Cextensions{}
 	registry.Cclient_configs = &Cclient_configs{}
-	registry.Cuser = status.User.Publish(status, p)
+	registry.Cuser = status.User.Publish(ctx, status, p)
 
 	messages := p.Messages["en-us"]
 	if status.Lang != "" {
@@ -106,7 +112,7 @@ func (p *PluginsPool) RegistryForStatus(ctx context.Context, status RequestStatu
 	}
 
 	for _, plugin := range plugins {
-
+		log.Logger(ctx).Debug("Plugin " + plugin.GetId())
 		configs := plugin.PluginConfigs(status)
 		var contribs *Cregistry_contributions
 		if p, ok := plugin.(*Cuploader); ok {
@@ -184,7 +190,7 @@ func (p *PluginsPool) AllPluginsManifests(ctx context.Context, lang string) *Cpl
 	}
 	emptyStatus := RequestStatus{
 		RuntimeCtx:    ctx,
-		Config:        config.Get(),
+		Config:        config.Get(ctx),
 		Lang:          lang,
 		NoClaims:      true,
 		AclParameters: configx.New(),
@@ -289,9 +295,28 @@ func (p *PluginsPool) pluginsForStatus(ctx context.Context, status RequestStatus
 	return sorted
 }
 
-func (p *PluginsPool) I18nMessages(lang string) I18nMessages {
+func (p *PluginsPool) I18nMessages(ctx context.Context, lang string) I18nMessages {
+	i := p.loadI18nMessages(lang)
+	appTitle := config.Get(ctx, config.FrontendPluginPath(config.KeyFrontPluginCorePydio, config.KeyFrontApplicationTitle)...).String()
+	if appTitle == "" {
+		return i
+	}
+	out := I18nMessages{
+		Messages:     make(map[string]string, len(i.Messages)),
+		ConfMessages: make(map[string]string, len(i.ConfMessages)),
+	}
+	for k, v := range i.Messages {
+		out.Messages[k] = strings.ReplaceAll(v, "APPLICATION_TITLE", appTitle)
+	}
+	for k, v := range i.ConfMessages {
+		out.ConfMessages[k] = strings.ReplaceAll(v, "APPLICATION_TITLE", appTitle)
+	}
+	return out
+}
 
-	if legacy, b := i18n.LanguagesLegacyNames[lang]; b {
+func (p *PluginsPool) loadI18nMessages(lang string) I18nMessages {
+
+	if legacy, b := languages.LegacyNames[lang]; b {
 		lang = legacy
 	}
 
@@ -333,16 +358,12 @@ func (p *PluginsPool) parseI18nFolder(ns string, lang string, defaultLang string
 	} else if f2, e2 := p.fs.Open(path.Join(libPath, defaultLang+".all.json")); e2 == nil {
 		f = f2
 	}
-	appTitle := config.Get("frontend", "plugin", "core.pydio", "APPLICATION_TITLE").String()
 	if f != nil {
-		content, _ := ioutil.ReadAll(f)
+		content, _ := io.ReadAll(f)
 		var data map[string]Translation
 		if e1 := json.Unmarshal(content, &data); e1 == nil {
 			for k, trans := range data {
 				v := trans.Other
-				if appTitle != "" && strings.Contains(v, "APPLICATION_TITLE") {
-					v = strings.Replace(v, "APPLICATION_TITLE", appTitle, -1)
-				}
 				if ns == "" {
 					msg[k] = v
 				} else {
@@ -350,9 +371,9 @@ func (p *PluginsPool) parseI18nFolder(ns string, lang string, defaultLang string
 				}
 			}
 		} else {
-			log.Logger(context.Background()).Error("Cannot parse language file: ", zap.String("lib", libPath), zap.String("lang", lang), zap.Error(e1))
+			log.Logger(runtime.CoreBackground()).Error("Cannot parse language file: ", zap.String("lib", libPath), zap.String("lang", lang), zap.Error(e1))
 		}
-		f.Close()
+		_ = f.Close()
 	}
 	return msg
 }
@@ -442,7 +463,7 @@ func (p *PluginsPool) readManifest(fs *UnionHttpFs, id string) (output Plugin, e
 	x, e := fs.Open(id + "/manifest.xml")
 	if e == nil {
 		defer x.Close()
-		data, e = ioutil.ReadAll(x)
+		data, e = io.ReadAll(x)
 		if e != nil {
 			return nil, e
 		}

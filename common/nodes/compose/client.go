@@ -22,21 +22,20 @@ package compose
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"google.golang.org/grpc"
 
-	"github.com/pydio/cells/v4/common/nodes"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	nodescontext "github.com/pydio/cells/v4/common/nodes/context"
-	"github.com/pydio/cells/v4/common/nodes/models"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/nodes"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/nodes/models"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/utils/openurl"
 )
 
 func init() {
-	abstract.AdminClientProvider = func(runtime context.Context) nodes.Client {
-		return NewClient(pathComposer(nodes.WithContext(runtime), nodes.AsAdmin())...)
+	abstract.AdminClientProvider = func() nodes.Client {
+		return NewClient(pathComposer(nodes.AsAdmin())...)
 	}
 }
 
@@ -50,27 +49,22 @@ func newClient(opts ...nodes.Option) *clientImpl {
 		o(&options)
 	}
 
-	options.Pool = nodescontext.GetSourcesPool(options.Context)
-
 	var handler nodes.Handler
-
-	handler = options.CoreClient(options.Pool)
+	handler = options.CoreClient
 
 	// wrap in reverse
 	for i := len(options.Wrappers); i > 0; i-- {
 		handler = options.Wrappers[i-1].Adapt(handler, options)
 	}
 	return &clientImpl{
-		handler:    handler,
-		pool:       options.Pool,
-		runtimeCtx: options.Context,
+		handler: handler,
+		pool:    options.Pool,
 	}
 }
 
 type clientImpl struct {
-	handler    nodes.Handler
-	runtimeCtx context.Context
-	pool       nodes.SourcesPool
+	handler nodes.Handler
+	pool    *openurl.Pool[nodes.SourcesPool]
 }
 
 func (v *clientImpl) WrapCallback(provider nodes.CallbackFunc) error {
@@ -83,10 +77,10 @@ func (v *clientImpl) BranchInfoForNode(ctx context.Context, node *tree.Node) (br
 		if er != nil {
 			return er
 		}
-		if dsInfo, o := nodes.GetBranchInfo(updatedCtx, "in"); o {
+		if dsInfo, be := nodes.GetBranchInfo(updatedCtx, "in"); be == nil {
 			branch = dsInfo
 		} else {
-			return fmt.Errorf("cannot find branch info for node " + node.GetPath())
+			return be
 		}
 		return nil
 	})
@@ -131,12 +125,12 @@ func (v *clientImpl) GetObject(ctx context.Context, node *tree.Node, requestData
 	return h.GetObject(ctx, node, requestData)
 }
 
-func (v *clientImpl) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (int64, error) {
+func (v *clientImpl) PutObject(ctx context.Context, node *tree.Node, reader io.Reader, requestData *models.PutRequestData) (models.ObjectInfo, error) {
 	h := v.handler
 	return h.PutObject(ctx, node, reader, requestData)
 }
 
-func (v *clientImpl) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (int64, error) {
+func (v *clientImpl) CopyObject(ctx context.Context, from *tree.Node, to *tree.Node, requestData *models.CopyRequestData) (models.ObjectInfo, error) {
 	h := v.handler
 	return h.CopyObject(ctx, from, to, requestData)
 }
@@ -195,7 +189,7 @@ func (v *clientImpl) CanApply(ctx context.Context, operation *tree.NodeChangeEve
 			}
 		}
 		if sourceNode != nil {
-			sourceCtx, sourceNode, e = inputFilter(ctx, targetNode, "in")
+			sourceCtx, sourceNode, e = inputFilter(ctx, sourceNode, "in")
 			if e != nil {
 				return e
 			}
@@ -206,11 +200,19 @@ func (v *clientImpl) CanApply(ctx context.Context, operation *tree.NodeChangeEve
 	return innerOperation, e
 }
 
-func (v *clientImpl) SetClientsPool(nodes.SourcesPool) {}
+func (v *clientImpl) SetClientsPool(pool *openurl.Pool[nodes.SourcesPool]) {}
 
 // GetClientsPool returns internal pool
-func (v *clientImpl) GetClientsPool() nodes.SourcesPool {
-	return v.pool
+func (v *clientImpl) GetClientsPool(ctx context.Context) nodes.SourcesPool {
+	return nodes.GetSourcesPool(ctx)
+	/*
+		p, e := v.pool.Get(ctx)
+		if e != nil {
+			panic(e)
+		}
+		return p
+
+	*/
 }
 
 // ListNodesWithCallback performs a ListNodes request and applied callback with optional filters. This hides the complexity of streams handling.

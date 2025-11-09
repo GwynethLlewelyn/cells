@@ -22,32 +22,31 @@ package rest
 
 import (
 	"context"
-	"io"
-	"strings"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/auth/claim"
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/nodes/abstract"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/permissions"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/auth/claim"
+	"github.com/pydio/cells/v5/common/client/commons"
+	"github.com/pydio/cells/v5/common/client/commons/idmc"
+	"github.com/pydio/cells/v5/common/client/commons/treec"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/nodes/abstract"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/common/telemetry/log"
 )
 
 // WriteAllowed returns an error if the Write permission is not present in an acl
 func (a *Handler) WriteAllowed(ctx context.Context, acl *idm.ACL) error {
 
-	if claims, ok := ctx.Value(claim.ContextKey).(claim.Claims); ok {
-		if claims.Profile == common.PydioProfileAdmin { // Always allow for admins
-			return nil
-		}
+	// Always allow for admins
+	if claims, ok := claim.FromContext(ctx); ok && claims.Profile == common.PydioProfileAdmin {
+		return nil
 	}
 
 	if acl.NodeID == "" && acl.RoleID != "" {
@@ -62,7 +61,7 @@ func (a *Handler) WriteAllowed(ctx context.Context, acl *idm.ACL) error {
 		return a.CheckNode(ctx, acl.NodeID, acl.Action)
 
 	} else {
-		log.Logger(ctx).Error("Cannot check acl right for this request - probably a workspace wide acl delete query - letting it through", zap.Any("acl", acl))
+		log.Logger(ctx).Warn("Cannot check acl right for this request - probably a workspace wide acl delete query - letting it through", zap.Any("acl", acl))
 	}
 
 	return nil
@@ -72,34 +71,25 @@ func (a *Handler) WriteAllowed(ctx context.Context, acl *idm.ACL) error {
 // in the current context
 func (a *Handler) CheckRole(ctx context.Context, roleID string) error {
 
-	cli := idm.NewRoleServiceClient(grpc.GetClientConnFromCtx(ctx, common.ServiceRole))
+	cli := idmc.RoleServiceClient(ctx)
 	q, _ := anypb.New(&idm.RoleSingleQuery{Uuid: []string{roleID}})
 	stream, err := cli.SearchRole(ctx, &idm.SearchRoleRequest{Query: &service.Query{SubQueries: []*anypb.Any{q}}})
-	if err != nil {
-		return err
-	}
-	defer stream.CloseSend()
 	var role *idm.Role
-	for {
-		resp, e := stream.Recv()
-		if e != nil {
-			break
-		}
-		if resp == nil {
-			continue
-		}
-		role = resp.Role
-		break
+	if e := commons.ForEach(stream, err, func(t *idm.SearchRoleResponse) error {
+		role = t.GetRole()
+		return nil
+	}); e != nil {
+		return errors.Tag(e, errors.StatusForbidden)
 	}
 	if role == nil {
-		return errors.NotFound(common.ServiceAcl, "Role not found!")
+		return errors.WithMessagef(errors.StatusForbidden, "role %s does not exists", roleID)
 	}
 	if !a.MatchPolicies(ctx, role.Uuid, role.Policies, service.ResourcePolicyAction_WRITE) {
 		subjects, _ := auth.SubjectsForResourcePolicyQuery(ctx, nil)
-		log.Logger(ctx).Error("Error while checking role from ACL rest : ", zap.Any("role", role), log.DangerouslyZapSmallSlice("subjects", subjects))
-		return errors.Forbidden(common.ServiceAcl, "You are not allowed to edit this role ACLs")
+		log.Logger(ctx).Debug("Error while checking role from ACL rest : ", zap.Any("role", role), log.DangerouslyZapSmallSlice("subjects", subjects))
+		return errors.WithMessage(errors.RoleACLsNotEditable, "while checking role from ACL")
 	}
-	log.Logger(ctx).Info("Checking acl write on role PASSED", zap.Any("roleId", roleID))
+	log.Logger(ctx).Debug("Checking acl write on role PASSED", zap.String("roleId", roleID))
 	return nil
 
 }
@@ -109,11 +99,10 @@ func (a *Handler) CheckNode(ctx context.Context, nodeID string, action *idm.ACLA
 
 	accessList, err := permissions.AccessListFromContextClaims(ctx)
 	if err != nil {
-		return err
+		return errors.Tag(err, errors.StatusForbidden)
 	}
 
-	treeClient := tree.NewNodeProviderClient(grpc.GetClientConnFromCtx(a.ctx, common.ServiceTree))
-
+	treeClient := treec.NodeProviderClient(ctx)
 	ancestorStream, lErr := treeClient.ListNodes(ctx, &tree.ListNodesRequest{
 		Node:      &tree.Node{Uuid: nodeID},
 		Ancestors: true,
@@ -121,19 +110,17 @@ func (a *Handler) CheckNode(ctx context.Context, nodeID string, action *idm.ACLA
 	if lErr != nil {
 		return lErr
 	}
-	defer ancestorStream.CloseSend()
 	parentNodes := []*tree.Node{{Uuid: nodeID}}
 	for {
 		parent, e := ancestorStream.Recv()
 		if e != nil {
-			if e == io.EOF || e == io.ErrUnexpectedEOF {
+			if errors.IsStreamFinished(e) {
 				break
-			} else {
-				if strings.Contains(e.Error(), "404") {
-					return nil
-				}
-				return e
 			}
+			if errors.Is(e, errors.NodeNotFound) { // todo - recheck this case
+				return nil
+			}
+			return e
 		}
 		if parent == nil {
 			continue
@@ -142,12 +129,12 @@ func (a *Handler) CheckNode(ctx context.Context, nodeID string, action *idm.ACLA
 	}
 
 	// Update Access List with resolved virtual nodes
-	virtualManager := abstract.GetVirtualNodesManager(a.ctx)
-	for _, vNode := range virtualManager.ListNodes() {
+	virtualManager := abstract.GetVirtualProvider()
+	for _, vNode := range virtualManager.ListNodes(ctx) {
 		if aclNodeMask, has := accessList.GetNodesBitmasks()[vNode.Uuid]; has {
 			if resolvedRoot, err := virtualManager.ResolveInContext(ctx, vNode, false); err == nil {
 				log.Logger(ctx).Debug("Updating Access List with resolved node Uuid", zap.Any("virtual", vNode), zap.Any("resolved", resolvedRoot))
-				accessList.GetNodesBitmasks()[resolvedRoot.Uuid] = aclNodeMask
+				accessList.AddNodeBitmask(resolvedRoot.Uuid, aclNodeMask)
 			}
 		}
 	}
@@ -162,8 +149,7 @@ func (a *Handler) CheckNode(ctx context.Context, nodeID string, action *idm.ACLA
 	}
 
 	if !check {
-		log.Logger(ctx).Error("Checking acl on parent nodes FAILED", zap.Any("action", action), accessList.Zap(), log.DangerouslyZapSmallSlice("parentNodes", parentNodes))
-		return errors.Forbidden(common.ServiceAcl, "You are not authorized to open rights on this node")
+		return errors.WithDetails(errors.WithMessage(errors.StatusForbidden, "you are not authorized to open rights on this node"), "action", action)
 	}
 
 	return nil

@@ -2,7 +2,7 @@ syntax="proto3";
 
 package log;
 
-option go_package="github.com/pydio/cells/common/proto/log";
+option go_package="github.com/pydio/cells/v5/common/proto/log";
 
 service LogRecorder {
     // PutLog adds received log messages to the corresponding log repository.
@@ -59,6 +59,7 @@ message LogMessage {
     // Tree Info
     string NodeUuid = 13;
     string NodePath = 14;
+    int64 TransferSize = 27;
     string WsUuid = 15;
     string WsScope = 17;
 

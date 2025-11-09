@@ -26,66 +26,55 @@ package docstore
 
 import (
 	"context"
-	"github.com/pydio/cells/v4/common/dao"
-	"github.com/pydio/cells/v4/common/dao/boltdb"
-	"github.com/pydio/cells/v4/common/dao/mongodb"
-	"github.com/pydio/cells/v4/common/proto/docstore"
+
+	"github.com/pydio/cells/v5/common/proto/docstore"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/service"
+)
+
+var (
+	Drivers = service.StorageDrivers{}
 )
 
 type DAO interface {
-	dao.DAO
-	PutDocument(storeID string, doc *docstore.Document) error
-	GetDocument(storeID string, docId string) (*docstore.Document, error)
-	DeleteDocument(storeID string, docID string) error
-	DeleteDocuments(storeID string, query *docstore.DocumentQuery) (int, error)
-	QueryDocuments(storeID string, query *docstore.DocumentQuery) (chan *docstore.Document, error)
-	CountDocuments(storeID string, query *docstore.DocumentQuery) (int, error)
-	ListStores() ([]string, error)
+	PutDocument(ctx context.Context, storeID string, doc *docstore.Document) error
+	GetDocument(ctx context.Context, storeID string, docId string) (*docstore.Document, error)
+	DeleteDocument(ctx context.Context, storeID string, docID string) error
+	DeleteDocuments(ctx context.Context, storeID string, query *docstore.DocumentQuery) (int, error)
+	QueryDocuments(ctx context.Context, storeID string, query *docstore.DocumentQuery) (chan *docstore.Document, error)
+	CountDocuments(ctx context.Context, storeID string, query *docstore.DocumentQuery) (int, error)
+	ListStores(ctx context.Context) ([]string, error)
+	CloseAndDrop(ctx context.Context) error
 	Reset() error
 }
 
-func NewDAO(ctx context.Context, o dao.DAO) (dao.DAO, error) {
-	switch v := o.(type) {
-	case boltdb.DAO:
-		return NewBleveEngine(v, false)
-	case mongodb.DAO:
-		return &mongoImpl{
-			DAO: v,
-		}, nil
-	}
-	return nil, dao.UnsupportedDriver(o)
-}
+func Migrate(ctx, fromCtx, toCtx context.Context, dryRun bool, status chan service.MigratorStatus) (map[string]int, error) {
 
-func Migrate(f dao.DAO, t dao.DAO, dryRun bool, status chan dao.MigratorStatus) (map[string]int, error) {
-	ctx := context.Background()
 	out := map[string]int{
 		"Stores":    0,
 		"Documents": 0,
 	}
 	var from, to DAO
-	if df, e := NewDAO(ctx, f); e == nil {
-		from = df.(DAO)
-	} else {
-		return out, e
+	var e error
+	if from, e = manager.Resolve[DAO](fromCtx); e != nil {
+		return nil, e
 	}
-	if dt, e := NewDAO(ctx, t); e == nil {
-		to = dt.(DAO)
-	} else {
-		return out, e
+	if to, e = manager.Resolve[DAO](toCtx); e != nil {
+		return nil, e
 	}
-	ss, e := from.ListStores()
+	ss, e := from.ListStores(ctx)
 	if e != nil {
 		return nil, e
 	}
 	for _, store := range ss {
-		docs, e := from.QueryDocuments(store, nil)
+		docs, e := from.QueryDocuments(ctx, store, nil)
 		if e != nil {
 			return nil, e
 		}
 		for doc := range docs {
 			if dryRun {
 				out["Documents"]++
-			} else if er := to.PutDocument(store, doc); er == nil {
+			} else if er := to.PutDocument(ctx, store, doc); er == nil {
 				out["Documents"]++
 			} else {
 				continue

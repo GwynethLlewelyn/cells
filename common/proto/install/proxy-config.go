@@ -21,14 +21,46 @@
 package install
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
 
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/net"
+	"github.com/pydio/cells/v5/common/errors"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/net"
 )
 
+func (r *Rule) Accept() bool {
+	return r.Effect == RuleEffect_ACCEPT
+}
+
+func (r *Rule) IngressURI(routeDefault string) string {
+	if r.GetAction() == "Rewrite" {
+		return r.GetValue()
+	} else {
+		return routeDefault
+	}
+}
+
+// Hash computes a unique hash for this site and keep it in cache
+func (m *ProxyConfig) Hash() string {
+	if m.ComputedHash == "" {
+		var ids []string
+		ids = append(ids, m.GetBindURLs()...)
+		if m.ReverseProxyURL != "" {
+			ids = append(ids, m.ReverseProxyURL)
+		}
+		s := strings.Join(ids, ",")
+		hash := md5.New()
+		hash.Write([]byte(s))
+		m.ComputedHash = hex.EncodeToString(hash.Sum(nil))
+	}
+	return m.ComputedHash
+}
+
+// GetDefaultBindURL builds a full http[s] URL from the first Binds value
 func (m *ProxyConfig) GetDefaultBindURL() string {
 	scheme := "http"
 	if m.TLSConfig != nil {
@@ -37,6 +69,7 @@ func (m *ProxyConfig) GetDefaultBindURL() string {
 	return fmt.Sprintf("%s://%s", scheme, m.Binds[0])
 }
 
+// GetBindURLs builds full http[s] URL from Binds, eventually resolving ":port" to "localhost:port"
 func (m *ProxyConfig) GetBindURLs() (addresses []string) {
 	scheme := "http"
 	if m.HasTLS() {
@@ -45,11 +78,78 @@ func (m *ProxyConfig) GetBindURLs() (addresses []string) {
 	for _, b := range m.Binds {
 		host := b
 		if strings.HasPrefix(b, ":") {
-			host = "localhost" + b
+			host = "0.0.0.0" + b
 		}
 		addresses = append(addresses, fmt.Sprintf("%s://%s", scheme, host))
 	}
 	return
+}
+
+// HasRouting returns if there is a need for writing a specific routing table
+func (m *ProxyConfig) HasRouting() bool {
+	// Nothing defined - special case for compatibility
+	if len(m.Routing) == 0 {
+		return false
+	}
+	// Only one route with "*" => Accept
+	if len(m.Routing) == 1 && m.Routing[0].Matcher == "*" && m.Routing[0].Effect == RuleEffect_ACCEPT {
+		return false
+	}
+	return true
+}
+
+func (m *ProxyConfig) DefaultRouting() (all *Rule, other []*Rule) {
+	all = &Rule{Effect: RuleEffect_DENY}
+	if !m.HasRouting() {
+		all = &Rule{Matcher: "*", Effect: RuleEffect_ACCEPT}
+	}
+	// Detect a default rule and stack other rules
+	for _, r := range m.Routing {
+		if r.Matcher == "*" {
+			if r.Effect == RuleEffect_ACCEPT {
+				all.Effect = RuleEffect_ACCEPT
+			}
+			continue
+		}
+		other = append(other, r)
+	}
+	return
+}
+
+// FindRouteRule resolves a final rule for a given route id
+func (m *ProxyConfig) FindRouteRule(routeID string) *Rule {
+	finalRule, matchRoutes := m.DefaultRouting()
+	// Match against specific rules
+	for _, r := range matchRoutes {
+		if r.Matcher == routeID {
+			finalRule = r
+			break
+		}
+	}
+	return finalRule
+}
+
+// GetExternalUrls computes external URLs from reverse proxy and from Binds Hostname
+func (m *ProxyConfig) GetExternalUrls() map[string]*url.URL {
+	uniques := make(map[string]*url.URL)
+	if ext := m.GetReverseProxyURL(); ext != "" {
+		if u, e := m.canonicalUrl(ext); e == nil {
+			uniques[u.Host] = u
+		}
+	}
+	for _, b := range m.GetBindURLs() {
+		u, e := m.canonicalUrl(b)
+		if e != nil {
+			continue
+		}
+		uniques[u.Host] = u
+		if u.Hostname() == "0.0.0.0" {
+			for _, exp := range m.expandBindAll(u) {
+				uniques[exp.Host] = exp
+			}
+		}
+	}
+	return uniques
 }
 
 func (m *ProxyConfig) canonicalUrl(s string) (*url.URL, error) {
@@ -78,28 +178,6 @@ func (m *ProxyConfig) expandBindAll(u *url.URL) []*url.URL {
 		}
 	}
 	return out
-}
-
-func (m *ProxyConfig) GetExternalUrls() map[string]*url.URL {
-	uniques := make(map[string]*url.URL)
-	if ext := m.GetReverseProxyURL(); ext != "" {
-		if u, e := m.canonicalUrl(ext); e == nil {
-			uniques[u.Host] = u
-		}
-	}
-	for _, b := range m.GetBindURLs() {
-		u, e := m.canonicalUrl(b)
-		if e != nil {
-			continue
-		}
-		uniques[u.Host] = u
-		if u.Hostname() == "0.0.0.0" {
-			for _, exp := range m.expandBindAll(u) {
-				uniques[exp.Host] = exp
-			}
-		}
-	}
-	return uniques
 }
 
 func (m *ProxyConfig) HasTLS() bool {
@@ -137,25 +215,57 @@ func (m *ProxyConfig) UnmarshalFromMap(data map[string]interface{}, getKey func(
 				if d, o := v.(string); o {
 					m.Binds = append(m.Binds, d)
 				} else {
-					return fmt.Errorf("unexpected type for Binds item (expected string)")
+					return errors.New("unexpected type for Binds item (expected string)")
 				}
 			}
 		} else {
-			return fmt.Errorf("unexpected type for Binds (expected array)")
+			return errors.New("unexpected type for Binds (expected array)")
+		}
+	}
+	if u, o := data[getKey("Routing")]; o {
+		if s, o := u.([]interface{}); o {
+			for _, v := range s {
+				// Remarshal and unmarshal as Route
+				mm, _ := json.Marshal(v)
+				rule := &Rule{}
+				if er := json.Unmarshal(mm, rule); er == nil {
+					m.Routing = append(m.Routing, rule)
+				} else {
+					return errors.New("unexpected type for Routes item (expected Route type)")
+				}
+			}
+		} else {
+			return errors.New("unexpected type for Routes (expected array)")
+		}
+	}
+	if u, o := data[getKey("HeaderMods")]; o {
+		if s, o := u.([]interface{}); o {
+			for _, v := range s {
+				// Remarshal and unmarshal as HeaderMod
+				mm, _ := json.Marshal(v)
+				rule := &HeaderMod{}
+				if er := json.Unmarshal(mm, rule); er == nil {
+					m.HeaderMods = append(m.HeaderMods, rule)
+				} else {
+					return errors.New("unexpected type for HeaderMods item (expected HeaderMod type)")
+				}
+			}
+		} else {
+			return errors.New("unexpected type for HeaderMods (expected array)")
 		}
 	}
 	if u, o := data[getKey("SSLRedirect")]; o {
 		if b, o := u.(bool); o {
 			m.SSLRedirect = b
 		} else {
-			return fmt.Errorf("unexpected type for SSLRedirect (expected bool)")
+			return errors.New("unexpected type for SSLRedirect (expected bool)")
 		}
 	}
 	if u, o := data[getKey("ReverseProxyURL")]; o {
 		if b, o := u.(string); o {
 			m.ReverseProxyURL = b
 		} else {
-			return fmt.Errorf("unexpected type for ReverseProxyURL (expected string)")
+			return errors.New("unexpected type for ReverseProxyURL (expected string)")
 		}
 	}
 	if t, o := data[getKey("TLSConfig")]; o {
@@ -165,13 +275,13 @@ func (m *ProxyConfig) UnmarshalFromMap(data map[string]interface{}, getKey func(
 				uu := mapInterface2mapString(u)
 				r, e := json.Marshal(uu)
 				if e != nil {
-					return fmt.Errorf("cannot remarsh data")
+					return errors.New("cannot remarsh data")
 				}
 				selfSigned := TLSSelfSigned{}
 				if e := json.Unmarshal(r, &selfSigned); e == nil {
 					m.TLSConfig = &ProxyConfig_SelfSigned{SelfSigned: &selfSigned}
 				} else {
-					return fmt.Errorf("unexpected type for SelfSigned (expected TLSSelfSigned)")
+					return errors.New("unexpected type for SelfSigned (expected TLSSelfSigned)")
 				}
 			} else if u, o := tls[getKey("LetsEncrypt")]; o {
 				uu := mapInterface2mapString(u)
@@ -180,7 +290,7 @@ func (m *ProxyConfig) UnmarshalFromMap(data map[string]interface{}, getKey func(
 				if e := json.Unmarshal(r, &le); e == nil {
 					m.TLSConfig = &ProxyConfig_LetsEncrypt{LetsEncrypt: le}
 				} else {
-					return fmt.Errorf("unexpected type for SelfSigned (expected TLSSelfSigned)")
+					return errors.New("unexpected type for SelfSigned (expected TLSSelfSigned)")
 				}
 			} else if u, o := tls[getKey("Certificate")]; o {
 				uu := mapInterface2mapString(u)
@@ -189,7 +299,7 @@ func (m *ProxyConfig) UnmarshalFromMap(data map[string]interface{}, getKey func(
 				if e := json.Unmarshal(r, &cert); e == nil {
 					m.TLSConfig = &ProxyConfig_Certificate{Certificate: cert}
 				} else {
-					return fmt.Errorf("unexpected type for SelfSigned (expected TLSSelfSigned)")
+					return errors.New("unexpected type for SelfSigned (expected TLSSelfSigned)")
 				}
 			}
 		}
@@ -199,7 +309,7 @@ func (m *ProxyConfig) UnmarshalFromMap(data map[string]interface{}, getKey func(
 		if b, o := u.(bool); o {
 			m.Maintenance = b
 		} else {
-			return fmt.Errorf("unexpected type for Maintenance (expected bool)")
+			return errors.New("unexpected type for Maintenance (expected bool)")
 		}
 	}
 	if u, o := data[getKey("MaintenanceConditions")]; o {
@@ -208,11 +318,11 @@ func (m *ProxyConfig) UnmarshalFromMap(data map[string]interface{}, getKey func(
 				if d, o := v.(string); o {
 					m.MaintenanceConditions = append(m.MaintenanceConditions, d)
 				} else {
-					return fmt.Errorf("unexpected type for MaintenanceConditions item (expected string)")
+					return errors.New("unexpected type for MaintenanceConditions item (expected string)")
 				}
 			}
 		} else {
-			return fmt.Errorf("unexpected type for MaintenanceConditions (expected array)")
+			return errors.New("unexpected type for MaintenanceConditions (expected array)")
 		}
 	}
 
@@ -252,4 +362,29 @@ func mapInterface2mapString(in interface{}) map[string]interface{} {
 		return out
 	}
 	return nil
+}
+
+func (m *InstallConfig) GetCleanDsS3Custom() string {
+	if m.DsS3Custom == "" {
+		return m.DsS3Custom
+	}
+	if u, e := url.Parse(m.DsS3Custom); e == nil {
+		if u.Query().Get("minio") == "true" {
+			u.RawQuery = ""
+			return u.String()
+		}
+	}
+	return m.GetDsS3Custom()
+}
+
+func (m *InstallConfig) DetectS3CustomMinio() bool {
+	if m.DsS3Custom == "" {
+		return false
+	}
+	if u, e := url.Parse(m.DsS3Custom); e == nil {
+		if u.Query().Get("minio") == "true" {
+			return true
+		}
+	}
+	return false
 }

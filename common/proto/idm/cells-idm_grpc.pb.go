@@ -312,6 +312,7 @@ type UserServiceClient interface {
 	DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*DeleteUserResponse, error)
 	BindUser(ctx context.Context, in *BindUserRequest, opts ...grpc.CallOption) (*BindUserResponse, error)
 	CountUser(ctx context.Context, in *SearchUserRequest, opts ...grpc.CallOption) (*CountUserResponse, error)
+	SearchOne(ctx context.Context, in *SearchUserRequest, opts ...grpc.CallOption) (*SearchUserResponse, error)
 	SearchUser(ctx context.Context, in *SearchUserRequest, opts ...grpc.CallOption) (UserService_SearchUserClient, error)
 	StreamUser(ctx context.Context, opts ...grpc.CallOption) (UserService_StreamUserClient, error)
 }
@@ -354,6 +355,15 @@ func (c *userServiceClient) BindUser(ctx context.Context, in *BindUserRequest, o
 func (c *userServiceClient) CountUser(ctx context.Context, in *SearchUserRequest, opts ...grpc.CallOption) (*CountUserResponse, error) {
 	out := new(CountUserResponse)
 	err := c.cc.Invoke(ctx, "/idm.UserService/CountUser", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) SearchOne(ctx context.Context, in *SearchUserRequest, opts ...grpc.CallOption) (*SearchUserResponse, error) {
+	out := new(SearchUserResponse)
+	err := c.cc.Invoke(ctx, "/idm.UserService/SearchOne", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +441,7 @@ type UserServiceServer interface {
 	DeleteUser(context.Context, *DeleteUserRequest) (*DeleteUserResponse, error)
 	BindUser(context.Context, *BindUserRequest) (*BindUserResponse, error)
 	CountUser(context.Context, *SearchUserRequest) (*CountUserResponse, error)
+	SearchOne(context.Context, *SearchUserRequest) (*SearchUserResponse, error)
 	SearchUser(*SearchUserRequest, UserService_SearchUserServer) error
 	StreamUser(UserService_StreamUserServer) error
 	mustEmbedUnimplementedUserServiceServer()
@@ -451,6 +462,9 @@ func (UnimplementedUserServiceServer) BindUser(context.Context, *BindUserRequest
 }
 func (UnimplementedUserServiceServer) CountUser(context.Context, *SearchUserRequest) (*CountUserResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CountUser not implemented")
+}
+func (UnimplementedUserServiceServer) SearchOne(context.Context, *SearchUserRequest) (*SearchUserResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SearchOne not implemented")
 }
 func (UnimplementedUserServiceServer) SearchUser(*SearchUserRequest, UserService_SearchUserServer) error {
 	return status.Errorf(codes.Unimplemented, "method SearchUser not implemented")
@@ -543,6 +557,24 @@ func _UserService_CountUser_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_SearchOne_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SearchOne(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/idm.UserService/SearchOne",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SearchOne(ctx, req.(*SearchUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _UserService_SearchUser_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SearchUserRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -612,6 +644,10 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CountUser",
 			Handler:    _UserService_CountUser_Handler,
+		},
+		{
+			MethodName: "SearchOne",
+			Handler:    _UserService_SearchOne_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
@@ -888,11 +924,18 @@ var WorkspaceService_ServiceDesc = grpc.ServiceDesc{
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ACLServiceClient interface {
+	// Insert a new ACL
 	CreateACL(ctx context.Context, in *CreateACLRequest, opts ...grpc.CallOption) (*CreateACLResponse, error)
+	// Set an expiration date that invalidates an ACL without deleting it
 	ExpireACL(ctx context.Context, in *ExpireACLRequest, opts ...grpc.CallOption) (*ExpireACLResponse, error)
+	// Definitely delete an ACL
 	DeleteACL(ctx context.Context, in *DeleteACLRequest, opts ...grpc.CallOption) (*DeleteACLResponse, error)
+	// Search ACLs by Query or Expiration period
 	SearchACL(ctx context.Context, in *SearchACLRequest, opts ...grpc.CallOption) (ACLService_SearchACLClient, error)
+	// Stream version of Search ACL
 	StreamACL(ctx context.Context, opts ...grpc.CallOption) (ACLService_StreamACLClient, error)
+	// Restore ACLs based on Query and Expiration period
+	RestoreACL(ctx context.Context, in *RestoreACLRequest, opts ...grpc.CallOption) (*RestoreACLResponse, error)
 }
 
 type aCLServiceClient struct {
@@ -993,15 +1036,31 @@ func (x *aCLServiceStreamACLClient) Recv() (*SearchACLResponse, error) {
 	return m, nil
 }
 
+func (c *aCLServiceClient) RestoreACL(ctx context.Context, in *RestoreACLRequest, opts ...grpc.CallOption) (*RestoreACLResponse, error) {
+	out := new(RestoreACLResponse)
+	err := c.cc.Invoke(ctx, "/idm.ACLService/RestoreACL", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ACLServiceServer is the server API for ACLService service.
 // All implementations must embed UnimplementedACLServiceServer
 // for forward compatibility
 type ACLServiceServer interface {
+	// Insert a new ACL
 	CreateACL(context.Context, *CreateACLRequest) (*CreateACLResponse, error)
+	// Set an expiration date that invalidates an ACL without deleting it
 	ExpireACL(context.Context, *ExpireACLRequest) (*ExpireACLResponse, error)
+	// Definitely delete an ACL
 	DeleteACL(context.Context, *DeleteACLRequest) (*DeleteACLResponse, error)
+	// Search ACLs by Query or Expiration period
 	SearchACL(*SearchACLRequest, ACLService_SearchACLServer) error
+	// Stream version of Search ACL
 	StreamACL(ACLService_StreamACLServer) error
+	// Restore ACLs based on Query and Expiration period
+	RestoreACL(context.Context, *RestoreACLRequest) (*RestoreACLResponse, error)
 	mustEmbedUnimplementedACLServiceServer()
 }
 
@@ -1023,6 +1082,9 @@ func (UnimplementedACLServiceServer) SearchACL(*SearchACLRequest, ACLService_Sea
 }
 func (UnimplementedACLServiceServer) StreamACL(ACLService_StreamACLServer) error {
 	return status.Errorf(codes.Unimplemented, "method StreamACL not implemented")
+}
+func (UnimplementedACLServiceServer) RestoreACL(context.Context, *RestoreACLRequest) (*RestoreACLResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RestoreACL not implemented")
 }
 func (UnimplementedACLServiceServer) mustEmbedUnimplementedACLServiceServer() {}
 
@@ -1138,6 +1200,24 @@ func (x *aCLServiceStreamACLServer) Recv() (*SearchACLRequest, error) {
 	return m, nil
 }
 
+func _ACLService_RestoreACL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreACLRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ACLServiceServer).RestoreACL(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/idm.ACLService/RestoreACL",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ACLServiceServer).RestoreACL(ctx, req.(*RestoreACLRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ACLService_ServiceDesc is the grpc.ServiceDesc for ACLService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1156,6 +1236,10 @@ var ACLService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteACL",
 			Handler:    _ACLService_DeleteACL_Handler,
+		},
+		{
+			MethodName: "RestoreACL",
+			Handler:    _ACLService_RestoreACL_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
@@ -1430,6 +1514,7 @@ type PolicyEngineServiceClient interface {
 	IsAllowed(ctx context.Context, in *PolicyEngineRequest, opts ...grpc.CallOption) (*PolicyEngineResponse, error)
 	StorePolicyGroup(ctx context.Context, in *StorePolicyGroupRequest, opts ...grpc.CallOption) (*StorePolicyGroupResponse, error)
 	ListPolicyGroups(ctx context.Context, in *ListPolicyGroupsRequest, opts ...grpc.CallOption) (*ListPolicyGroupsResponse, error)
+	StreamPolicyGroups(ctx context.Context, in *ListPolicyGroupsRequest, opts ...grpc.CallOption) (PolicyEngineService_StreamPolicyGroupsClient, error)
 	DeletePolicyGroup(ctx context.Context, in *DeletePolicyGroupRequest, opts ...grpc.CallOption) (*DeletePolicyGroupResponse, error)
 }
 
@@ -1468,6 +1553,38 @@ func (c *policyEngineServiceClient) ListPolicyGroups(ctx context.Context, in *Li
 	return out, nil
 }
 
+func (c *policyEngineServiceClient) StreamPolicyGroups(ctx context.Context, in *ListPolicyGroupsRequest, opts ...grpc.CallOption) (PolicyEngineService_StreamPolicyGroupsClient, error) {
+	stream, err := c.cc.NewStream(ctx, &PolicyEngineService_ServiceDesc.Streams[0], "/idm.PolicyEngineService/StreamPolicyGroups", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &policyEngineServiceStreamPolicyGroupsClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type PolicyEngineService_StreamPolicyGroupsClient interface {
+	Recv() (*PolicyGroup, error)
+	grpc.ClientStream
+}
+
+type policyEngineServiceStreamPolicyGroupsClient struct {
+	grpc.ClientStream
+}
+
+func (x *policyEngineServiceStreamPolicyGroupsClient) Recv() (*PolicyGroup, error) {
+	m := new(PolicyGroup)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 func (c *policyEngineServiceClient) DeletePolicyGroup(ctx context.Context, in *DeletePolicyGroupRequest, opts ...grpc.CallOption) (*DeletePolicyGroupResponse, error) {
 	out := new(DeletePolicyGroupResponse)
 	err := c.cc.Invoke(ctx, "/idm.PolicyEngineService/DeletePolicyGroup", in, out, opts...)
@@ -1484,6 +1601,7 @@ type PolicyEngineServiceServer interface {
 	IsAllowed(context.Context, *PolicyEngineRequest) (*PolicyEngineResponse, error)
 	StorePolicyGroup(context.Context, *StorePolicyGroupRequest) (*StorePolicyGroupResponse, error)
 	ListPolicyGroups(context.Context, *ListPolicyGroupsRequest) (*ListPolicyGroupsResponse, error)
+	StreamPolicyGroups(*ListPolicyGroupsRequest, PolicyEngineService_StreamPolicyGroupsServer) error
 	DeletePolicyGroup(context.Context, *DeletePolicyGroupRequest) (*DeletePolicyGroupResponse, error)
 	mustEmbedUnimplementedPolicyEngineServiceServer()
 }
@@ -1500,6 +1618,9 @@ func (UnimplementedPolicyEngineServiceServer) StorePolicyGroup(context.Context, 
 }
 func (UnimplementedPolicyEngineServiceServer) ListPolicyGroups(context.Context, *ListPolicyGroupsRequest) (*ListPolicyGroupsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListPolicyGroups not implemented")
+}
+func (UnimplementedPolicyEngineServiceServer) StreamPolicyGroups(*ListPolicyGroupsRequest, PolicyEngineService_StreamPolicyGroupsServer) error {
+	return status.Errorf(codes.Unimplemented, "method StreamPolicyGroups not implemented")
 }
 func (UnimplementedPolicyEngineServiceServer) DeletePolicyGroup(context.Context, *DeletePolicyGroupRequest) (*DeletePolicyGroupResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeletePolicyGroup not implemented")
@@ -1571,6 +1692,27 @@ func _PolicyEngineService_ListPolicyGroups_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PolicyEngineService_StreamPolicyGroups_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ListPolicyGroupsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(PolicyEngineServiceServer).StreamPolicyGroups(m, &policyEngineServiceStreamPolicyGroupsServer{stream})
+}
+
+type PolicyEngineService_StreamPolicyGroupsServer interface {
+	Send(*PolicyGroup) error
+	grpc.ServerStream
+}
+
+type policyEngineServiceStreamPolicyGroupsServer struct {
+	grpc.ServerStream
+}
+
+func (x *policyEngineServiceStreamPolicyGroupsServer) Send(m *PolicyGroup) error {
+	return x.ServerStream.SendMsg(m)
+}
+
 func _PolicyEngineService_DeletePolicyGroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeletePolicyGroupRequest)
 	if err := dec(in); err != nil {
@@ -1613,6 +1755,12 @@ var PolicyEngineService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PolicyEngineService_DeletePolicyGroup_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamPolicyGroups",
+			Handler:       _PolicyEngineService_StreamPolicyGroups_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "cells-idm.proto",
 }

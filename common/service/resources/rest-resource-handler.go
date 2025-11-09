@@ -27,11 +27,11 @@ import (
 
 	"github.com/ory/ladon"
 	"github.com/ory/ladon/manager/memory"
-	"github.com/pydio/cells/v4/common/service/errors"
 
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/proto/rest"
-	"github.com/pydio/cells/v4/common/proto/service"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/rest"
+	"github.com/pydio/cells/v5/common/proto/service"
 )
 
 // PoliciesLoaderFunc is a signature for a function that can load policies from a given resource
@@ -51,11 +51,11 @@ type ResourceProviderHandler struct {
 func (r *ResourceProviderHandler) IsAllowed(ctx context.Context, resourceId string, action service.ResourcePolicyAction, resourceClient interface{}) (err error) {
 
 	if r.PoliciesLoader == nil {
-		return errors.InternalServerError(r.ServiceName, "PoliciesLoader function is not implemented")
+		return errors.WithMessage(errors.StatusInternalServerError, "PoliciesLoader function is not implemented")
 	}
 
 	if resourceId == "" {
-		return errors.NotFound(r.ServiceName, "Empty resourceId")
+		return errors.WithMessage(errors.InvalidParameters, "empty resourceId")
 	}
 
 	var policies []*service.ResourcePolicy
@@ -66,7 +66,7 @@ func (r *ResourceProviderHandler) IsAllowed(ctx context.Context, resourceId stri
 	if r.MatchPolicies(ctx, resourceId, policies, action) {
 		return nil
 	} else {
-		return errors.Forbidden(r.ServiceName, fmt.Sprintf("Action %s is not allowed on %s %s", action.String(), r.ResourceName, resourceId))
+		return errors.WithMessagef(errors.StatusForbidden, "Action %s is not allowed on %s %s", action.String(), r.ResourceName, resourceId)
 	}
 
 }
@@ -85,7 +85,7 @@ func (r *ResourceProviderHandler) RestToServiceResourcePolicy(ctx context.Contex
 	var subjects []string
 	var err error
 	if subjects, err = auth.SubjectsForResourcePolicyQuery(ctx, input); err != nil {
-		return output, errors.Forbidden(r.ServiceName, err.Error())
+		return output, errors.Tag(errors.StatusForbidden, err)
 	}
 
 	if input != nil && input.Type == rest.ResourcePolicyQuery_NONE {
@@ -122,7 +122,7 @@ func (r *ResourceProviderHandler) MatchPolicies(ctx context.Context, resourceId 
 			Effect:    pol.Effect.String(),
 			Subjects:  []string{pol.Subject},
 		}
-		warden.Manager.Create(ladonPol)
+		_ = warden.Manager.Create(ctx, ladonPol)
 	}
 	if len(subjects) == 0 {
 		subjects, _ = auth.SubjectsForResourcePolicyQuery(ctx, nil)
@@ -135,7 +135,7 @@ func (r *ResourceProviderHandler) MatchPolicies(ctx context.Context, resourceId 
 			Subject:  subject,
 			Action:   action.String(),
 		}
-		if err := warden.IsAllowed(request); err != nil && err == ladon.ErrRequestForcefullyDenied {
+		if err := warden.IsAllowed(ctx, request); err != nil && err == ladon.ErrRequestForcefullyDenied {
 			return false
 		} else if err == nil {
 			allow = true

@@ -21,17 +21,15 @@
 package cmd
 
 import (
-	"context"
 	"os"
-	"time"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-	"github.com/pydio/cells/v4/common/service/context/metadata"
-
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/sync"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/proto/sync"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
 
 var (
@@ -59,12 +57,10 @@ EXAMPLES
 			cmd.Help()
 			return
 		}
-		syncService := "pydio.grpc.data.sync." + resyncDsName
+		syncService := common.ServiceDataSyncGRPC_ + resyncDsName
 
-		cli := sync.NewSyncEndpointClient(grpc.GetClientConnFromCtx(cmd.Context(), syncService))
-		c, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		c = metadata.WithUserNameMetadata(c, common.PydioSystemUsername)
+		cli := sync.NewSyncEndpointClient(grpc.ResolveConn(cmd.Context(), syncService, longGrpcCallTimeout()))
+		c := propagator.WithUserNameMetadata(cmd.Context(), common.PydioContextUserKey, common.PydioSystemUsername)
 		resp, err := cli.TriggerResync(c, &sync.ResyncRequest{Path: "/"})
 		if err != nil {
 			cmd.Println("Resync Failed: " + err.Error())
@@ -73,6 +69,7 @@ EXAMPLES
 		cmd.Println("Resync Triggered.")
 		if resp.JsonDiff != "" {
 			cmd.Println("Result: " + resp.JsonDiff)
+			cmd.Println(promptui.IconWarn + " If result contains newly created files, you should now launch '" + os.Args[0] + " admin datasource rehash' command.")
 		}
 	},
 }

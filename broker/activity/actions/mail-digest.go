@@ -23,23 +23,26 @@ package actions
 import (
 	"context"
 	"strings"
+	"time"
 
-	"github.com/pydio/cells/v4/common/client/grpc"
-
-	activity2 "github.com/pydio/cells/v4/broker/activity"
-	"github.com/pydio/cells/v4/broker/activity/render"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/auth"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/forms"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/activity"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/mailer"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/i18n"
-	"github.com/pydio/cells/v4/scheduler/actions"
+	activity2 "github.com/pydio/cells/v5/broker/activity"
+	l "github.com/pydio/cells/v5/broker/activity/lang"
+	"github.com/pydio/cells/v5/broker/activity/render"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/auth"
+	"github.com/pydio/cells/v5/common/client/grpc"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/config/routing"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/forms"
+	"github.com/pydio/cells/v5/common/permissions"
+	"github.com/pydio/cells/v5/common/proto/activity"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/i18n/languages"
+	"github.com/pydio/cells/v5/scheduler/actions"
 )
 
 const (
@@ -47,12 +50,8 @@ const (
 )
 
 type MailDigestAction struct {
-	common.RuntimeHolder
-	mailerClient   mailer.MailerServiceClient
-	activityClient activity.ActivityServiceClient
-	userClient     idm.UserServiceClient
-	dryRun         bool
-	dryMail        string
+	dryRun  bool
+	dryMail string
 }
 
 // GetDescription returns the action description
@@ -60,7 +59,7 @@ func (m *MailDigestAction) GetDescription(lang ...string) actions.ActionDescript
 	return actions.ActionDescription{
 		ID:                digestActionName,
 		Label:             "Email Digest",
-		Icon:              "email",
+		Icon:              "email-newsletter",
 		Category:          actions.ActionCategoryNotify,
 		InputDescription:  "Single-selection of one user",
 		OutputDescription: "Returns unchanged input",
@@ -71,7 +70,7 @@ func (m *MailDigestAction) GetDescription(lang ...string) actions.ActionDescript
 }
 
 // GetParametersForm returns an UX Form
-func (m *MailDigestAction) GetParametersForm() *forms.Form {
+func (m *MailDigestAction) GetParametersForm(context.Context) *forms.Form {
 	return nil
 }
 
@@ -81,30 +80,34 @@ func (m *MailDigestAction) GetName() string {
 }
 
 // Init passes parameters to a newly created instance.
-func (m *MailDigestAction) Init(job *jobs.Job, action *jobs.Action) error {
+func (m *MailDigestAction) Init(ctx context.Context, job *jobs.Job, action *jobs.Action) error {
 	if dR, ok := action.Parameters["dryRun"]; ok && dR == "true" {
 		m.dryRun = true
 	}
 	if email, ok := action.Parameters["dryMail"]; ok && email != "" {
 		m.dryMail = email
 	}
-	m.mailerClient = mailer.NewMailerServiceClient(grpc.GetClientConnFromCtx(m.GetRuntimeContext(), common.ServiceMailer))
-	m.activityClient = activity.NewActivityServiceClient(grpc.GetClientConnFromCtx(m.GetRuntimeContext(), common.ServiceActivity))
-	m.userClient = idm.NewUserServiceClient(grpc.GetClientConnFromCtx(m.GetRuntimeContext(), common.ServiceUser))
 	return nil
 }
 
-// Run processes the actual action code
-func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableChannels, input jobs.ActionMessage) (jobs.ActionMessage, error) {
+func mailerClient(ctx context.Context) mailer.MailerServiceClient {
+	return mailer.NewMailerServiceClient(grpc.ResolveConn(ctx, common.ServiceMailerGRPC))
+}
 
-	if !config.Get("services", common.ServiceGrpcNamespace_+common.ServiceMailer, "valid").Default(false).Bool() {
+func activityClient(ctx context.Context) activity.ActivityServiceClient {
+	return activity.NewActivityServiceClient(grpc.ResolveConn(ctx, common.ServiceActivityGRPC))
+}
+
+// Run processes the actual action code
+func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableChannels, input *jobs.ActionMessage) (*jobs.ActionMessage, error) {
+
+	if !config.Get(ctx, "services", common.ServiceMailerGRPC, "valid").Default(false).Bool() {
 		log.Logger(ctx).Debug("Ignoring as no valid mailer was found")
 		return input.WithIgnore(), nil
 	}
 
 	if len(input.Users) == 0 {
-		e := errors.BadRequest(digestActionName, "action should be triggered with one user in input")
-		return input.WithError(e), e
+		return input.AsRunError(errors.WithMessage(errors.InvalidParameters, "action should be triggered with one user in input"))
 	}
 	userObject := input.Users[0]
 	ctx = auth.WithImpersonate(ctx, input.Users[0])
@@ -119,7 +122,7 @@ func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableCh
 	if displayName, has = userObject.Attributes["displayName"]; !has {
 		displayName = userObject.Login
 	}
-	lang := i18n.UserLanguage(ctx, userObject, config.Get())
+	lang := languages.UserLanguage(ctx, userObject)
 
 	query := &activity.StreamActivitiesRequest{
 		Context:     activity.StreamContext_USER_ID,
@@ -128,7 +131,7 @@ func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableCh
 		AsDigest:    true,
 	}
 
-	streamer, e := m.activityClient.StreamActivities(ctx, query)
+	streamer, e := activityClient(ctx).StreamActivities(ctx, query)
 	if e != nil {
 		output := input.WithError(e)
 		return output, e
@@ -154,7 +157,35 @@ func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableCh
 		return input.WithError(err), err
 	}
 
-	md := render.Markdown(digest, activity.SummaryPointOfView_GENERIC, lang)
+	links := render.NewServerLinks()
+	url := config.Get(ctx, "services", "pydio.grpc.mailer", "url").Default(routing.GetDefaultSiteURL(ctx)).String()
+	linkUrl := config.Get(ctx, "services", "pydio.rest.share", "url").Default(url).String()
+	if linkUrl != "" {
+		links.UrlFuncs[render.ServerUrlTypeDocs] = func(object *activity.Object, label string) string {
+			return render.MakeMarkdownLink(linkUrl+"/ws-"+strings.TrimLeft(object.Name, "/"), label)
+		}
+		links.UrlFuncs[render.ServerUrlTypeWorkspaces] = func(object *activity.Object, label string) string {
+			if object.Href != "" {
+				return render.MakeMarkdownLink(linkUrl+"/ws-"+strings.TrimLeft(object.Href, "/"), label)
+			}
+			return label
+		}
+		links.UrlFuncs[render.ServerUrlTypeUsers] = func(object *activity.Object, label string) string {
+			if u, er := permissions.SearchUniqueUser(ctx, object.Name, ""); er == nil && u != nil && u.Attributes != nil && u.Attributes[idm.UserAttrDisplayName] != "" {
+				label = u.Attributes[idm.UserAttrDisplayName]
+			}
+			return label
+		}
+		links.DateInterpreter = func(object *activity.Object, seconds int64) string {
+			layout := "2006-01-02 15:04"
+			if fo := l.T(lang)("DateFormat"); fo != "" {
+				layout = fo
+			}
+			return ` - <span style="color: #BDBDBD">` + time.Unix(seconds, 0).Format(layout) + `</span>`
+		}
+	}
+
+	md := render.Markdown(digest, activity.SummaryPointOfView_GENERIC, lang, links)
 	if strings.TrimSpace(md) == "" {
 		//log.Logger(ctx).Warn("Computed digest is empty, this is not expected (probably an unsupported AS2.ObjectType).")
 		return input.WithIgnore(), nil
@@ -170,7 +201,7 @@ func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableCh
 		user.Address = m.dryMail
 	}
 
-	_, err = m.mailerClient.SendMail(ctx, &mailer.SendMailRequest{
+	_, err = mailerClient(ctx).SendMail(ctx, &mailer.SendMailRequest{
 		Mail: &mailer.Mail{
 			TemplateId:      "Digest",
 			ContentMarkdown: md,
@@ -184,7 +215,7 @@ func (m *MailDigestAction) Run(ctx context.Context, channels *actions.RunnableCh
 	log.TasksLogger(ctx).Info("Digest sent to user "+userObject.Login, userObject.ZapLogin())
 	if len(collection) > 0 && !m.dryRun {
 		lastActivity := collection[0] // Activities are in reverse order, the first one is the last id
-		_, err := m.activityClient.SetUserLastActivity(ctx, &activity.UserLastActivityRequest{
+		_, err := activityClient(ctx).SetUserLastActivity(ctx, &activity.UserLastActivityRequest{
 			ActivityId: lastActivity.Id,
 			UserId:     userObject.Login,
 			BoxName:    "lastsent",

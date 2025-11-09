@@ -21,41 +21,70 @@
 package object
 
 import (
+	"context"
 	"fmt"
+	"path"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap/zapcore"
 
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/utils/configx"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 const (
-	StorageKeyFolder       = "folder"
-	StorageKeyFolderCreate = "create"
-	StorageKeyNormalize    = "normalize"
+	StorageKeyFolder           = "folder"
+	StorageKeyFolderCreate     = "create"
+	StorageKeyNormalize        = "normalize"
+	StorageKeyFlatShardFolders = "foldersShardingPattern"
 
-	StorageKeyCustomEndpoint  = "customEndpoint"
-	StorageKeyCustomRegion    = "customRegion"
-	StorageKeyBucketsTags     = "bucketsTags"
-	StorageKeyObjectsTags     = "objectsTags"
-	StorageKeyNativeEtags     = "nativeEtags"
-	StorageKeyBucketsRegexp   = "bucketsRegexp"
-	StorageKeyReadonly        = "readOnly"
-	StorageKeyJsonCredentials = "jsonCredentials"
+	StorageKeyCustomEndpoint   = "customEndpoint"
+	StorageKeyCustomRegion     = "customRegion"
+	StorageKeyMinioServer      = "minioServer"
+	StorageKeyBucketsTags      = "bucketsTags"
+	StorageKeyObjectsTags      = "objectsTags"
+	StorageKeyNativeEtags      = "nativeEtags"
+	StorageKeyBucketsRegexp    = "bucketsRegexp"
+	StorageKeyReadonly         = "readOnly"
+	StorageKeyJsonCredentials  = "jsonCredentials"
+	StorageKeyStorageClass     = "storageClass"
+	StorageKeySignatureVersion = "signatureVersion"
 
 	StorageKeyCellsInternal    = "cellsInternal"
 	StorageKeyInitFromBucket   = "initFromBucket"
 	StorageKeyInitFromSnapshot = "initFromSnapshot"
+	StorageKeyHashingVersion   = "hashingVersion"
+
+	AmazonS3Endpoint      = "s3.amazonaws.com"
+	CurrentHashingVersion = "v4"
 )
 
-func (d *DataSource) ClientConfig() configx.Values {
+func (d *DataSource) ClientConfig(ctx context.Context, p SecretProvider) configx.Values {
 	cfg := configx.New()
 	_ = cfg.Val("type").Set("mc")
+	if d.StorageType == StorageType_AZURE {
+		_ = cfg.Val("type").Set("azure")
+	}
 	_ = cfg.Val("endpoint").Set(d.BuildUrl())
 	_ = cfg.Val("key").Set(d.GetApiKey())
 	_ = cfg.Val("secret").Set(d.GetApiSecret())
+	if sec := p(ctx, d.ApiSecret).String(); sec != "" {
+		_ = cfg.Val("secret").Set(sec)
+	}
 	_ = cfg.Val("secure").Set(d.GetObjectsSecure())
+	_ = cfg.Val("minioServer").Set(d.ServerIsMinio())
+	if d.StorageConfiguration != nil {
+		if r, o := d.StorageConfiguration[StorageKeyCustomRegion]; o && r != "" {
+			_ = cfg.Val("region").Set(r)
+		}
+		if ce, o := d.StorageConfiguration[StorageKeyCustomEndpoint]; o && ce != "" {
+			_ = cfg.Val(StorageKeyCustomEndpoint).Set(ce)
+		}
+		if sv, o := d.StorageConfiguration[StorageKeySignatureVersion]; o && sv != "" {
+			_ = cfg.Val("signature").Set(sv)
+		}
+	}
 	return cfg
 }
 
@@ -65,7 +94,76 @@ func (d *DataSource) BuildUrl() string {
 	if d.ObjectsHost == "" {
 		host = "localhost"
 	}
-	return fmt.Sprintf("%s:%d", host, d.ObjectsPort)
+	if d.ObjectsPort == 443 || d.ObjectsPort == 0 {
+		return host
+	} else {
+		return fmt.Sprintf("%s:%d", host, d.ObjectsPort)
+	}
+}
+
+// ServerIsMinio checks if server is local, of if remote definition has the minioServer key
+func (d *DataSource) ServerIsMinio() bool {
+	if d.StorageType == StorageType_LOCAL {
+		return true
+	}
+	if d.StorageConfiguration == nil {
+		return false
+	}
+	if m, o := d.StorageConfiguration[StorageKeyMinioServer]; o && m == "true" {
+		return true
+	}
+	return false
+}
+
+// ConfigurationByKey wraps a check on d.StorageConfiguration to make sure it is not nil
+func (d *DataSource) ConfigurationByKey(k string) (string, bool) {
+	if d.StorageConfiguration == nil {
+		return "", false
+	}
+	v, o := d.StorageConfiguration[k]
+	return v, o
+}
+
+type SecretProvider func(ctx context.Context, uuid string) configx.Values
+
+func (d *MinioConfig) ClientConfig(ctx context.Context, p SecretProvider, agentName, agentVersion string) configx.Values {
+	cfg := configx.New()
+	_ = cfg.Val("type").Set("mc")
+	_ = cfg.Val("endpoint").Set(d.BuildUrl())
+	_ = cfg.Val("key").Set(d.GetApiKey())
+	_ = cfg.Val("secret").Set(d.GetApiSecret())
+	if sec := p(ctx, d.ApiSecret).String(); sec != "" {
+		_ = cfg.Val("secret").Set(sec)
+	}
+
+	_ = cfg.Val("secure").Set(d.GetRunningSecure())
+	if agentName != "" {
+		_ = cfg.Val("userAgentAppName").Set(agentName)
+	}
+	if agentVersion != "" {
+		_ = cfg.Val("userAgentVersion").Set(agentVersion)
+	}
+
+	if d.StorageType == StorageType_LOCAL {
+		_ = cfg.Val("minioServer").Set(true)
+	} else if d.StorageType == StorageType_AZURE {
+		_ = cfg.Val("type").Set("azure")
+	}
+	if d.GatewayConfiguration != nil {
+		if m, o := d.GatewayConfiguration[StorageKeyMinioServer]; o && m == "true" {
+			_ = cfg.Val("minioServer").Set(true)
+		}
+		if r, o := d.GatewayConfiguration[StorageKeyCustomRegion]; o && r != "" {
+			_ = cfg.Val("region").Set(r)
+		}
+		if ce, o := d.GatewayConfiguration[StorageKeyCustomEndpoint]; o && ce != "" {
+			_ = cfg.Val("customEndpoint").Set(ce)
+		}
+		if sv, o := d.GatewayConfiguration[StorageKeySignatureVersion]; o && sv != "" {
+			_ = cfg.Val("signature").Set(sv)
+		}
+	}
+	return cfg
 }
 
 // BuildUrl builds the url used for clients
@@ -74,7 +172,11 @@ func (d *MinioConfig) BuildUrl() string {
 	if d.RunningHost == "" {
 		host = "localhost"
 	}
-	return fmt.Sprintf("%s:%d", host, d.RunningPort)
+	if d.RunningPort == 443 || d.RunningPort == 0 {
+		return host
+	} else {
+		return fmt.Sprintf("%s:%d", host, d.RunningPort)
+	}
 }
 
 // IsInternal is a shorthand to check StorageConfiguration["cellsInternal"] key
@@ -84,6 +186,31 @@ func (d *DataSource) IsInternal() bool {
 		return i
 	}
 	return false
+}
+
+func (d *DataSource) FlatShardedPath(nodeId string) string {
+	if d.ObjectsBaseFolder != "" {
+		nodeId = path.Join(d.ObjectsBaseFolder, nodeId)
+	}
+	if d.StorageConfiguration == nil {
+		return nodeId
+	}
+	shard, ok := d.StorageConfiguration[StorageKeyFlatShardFolders]
+	if !ok {
+		return nodeId
+	}
+
+	var parts []string
+	for _, cut := range strings.Split(shard, ":") {
+		if l, e := strconv.Atoi(cut); e == nil {
+			parts = append(parts, nodeId[:l])
+		} else {
+			parts = append(parts, nodeId[:1])
+		}
+	}
+	parts = append(parts, nodeId)
+	return path.Join(parts...)
+
 }
 
 /* LOGGING SUPPORT */
@@ -141,7 +268,7 @@ func (d *MinioConfig) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
 	return nil
 }
 
-func (m *DataSourceSingleQuery) Matches(object interface{}) bool {
+func (m *DataSourceSingleQuery) Matches(ctx context.Context, object interface{}) bool {
 	ds, ok := object.(*DataSource)
 	if !ok {
 		return false

@@ -23,14 +23,15 @@ package grpc
 import (
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/jobs"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/jobs"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
+	"github.com/pydio/cells/v5/scheduler/lang"
 )
 
-func getDefaultJobs() []*jobs.Job {
+func GetDefaultJobs() []*jobs.Job {
 
 	triggerCreate := &jobs.TriggerFilter{
 		Label:       "Create/Update",
@@ -69,32 +70,40 @@ func getDefaultJobs() []*jobs.Job {
 			Label: "Images Only",
 			Query: &service.Query{
 				SubQueries: []*anypb.Any{jobs.MustMarshalAny(&tree.Query{
-					Extension: "jpg,png,jpeg,gif,bmp,tiff",
+					Extension: "jpg,png,jpeg,gif,bmp,webp,tiff",
 					MinSize:   1,
 				})},
 			},
 		},
 		Actions: []*jobs.Action{
 			{
-				ID:            "actions.images.thumbnails",
-				Parameters:    map[string]string{"ThumbSizes": `{"sm":300,"md":1024}`},
-				TriggerFilter: triggerCreate,
-			},
-			{
-				ID:            "actions.images.exif",
-				TriggerFilter: triggerCreate,
-				NodesFilter: &jobs.NodesSelector{
-					Label: "Jpg only",
-					Query: &service.Query{
-						SubQueries: []*anypb.Any{jobs.MustMarshalAny(&tree.Query{
-							Extension: "jpg,jpeg",
-						})},
+				ID: "middleware.tree.meta",
+				Parameters: map[string]string{
+					"metaJSON": "{\"ImageThumbnails\":{\"Processing\": true, \"ContentType\": \"image/jpg\"}}",
+				},
+				ChainedActions: []*jobs.Action{
+					{
+						ID:            "actions.images.thumbnails",
+						Parameters:    map[string]string{"ThumbSizes": `{"sm":300,"md":1024}`},
+						TriggerFilter: triggerCreate,
+					},
+					{
+						ID:            "actions.images.exif",
+						TriggerFilter: triggerCreate,
+						NodesFilter: &jobs.NodesSelector{
+							Label: "Jpg only",
+							Query: &service.Query{
+								SubQueries: []*anypb.Any{jobs.MustMarshalAny(&tree.Query{
+									Extension: "jpg,jpeg",
+								})},
+							},
+						},
+					},
+					{
+						ID:            "actions.images.clean",
+						TriggerFilter: triggerDelete,
 					},
 				},
-			},
-			{
-				ID:            "actions.images.clean",
-				TriggerFilter: triggerDelete,
 			},
 		},
 	}
@@ -118,7 +127,7 @@ func getDefaultJobs() []*jobs.Job {
 	cleanUserDataJob := &jobs.Job{
 		ID:                "clean-user-data",
 		Owner:             common.PydioSystemUsername,
-		Label:             "Clean or transfer user data on deletion",
+		Label:             "Jobs.Default.CleanUserData",
 		Inactive:          false,
 		MaxConcurrency:    5,
 		TasksSilentUpdate: true,
@@ -147,7 +156,7 @@ func getDefaultJobs() []*jobs.Job {
 
 	cleanTemporaryOrphans := &jobs.Job{
 		ID:    "clean-orphans-nodes",
-		Label: "Clean orphan nodes after 24h",
+		Label: "Jobs.Default.CleanOrphanFiles",
 		Owner: common.PydioSystemUsername,
 		Schedule: &jobs.Schedule{
 			Iso8601Schedule: "R/2012-01-01T02:30:00.828Z/PT24H",
@@ -169,13 +178,97 @@ func getDefaultJobs() []*jobs.Job {
 		},
 	}
 
+	cleanExpiredACLs := &jobs.Job{
+		ID:    "clean-expired-acls",
+		Label: "Jobs.Default.CleanExpiredACLs",
+		Owner: common.PydioSystemUsername,
+		Schedule: &jobs.Schedule{
+			Iso8601Schedule: "R/2012-01-01T01:30:00.828Z/PT24H",
+		},
+		Actions: []*jobs.Action{
+			{
+				ID: "actions.idm.clean-expired-acl",
+				Parameters: map[string]string{
+					"expiredBefore": "240h",
+				},
+			},
+		},
+	}
+
 	defJobs := []*jobs.Job{
 		thumbnailsJob,
 		stuckTasksJob,
 		cleanUserDataJob,
 		cleanTemporaryOrphans,
+		cleanExpiredACLs,
 	}
 
 	return defJobs
+
+}
+
+func BuildDataSourceSyncJob(dsName string, flat, autoStart bool, languages ...string) *jobs.Job {
+	sName := common.ServiceGrpcNamespace_ + common.ServiceDataSync_ + dsName
+
+	if flat {
+		return &jobs.Job{
+			ID:             "snapshot-" + dsName,
+			Owner:          common.PydioSystemUsername,
+			Label:          "Snapshot DB index for Datasource " + dsName,
+			MaxConcurrency: 1,
+			AutoStart:      autoStart,
+			Actions: []*jobs.Action{
+				{
+					ID:    "actions.cmd.resync",
+					Label: "Dump Snapshot",
+					Parameters: map[string]string{
+						"service": sName,
+						"path":    "write/snapshot.db",
+					},
+				},
+			},
+		}
+
+	} else {
+
+		T := lang.Bundle().T(languages...)
+		ap, _ := anypb.New(&tree.Query{
+			Type:       tree.NodeType_LEAF,
+			PathPrefix: []string{dsName},
+		})
+
+		return &jobs.Job{
+			ID:             "resync-ds-" + dsName,
+			Owner:          common.PydioSystemUsername,
+			Label:          T("Jobs.User.ResyncDS", map[string]string{"DsName": dsName}),
+			Inactive:       false,
+			MaxConcurrency: 1,
+			AutoStart:      autoStart,
+			Actions: []*jobs.Action{
+				{
+					ID: "actions.cmd.resync",
+					Parameters: map[string]string{
+						"service": sName,
+					},
+					ChainedActions: []*jobs.Action{
+						{
+							ID: "actions.tree.cells-hash",
+							Parameters: map[string]string{
+								"hashType": "cells",
+								"metaName": common.MetaNamespaceHash,
+							},
+							NodesSelector: &jobs.NodesSelector{
+								Query: &service.Query{
+									SubQueries: []*anypb.Any{ap},
+									Operation:  service.OperationType_AND,
+								},
+								Label: "Files selection",
+							},
+						},
+					},
+				},
+			},
+		}
+	}
 
 }

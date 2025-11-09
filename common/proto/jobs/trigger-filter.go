@@ -26,12 +26,16 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/pydio/cells/v4/common/proto/idm"
-	"github.com/pydio/cells/v4/common/proto/service"
-	"github.com/pydio/cells/v4/common/proto/tree"
+	"github.com/pydio/cells/v5/common/proto/idm"
+	"github.com/pydio/cells/v5/common/proto/service"
+	"github.com/pydio/cells/v5/common/proto/tree"
 )
 
-func (m *TriggerFilter) Filter(ctx context.Context, input ActionMessage) (ActionMessage, *ActionMessage, bool) {
+func (m *TriggerFilter) FilterID() string {
+	return "TriggerFilter"
+}
+
+func (m *TriggerFilter) Filter(ctx context.Context, input *ActionMessage) (*ActionMessage, *ActionMessage, bool) {
 
 	var event interface{}
 	triggerEvent := &JobTriggerEvent{}
@@ -45,7 +49,7 @@ func (m *TriggerFilter) Filter(ctx context.Context, input ActionMessage) (Action
 		event = idmEvent
 	} else {
 		// Cannot recognize event type
-		return input, &input, false
+		return input, input, false
 	}
 
 	var bb []bool
@@ -59,9 +63,9 @@ func (m *TriggerFilter) Filter(ctx context.Context, input ActionMessage) (Action
 	if result {
 		return input, nil, true
 	} else {
-		output := input
+		output := input.Clone()
 		input.Event = nil
-		return output, &input, false
+		return output, input, false
 	}
 
 }
@@ -74,6 +78,18 @@ func (m *TriggerFilter) evaluateOne(tQ *TriggerFilterQuery, event interface{}) b
 		}
 		if tQ.IsSchedule && t.Schedule != nil {
 			return true
+		}
+		if tQ.IsApiHook && t.HookSlug != "" {
+			return true
+		}
+		if tQ.ApiHookSlug != "" && t.HookSlug == tQ.ApiHookSlug {
+			return true
+		}
+		if tQ.RunParameterName != "" && t.RunParameters != nil {
+			v, ok := t.RunParameters[tQ.RunParameterName]
+			if ok {
+				return tQ.RunParameterValue == "" || tQ.RunParameterValue == v
+			}
 		}
 	} else if n, o := event.(*tree.NodeChangeEvent); o {
 		eName = NodeChangeEventName(n.Type)

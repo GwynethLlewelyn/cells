@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021. Abstrium SAS <team (at) pydio.com>
+ * Copyright (c) 2024. Abstrium SAS <team (at) pydio.com>
  * This file is part of Pydio Cells.
  *
  * Pydio Cells is free software: you can redistribute it and/or modify
@@ -28,60 +28,52 @@ import (
 	"go.uber.org/zap"
 	protobuf "google.golang.org/protobuf/proto"
 
-	"github.com/pydio/cells/v4/broker/mailer"
-	"github.com/pydio/cells/v4/broker/mailer/templates"
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/log"
-	proto "github.com/pydio/cells/v4/common/proto/mailer"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
+	"github.com/pydio/cells/v5/broker/mailer"
+	"github.com/pydio/cells/v5/broker/mailer/templates"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/errors"
+	proto "github.com/pydio/cells/v5/common/proto/mailer"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
 )
 
 type Handler struct {
 	proto.UnimplementedMailerServiceServer
-	dao mailer.Queue
-
-	senderName   string
-	senderConfig configx.Values
-	sender       mailer.Sender
+	svcName string
 }
 
-func NewHandler(serviceCtx context.Context, conf configx.Values) (*Handler, error) {
-	h := new(Handler)
-	h.dao = servicecontext.GetDAO(serviceCtx).(mailer.Queue)
-	if h.dao == nil {
-		return nil, fmt.Errorf("could not load queue DAO")
-	}
-	if er := h.initFromConf(serviceCtx, conf, true); er != nil && h.senderName != "disabled" {
-		log.Logger(serviceCtx).Warn("Could not init mailer handler from config: "+er.Error(), zap.Error(er))
-	}
-	return h, nil
-}
-
-func (h *Handler) Name() string {
-	return Name
+func NewHandler(svcName string) *Handler {
+	return &Handler{svcName: svcName}
 }
 
 // SendMail either queues or send a mail directly
 func (h *Handler) SendMail(ctx context.Context, req *proto.SendMailRequest) (*proto.SendMailResponse, error) {
+
+	dao, err := manager.Resolve[mailer.Queue](ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	mail := req.Mail
 
 	// Sanity checks
 	if mail == nil || (len(mail.Subject) == 0 && mail.TemplateId == "") || len(mail.To) == 0 {
-		e := errors.BadRequest(common.ServiceMailer, "cannot send mail: some required fields are missing")
+		e := errors.WithMessage(errors.InvalidParameters, "cannot send mail: some required fields are missing")
 		log.Logger(ctx).Error("cannot process mail to send", zap.Any("Mail", mail), zap.Error(e))
 		return nil, e
 	}
 	if mail.ContentPlain == "" && mail.ContentMarkdown == "" && mail.ContentHtml == "" && mail.TemplateId == "" {
-		e := errors.BadRequest(common.ServiceMailer, "SendMail: please provide one of ContentPlain, ContentMarkdown or ContentHtml")
+		e := errors.WithMessage(errors.InvalidParameters, "cannot send mail: please provide one of ContentPlain, ContentMarkdown or ContentHtml")
 		log.Logger(ctx).Error("cannot process mail to send: empty body", zap.Any("Mail", mail), zap.Error(e))
 		return nil, e
 	}
 
-	h.checkConfigChange(ctx, false)
+	sender, er := h.getSender(ctx, config.Get(ctx, "services", h.svcName))
+	if er != nil {
+		return nil, errors.Tag(er, errors.StatusServiceUnavailable)
+	}
 
 	for _, to := range mail.To {
 		// Find language to be used
@@ -89,7 +81,7 @@ func (h *Handler) SendMail(ctx context.Context, req *proto.SendMailRequest) (*pr
 		if to.Language != "" {
 			languages = append(languages, to.Language)
 		}
-		configs := templates.GetApplicationConfig(languages...)
+		configs := templates.GetApplicationConfig(ctx, languages...)
 		// Clone email and set unique user
 		m := protobuf.Clone(mail).(*proto.Mail)
 		m.To = []*proto.User{to}
@@ -128,31 +120,28 @@ func (h *Handler) SendMail(ctx context.Context, req *proto.SendMailRequest) (*pr
 				m.From.Address = configs.From
 			}
 		}
-		he := templates.GetHermes(languages...)
+		he := templates.GetHermes(ctx, languages...)
 		if m.ContentHtml == "" {
 			var body hermes.Body
 			if m.TemplateId != "" {
 				var subject string
-				subject, body = templates.BuildTemplateWithId(to, m.TemplateId, m.TemplateData, languages...)
+				subject, body = templates.BuildTemplateWithId(ctx, to, m.TemplateId, m.TemplateData, languages...)
 				m.Subject = subject
 				if m.ContentMarkdown != "" {
 					body.FreeMarkdown = hermes.Markdown(m.ContentMarkdown)
 				}
 			} else {
+				body = templates.PrepareSimpleBody(ctx, to, languages...)
 				if m.ContentMarkdown != "" {
-					body = hermes.Body{
-						FreeMarkdown: hermes.Markdown(m.ContentMarkdown),
-					}
+					body.FreeMarkdown = hermes.Markdown(m.ContentMarkdown)
 				} else {
-					body = hermes.Body{
-						Intros: []string{m.ContentPlain},
-					}
+					body.Intros = []string{m.ContentPlain}
 				}
 			}
 			hermesMail := hermes.Email{Body: body}
 			var e error
 			m.ContentHtml, _ = he.GenerateHTML(hermesMail)
-			if m.ContentPlain, e = he.GenerateHTML(hermesMail); e != nil {
+			if m.ContentPlain, e = he.GeneratePlainText(hermesMail); e != nil {
 				return nil, e
 			}
 		}
@@ -163,15 +152,15 @@ func (h *Handler) SendMail(ctx context.Context, req *proto.SendMailRequest) (*pr
 			tt = tt[:20]
 		}
 		if req.InQueue {
-			log.Logger(ctx).Debug("SendMail: pushing email to queue", log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", m.From), zap.Any("subject", m.Subject))
-			if e := h.dao.Push(m); e != nil {
-				log.Logger(ctx).Error(fmt.Sprintf("cannot put mail in queue: %s", e.Error()), log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", m.From), zap.Any("subject", m.Subject))
+			log.Logger(ctx).Debug("SendMail: pushing email to queue", log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", *m.From), zap.String("subject", m.Subject))
+			if e := dao.Push(ctx, m); e != nil {
+				log.Logger(ctx).Error(fmt.Sprintf("cannot put mail in queue: %s", e.Error()), log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", *m.From), zap.String("subject", m.Subject))
 				return nil, e
 			}
 		} else {
-			log.Logger(ctx).Info("SendMail: sending email", log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", m.From), zap.Any("subject", m.Subject))
-			if e := h.sender.Send(m); e != nil {
-				log.Logger(ctx).Error(fmt.Sprintf("could not directly send mail: %s", e.Error()), log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", m.From), zap.Any("subject", m.Subject))
+			log.Logger(ctx).Info("SendMail: sending email", log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", *m.From), zap.String("subject", m.Subject))
+			if e := sender.Send(ctx, m); e != nil {
+				log.Logger(ctx).Error(fmt.Sprintf("could not directly send mail: %s", e.Error()), log.DangerouslyZapSmallSlice("to", tt), zap.Any("from", *m.From), zap.String("subject", m.Subject))
 				return nil, e
 			}
 		}
@@ -182,23 +171,27 @@ func (h *Handler) SendMail(ctx context.Context, req *proto.SendMailRequest) (*pr
 // ConsumeQueue browses current queue for emails to be sent
 func (h *Handler) ConsumeQueue(ctx context.Context, req *proto.ConsumeQueueRequest) (*proto.ConsumeQueueResponse, error) {
 
-	if h.dao == nil {
-		return nil, fmt.Errorf("queue not initialised")
+	dao, err := manager.Resolve[mailer.Queue](ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	h.checkConfigChange(ctx, false)
+	sender, er := h.getSender(ctx, config.Get(ctx, "services", h.svcName))
+	if er != nil {
+		return nil, errors.Tag(er, errors.StatusServiceUnavailable)
+	}
 
 	counter := int64(0)
 	c := func(em *proto.Mail) error {
 		if em == nil {
 			log.Logger(ctx).Error("ConsumeQueue: trying to send empty email")
-			return fmt.Errorf("cannot send empty email")
+			return errors.New("cannot send empty email")
 		}
 		counter++
-		return h.sender.Send(em)
+		return sender.Send(ctx, em)
 	}
 
-	e := h.dao.Consume(c)
+	e := dao.Consume(ctx, c)
 	if e != nil {
 		return nil, e
 	}
@@ -212,17 +205,19 @@ func (h *Handler) ConsumeQueue(ctx context.Context, req *proto.ConsumeQueueReque
 
 func (h *Handler) parseConf(conf configx.Values) (senderName string, senderConfig configx.Values) {
 
-	// Defaults
-	senderName = "sendmail"
 	senderConfig = conf.Val("sender")
-	senderName = senderConfig.Val("@value").Default("sendmail").String()
+	senderName = senderConfig.Val("@value").Default("noop").String()
 
 	return
 }
 
-func (h *Handler) initFromConf(ctx context.Context, conf configx.Values, check bool) (e error) {
+func (h *Handler) getSender(ctx context.Context, conf configx.Values) (sender mailer.Sender, e error) {
 
+	//conf := config.Get(ctx, "services", h.svcName)
 	initialConfig := conf.Val("valid").Bool()
+	var senderName string
+	var senderConfig configx.Values
+
 	defer func() {
 		var newConfig bool
 		if e != nil {
@@ -231,42 +226,21 @@ func (h *Handler) initFromConf(ctx context.Context, conf configx.Values, check b
 			newConfig = true
 		}
 		if newConfig != initialConfig {
-			//config.Get("services", servicecontext.GetServiceName(ctx), "valid").Set(true)
-			conf.Val("valid").Set(newConfig)
-			config.Save(common.PydioSystemUsername, "Update mailer valid config")
+			log.Logger(ctx).Info("Updating mailer validity for sender '" + senderName + "'")
+			_ = conf.Val("valid").Set(newConfig)
+			_ = config.Save(ctx, common.PydioSystemUsername, "Update mailer valid config")
 		}
 	}()
 
-	senderName, senderConfig := h.parseConf(conf)
-
-	sender, err := mailer.GetSender(ctx, senderName, senderConfig)
-	if err != nil {
-		e = err
-		return
-	}
-
-	log.Logger(ctx).Info("Starting mailer with sender '" + senderName + "'")
-	h.sender = sender
-	h.senderName = senderName
-	h.senderConfig = senderConfig
-
-	if check {
-		e = h.sender.Check(ctx)
-	}
-
+	senderName, senderConfig = h.parseConf(conf)
+	sender, e = mailer.GetSender(ctx, senderName, senderConfig)
 	return
 }
 
-func (h *Handler) checkConfigChange(ctx context.Context, check bool) error {
-
-	cfg := config.Get("services", Name)
-	senderName, senderConfig := h.parseConf(cfg)
-	m1, _ := json.Marshal(senderConfig)
-	m2, _ := json.Marshal(h.senderConfig)
-
-	if senderName != h.senderName || string(m1) != string(m2) {
-		log.Logger(ctx).Info("Mailer configuration has changed. Refreshing sender and queue")
-		return h.initFromConf(ctx, cfg, check)
+func (h *Handler) CheckSender(ctx context.Context, conf configx.Values) error {
+	sender, e := h.getSender(ctx, conf)
+	if e != nil {
+		return e
 	}
-	return nil
+	return sender.Check(ctx)
 }

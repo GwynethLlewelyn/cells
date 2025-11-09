@@ -23,8 +23,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/utils/configx"
 	"net"
 	"net/url"
 	"os/exec"
@@ -33,52 +31,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
+	tcell "github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/broker"
-	clientcontext "github.com/pydio/cells/v4/common/client/context"
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/registry/util"
-	"github.com/pydio/cells/v4/common/runtime"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/std"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/broker"
+	"github.com/pydio/cells/v5/common/config"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/registry/util"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/runtime/manager"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/std"
+
+	_ "embed"
 )
 
-type item struct {
-	ri              registry.Item
-	it              pb.ItemType
-	main, secondary string
-	shortcut        rune
-	selected        func()
-}
-
-type itemsByName []item
-
-func (b itemsByName) Len() int { return len(b) }
-func (b itemsByName) Less(i, j int) bool {
-	if b[i].main == b[j].main {
-		return b[i].secondary < b[j].secondary
-	}
-	return b[i].main < b[j].main
-}
-func (b itemsByName) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
-
-type itemsByType []item
-
-func (b itemsByType) Len() int { return len(b) }
-func (b itemsByType) Less(i, j int) bool {
-	if b[i].it == b[j].it {
-		return b[i].ri.Name() < b[j].ri.Name()
-	}
-	return b[i].it < b[j].it
-}
-func (b itemsByType) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
+var (
+	//go:embed ctl.yaml
+	ctlBootstrap string
+)
 
 type model struct {
 	ctx        context.Context
@@ -105,8 +83,9 @@ type model struct {
 	currentType int
 	currentItem int
 
-	currentEdge int
-	itFilter    string
+	currentEdge  int
+	itFilter     string
+	statusFilter bool
 
 	filterText  *tview.InputField
 	pendingItem registry.Item
@@ -174,7 +153,7 @@ func (m *model) resetBroker() {
 	m.brClose = nil
 }
 
-func (m *model) lazyBroker() error {
+func (m *model) lazyBroker(ctx context.Context) error {
 
 	if m.br != nil {
 		return nil
@@ -194,7 +173,7 @@ func (m *model) lazyBroker() error {
 		ca()
 		_ = discoveryConn.Close()
 	}
-	ct = clientcontext.WithClientConn(ct, discoveryConn)
+	ct = runtime.WithClientConn(ct, discoveryConn)
 	m.br = broker.NewBroker(runtime.BrokerURL(), broker.WithContext(ct))
 
 	return nil
@@ -205,6 +184,9 @@ func (m *model) updateList(list *tview.List, items []item, current int) {
 	list.Clear()
 	for _, i := range items {
 		if list == m.itemsList && m.itFilter != "" && !strings.Contains(i.main, m.itFilter) {
+			continue
+		}
+		if list == m.itemsList && m.statusFilter && i.status == string(registry.StatusReady) {
 			continue
 		}
 		list.AddItem(i.main, i.secondary, i.shortcut, i.selected)
@@ -233,10 +215,20 @@ func (m *model) loadItems(preselect registry.Item, oo ...registry.Option) {
 			} else if i.Name() == "fork" {
 				name += " " + i.Metadata()["forkStartTag"]
 			}
-			if status, ok := i.Metadata()["status"]; ok {
-				name += " - " + status
+			status := i.Metadata()[registry.MetaStatusKey]
+			if status != "" {
+				if status == string(registry.StatusReady) {
+					name += " - " + status
+				} else {
+					name += " - " + strings.ToUpper(status)
+				}
 			}
-			m.items = append(m.items, item{ri: i, main: name, secondary: secondary})
+			m.items = append(m.items, item{
+				ri:        i,
+				main:      name,
+				secondary: secondary,
+				status:    status,
+			})
 		}
 		sort.Sort(itemsByName(m.items))
 		if preselect != nil {
@@ -266,7 +258,10 @@ func (m *model) loadEdges(source registry.Item, oo ...registry.Option) {
 		}
 	}
 	//	m.currentEdge = 0
-	for _, i := range m.reg.ListAdjacentItems(source, oo...) {
+	for _, i := range m.reg.ListAdjacentItems(
+		registry.WithAdjacentSourceItems([]registry.Item{source}),
+		registry.WithAdjacentTargetOptions(oo...),
+	) {
 		eType := util.DetectType(i)
 		m.edges = append(m.edges, item{ri: i, main: i.Name(), secondary: eType.String() + " - " + i.ID(), it: eType})
 		sort.Sort(itemsByType(m.edges))
@@ -285,12 +280,16 @@ func (m *model) itemsChanged(index int) {
 
 func (m *model) getCurrentItem() item {
 	ii := m.items
-	if m.itFilter != "" {
+	if m.itFilter != "" || m.statusFilter {
 		ii = []item{}
 		for _, i := range m.items {
-			if strings.Contains(i.main, m.itFilter) {
-				ii = append(ii, i)
+			if m.itFilter != "" && !strings.Contains(i.main, m.itFilter) {
+				continue
 			}
+			if m.statusFilter && i.status == string(registry.StatusReady) {
+				continue
+			}
+			ii = append(ii, i)
 		}
 	}
 	if m.currentItem < len(ii) {
@@ -386,15 +385,15 @@ func (m *model) renderButtons(i registry.Item) {
 	}
 	switch util.DetectType(i) {
 	case pb.ItemType_SERVER, pb.ItemType_SERVICE:
-		if i.Metadata()["status"] == "stopped" {
-			startButton := tview.NewButton("Start").SetSelectedFunc(func() { m.sendCommand("start", i.ID()) })
+		if i.Metadata()[registry.MetaStatusKey] == string(registry.StatusStopped) {
+			startButton := tview.NewButton("Start").SetSelectedFunc(func() { m.sendCommand(m.ctx, "start", i.ID()) })
 			m.buttonsPanel.AddItem(startButton, 0, 1, false)
 			count++
 		} else {
-			stopButton := tview.NewButton("Stop").SetSelectedFunc(func() { m.sendCommand("stop", i.ID()) })
+			stopButton := tview.NewButton("Stop").SetSelectedFunc(func() { m.sendCommand(m.ctx, "stop", i.ID()) })
 			m.buttonsPanel.AddItem(stopButton, 0, 1, false)
 			m.buttonsPanel.AddItem(tview.NewTextView().SetText(" "), 1, 0, false)
-			restartButton := tview.NewButton("Restart").SetSelectedFunc(func() { m.sendCommand("restart", i.ID()) })
+			restartButton := tview.NewButton("Restart").SetSelectedFunc(func() { m.sendCommand(m.ctx, "restart", i.ID()) })
 			m.buttonsPanel.AddItem(restartButton, 0, 1, false)
 			count++
 		}
@@ -403,8 +402,12 @@ func (m *model) renderButtons(i registry.Item) {
 
 func (m *model) initConfigView() {
 	if m.cfg == nil {
-		_, _, _ = initConfig(m.ctx, false)
-		m.cfg = config.Get()
+		var err error
+		m.ctx, err = initManagerContext(m.ctx)
+		if err != nil {
+			panic(err)
+		}
+		m.cfg = config.Get(m.ctx)
 		m.configsView.SetSelectedFunc(func(node *tview.TreeNode) {
 			node.SetExpanded(!node.IsExpanded())
 		})
@@ -445,7 +448,7 @@ func (m *model) populateTreeNode(node *tview.TreeNode, pa []string, val configx.
 			c.SetExpanded(false).SetSelectable(true).SetReference(ref)
 			children[c.GetText()] = c
 			childrenKeys = append(childrenKeys, c.GetText())
-			m.populateTreeNode(c, append(pa, strconv.Itoa(k)), configx.NewFrom(i))
+			m.populateTreeNode(c, append(pa, strconv.Itoa(k)), configx.New(configx.WithInitData(i)))
 		}
 	} else if e := val.Scan(&mi); e == nil {
 		for k := range mi {
@@ -466,9 +469,9 @@ func (m *model) populateTreeNode(node *tview.TreeNode, pa []string, val configx.
 	}
 }
 
-func (m *model) sendCommand(cmdName, itemName string) {
+func (m *model) sendCommand(ctx context.Context, cmdName, itemName string) {
 	if m.br == nil {
-		if er := m.lazyBroker(); er != nil {
+		if er := m.lazyBroker(ctx); er != nil {
 			m.title.SetText("Cannot connect to broker! No action performed")
 			return
 		}
@@ -541,10 +544,27 @@ DESCRIPTION
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 
+		ctx := runtime.MultiContextManager().RootContext(cmd.Context())
+
+		v := viper.New()
+		v.Set(runtime.KeyConfig, "mem://")
+		v.Set(runtime.KeyRegistry, "grpc://0.0.0.0:8030")
+		v.Set(runtime.KeyKeyring, "mem://")
+		v.Set(runtime.KeyBootstrapYAML, ctlBootstrap)
+		runtime.SetRuntime(v)
+
+		mgr, err := manager.NewManager(ctx, runtime.NsCmd)
+		if err != nil {
+			return err
+		}
+
+		ctx = mgr.Context()
+		cmd.SetContext(ctx)
+
 		app := tview.NewApplication()
 
 		m := &model{
-			ctx:        cmd.Context(),
+			ctx:        ctx,
 			app:        app,
 			centerMode: "list",
 			types: []item{
@@ -595,8 +615,22 @@ DESCRIPTION
 			m.typesList, m.itemsList, m.filterText, m.metaView, m.edgesList,
 		}
 
-		reloadButton := tview.NewButton("Reload").SetSelectedFunc(func() {
+		reloadButton := tview.NewButton("Reload")
+		reloadButton.SetSelectedFunc(func() {
 			m.loadItems(m.getCurrentItem().ri, registry.WithType(m.types[m.currentType].it))
+			reloadButton.Blur()
+		})
+
+		statusButton := tview.NewButton("Hide Ready")
+		statusButton.SetSelectedFunc(func() {
+			m.statusFilter = !m.statusFilter
+			statusLabel := "Hide Ready"
+			if m.statusFilter {
+				statusLabel = "Show All"
+			}
+			statusButton.SetLabel(statusLabel)
+			m.loadItems(m.getCurrentItem().ri, registry.WithType(m.types[m.currentType].it))
+			statusButton.Blur()
 		})
 
 		m.filterText.SetChangedFunc(func(text string) {
@@ -648,6 +682,8 @@ DESCRIPTION
 				AddItem(m.itemsList, 0, 1, false).
 				AddItem(tview.NewFlex().
 					AddItem(reloadButton, 10, 0, false).
+					AddItem(tview.NewTextView().SetText(" "), 1, 0, false).
+					AddItem(statusButton, 14, 0, false).
 					AddItem(m.filterText, 0, 1, false),
 					3, 0, false),
 				0, 3, false).
@@ -693,3 +729,38 @@ func init() {
 	addExternalCmdRegistryFlags(ctlCmd.Flags())
 	RootCmd.AddCommand(ctlCmd)
 }
+
+type item struct {
+	ri              registry.Item
+	it              pb.ItemType
+	main, secondary string
+	shortcut        rune
+	selected        func()
+	status          string
+}
+
+type itemsByName []item
+
+func (b itemsByName) Len() int { return len(b) }
+
+func (b itemsByName) Less(i, j int) bool {
+	if b[i].main == b[j].main {
+		return b[i].secondary < b[j].secondary
+	}
+	return b[i].main < b[j].main
+}
+
+func (b itemsByName) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
+
+type itemsByType []item
+
+func (b itemsByType) Len() int { return len(b) }
+
+func (b itemsByType) Less(i, j int) bool {
+	if b[i].it == b[j].it {
+		return b[i].ri.Name() < b[j].ri.Name()
+	}
+	return b[i].it < b[j].it
+}
+
+func (b itemsByType) Swap(i, j int) { b[i], b[j] = b[j], b[i] }

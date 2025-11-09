@@ -23,59 +23,19 @@ package lib
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync"
 
-	pb "github.com/pydio/cells/v4/common/proto/registry"
-	"github.com/pydio/cells/v4/common/registry"
-	"github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service"
-	servicecontext "github.com/pydio/cells/v4/common/service/context"
+	"github.com/ory/hydra/v2/x"
 
-	"github.com/ory/hydra/x"
-
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/config"
-	"github.com/pydio/cells/v4/common/proto/install"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/config"
+	"github.com/pydio/cells/v5/common/proto/install"
+	pb "github.com/pydio/cells/v5/common/proto/registry"
+	"github.com/pydio/cells/v5/common/registry"
+	"github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/utils/propagator"
 )
-
-type DexClient struct {
-	Id                     string
-	Name                   string
-	Secret                 string
-	RedirectURIs           []string
-	IdTokensExpiry         string
-	RefreshTokensExpiry    string
-	OfflineSessionsSliding bool
-}
-
-func addBoltDbEntry(sName string, db ...string) error {
-	bDir, e := runtime.ServiceDataDir(common.ServiceGrpcNamespace_ + sName)
-	if e != nil {
-		return e
-	}
-	dbName := sName + ".db"
-	if len(db) > 0 {
-		dbName = db[0]
-	}
-	return config.SetDatabase(common.ServiceGrpcNamespace_+sName, "boltdb", filepath.Join(bDir, dbName))
-}
-
-func addBleveDbEntry(sName string, db ...string) error {
-	bDir, e := runtime.ServiceDataDir(common.ServiceGrpcNamespace_ + sName)
-	if e != nil {
-		return e
-	}
-	dbName := sName + ".bleve"
-	if len(db) > 0 {
-		dbName = db[0]
-	}
-	configKey := common.ServiceGrpcNamespace_ + sName
-	if len(db) > 1 {
-		configKey = db[1]
-	}
-	return config.SetDatabase(configKey, "bleve", filepath.Join(bDir, dbName))
-}
 
 var (
 	listRegistry registry.Registry
@@ -89,9 +49,9 @@ func ListServicesWithStorage() (ss []service.Service, e error) {
 		if err != nil {
 			e = err
 		}
-		creg := servicecontext.WithRegistry(ctx, reg)
-		runtime.Init(creg, "discovery")
-		runtime.Init(creg, "main")
+		ctx = propagator.With(ctx, registry.ContextKey, reg)
+		runtime.Init(ctx, "discovery")
+		runtime.Init(ctx, "main")
 		listRegistry = reg
 	})
 	if e != nil {
@@ -104,7 +64,7 @@ func ListServicesWithStorage() (ss []service.Service, e error) {
 	for _, i := range items {
 		var srv service.Service
 		if i.As(&srv) {
-			if len(srv.Options().Storages) > 0 {
+			if len(srv.Options().StorageOptions.SupportedDrivers) > 0 {
 				ss = append(ss, srv)
 			}
 		} else {
@@ -114,11 +74,11 @@ func ListServicesWithStorage() (ss []service.Service, e error) {
 	return ss, nil
 }
 
-func actionConfigsSet(c *install.InstallConfig) error {
+func actionConfigsSet(ctx context.Context, c *install.InstallConfig) error {
 
 	// OAuth web
 	oauthWeb := common.ServiceWebNamespace_ + common.ServiceOAuth
-	if config.Get("services", oauthWeb, "secret").String() != "" {
+	if config.Get(ctx, "services", oauthWeb, "secret").String() != "" {
 		// Secret already set
 		return nil
 	}
@@ -128,13 +88,13 @@ func actionConfigsSet(c *install.InstallConfig) error {
 		return err
 	}
 
-	if er := config.Set([]string{"#insecure_binds...#/auth/callback"}, "services", oauthWeb, "insecureRedirects"); er != nil {
+	if er := config.Set(ctx, []string{"#insecure_binds...#/auth/callback"}, "services", oauthWeb, "insecureRedirects"); er != nil {
 		return er
 	}
-	if er := config.Set(string(secret), "services", oauthWeb, "secret"); er != nil {
+	if er := config.Set(ctx, string(secret), "services", oauthWeb, "secret"); er != nil {
 		return er
 	}
 
-	return config.Save("cli", "Generating secret of "+oauthWeb+" service")
+	return config.Save(ctx, "cli", "Generating secret of "+oauthWeb+" service")
 
 }

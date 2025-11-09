@@ -21,6 +21,16 @@
 package runtime
 
 const (
+	KeyName = "name"
+
+	KeyBootstrapTpl      = "bootstrap_template"
+	KeyBootstrapFile     = "bootstrap_file"
+	KeyBootstrapRoot     = "bootstrap_root"
+	KeyBootstrapYAML     = "bootstrap_yaml"
+	KeyBootstrapSet      = "set"
+	KeyBootstrapSetsFile = "sets"
+
+	KeyCluster      = "cluster"
 	KeyDiscovery    = "discovery"
 	KeyRegistry     = "registry"
 	KeyBroker       = "broker"
@@ -28,8 +38,6 @@ const (
 	KeyVault        = "vault"
 	KeyKeyring      = "keyring"
 	KeyCertsStore   = "certs_store"
-	KeyCache        = "cache"
-	KeyShortCache   = "shortcache"
 	KeyFork         = "fork"
 	KeyForkLegacy   = "is_fork"
 	KeyArgTags      = "tags"
@@ -42,7 +50,7 @@ const (
 	KeyGrpcPort          = "grpc_port"
 	KeyHttpPort          = "http_port"
 	KeyGrpcExternal      = "grpc_external"
-	KeyHealthCheckPort   = "healthcheck"
+	//KeyHealthCheckPort   = "healthcheck"
 
 	KeySiteBind               = "site_bind"
 	KeySiteExternal           = "site_external"
@@ -63,10 +71,11 @@ const (
 	KeySiteLetsEncryptAgreeL   = "le_agree"
 	KeySiteLetsEncryptStagingL = "le_staging"
 
-	KeyInstallCli       = "install_cli"
-	KeyInstallYaml      = "install_yaml"
-	KeyInstallJson      = "install_json"
-	KeyInstallExitAfter = "exit_after_install"
+	KeyInstallCli        = "install_cli"
+	KeyInstallYaml       = "install_yaml"
+	KeyInstallJson       = "install_json"
+	KeyInstallExitAfter  = "exit_after_install"
+	KeyInstallMigrations = "migrate"
 
 	KeyInstallCliLegacy  = "cli"
 	KeyInstallYamlLegacy = "yaml"
@@ -75,16 +84,13 @@ const (
 	KeyLog       = "log"
 	KeyLogJson   = "log_json"
 	KeyLogToFile = "log_to_file"
-
-	KeyEnableMetrics = "enable_metrics"
-	KeyEnablePprof   = "enable_pprof"
+	KeyLogSQL    = "log_sql"
 
 	KeyHttpServer    = "http"
-	HttpServerCaddy  = "caddy"
 	HttpServerNative = "http"
 
-	DefaultGrpcPort        = "8001"
-	DefaultDiscoveryPort   = "8002"
+	DefaultDiscoveryPort   = "8030"
+	DefaultGrpcPort        = "0"
 	DefaultBindingSitePort = "8080"
 	DefaultHttpPort        = "0"
 
@@ -92,6 +98,18 @@ const (
 	DefaultVaultFileName   = "pydio-vault.json"
 	DefaultKeyringFileName = "cells-vault-key"
 	DefaultCertStorePath   = "certs"
+
+	DefaultConfigSuffix     = "/config"
+	DefaultVaultSuffix      = "/vault"
+	DefaultRegistrySuffix   = "/registry"
+	DefaultBrokerSuffix     = "/broker"
+	DefaultCacheSuffix      = "/cache"
+	DefaultShortCacheSuffix = "/shortcache"
+	DefaultQueueSuffix      = "/queue"
+
+	// Deprecated keys - but env vars can still be read
+	KeyEnableMetrics = "enable_metrics"
+	KeyEnablePprof   = "enable_pprof"
 )
 
 const (
@@ -102,6 +120,8 @@ const (
 	NodeMetaForkStartTag = "forkStartTag"
 	NodeMetaHostName     = "hostname"
 	NodeMetaCapacities   = "capacities"
+	NodeRootID           = "rootID"
+	NodeMetaCluster      = "cluster"
 )
 
 var (

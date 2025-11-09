@@ -31,7 +31,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/http"
 	"net/url"
@@ -41,23 +40,27 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hashicorp/go-version"
+	version "github.com/hashicorp/go-version"
 	update2 "github.com/inconshreveable/go-update"
 	"github.com/kardianos/osext"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/pydio/cells/v4/common"
-	"github.com/pydio/cells/v4/common/log"
-	"github.com/pydio/cells/v4/common/proto/update"
-	runtime2 "github.com/pydio/cells/v4/common/runtime"
-	"github.com/pydio/cells/v4/common/service"
-	"github.com/pydio/cells/v4/common/service/errors"
-	"github.com/pydio/cells/v4/common/utils/configx"
-	"github.com/pydio/cells/v4/common/utils/filesystem"
-	json "github.com/pydio/cells/v4/common/utils/jsonx"
-	"github.com/pydio/cells/v4/common/utils/net"
+	"github.com/pydio/cells/v5/common"
+	"github.com/pydio/cells/v5/common/errors"
+	"github.com/pydio/cells/v5/common/proto/update"
+	runtime2 "github.com/pydio/cells/v5/common/runtime"
+	"github.com/pydio/cells/v5/common/service"
+	"github.com/pydio/cells/v5/common/telemetry/log"
+	"github.com/pydio/cells/v5/common/utils/configx"
+	"github.com/pydio/cells/v5/common/utils/filesystem"
+	json "github.com/pydio/cells/v5/common/utils/jsonx"
+	"github.com/pydio/cells/v5/common/utils/net"
 )
+
+func init() {
+	runtime2.RegisterEnvVariable("CELLS_UPDATE_HTTP_PROXY", "", "Outgoing Proxy URL to perform update checks")
+}
 
 // LoadUpdates will post a Json query to the update server to detect if there are any
 // updates available
@@ -69,11 +72,11 @@ func LoadUpdates(ctx context.Context, conf configx.Values, request *update.Updat
 	}
 	urlConf := conf.Val("#/defaults/update/updateUrl").Default(conf.Val("updateUrl").String()).String()
 	if urlConf == "" {
-		return nil, errors.BadRequest(common.ServiceUpdate, "cannot find update url")
+		return nil, errors.WithMessage(errors.StatusBadRequest, "cannot find update url")
 	}
 	parsed, e := url.Parse(urlConf)
 	if e != nil {
-		return nil, errors.BadRequest(common.ServiceUpdate, e.Error())
+		return nil, errors.Tag(e, errors.StatusInternalServerError)
 	}
 	if strings.Trim(parsed.Path, "/") == "" {
 		parsed.Path = "/a/update-server"
@@ -124,7 +127,7 @@ func LoadUpdates(ctx context.Context, conf configx.Values, request *update.Updat
 				Title  string
 				Detail string
 			}
-			data, _ := ioutil.ReadAll(response.Body)
+			data, _ := io.ReadAll(response.Body)
 			if e := json.Unmarshal(data, &jsonErr); e == nil {
 				rErr = fmt.Errorf("failed connecting to the update server (%s), error code %d", jsonErr.Title, response.StatusCode)
 			}
@@ -143,9 +146,9 @@ func LoadUpdates(ctx context.Context, conf configx.Values, request *update.Updat
 		if ok && sOk && save == "true" {
 			// Save license now : the check for update including license key passed without error,
 			// this license must thus be valid
-			log.Logger(ctx).Info("Saving LicenseKey to file now", zap.String("lic", lic))
+			log.Logger(ctx).Info("Saving LicenseKey to file now")
 			filePath := filepath.Join(runtime2.ApplicationWorkingDir(), "pydio-license")
-			if err := ioutil.WriteFile(filePath, []byte(lic), 0644); err != nil {
+			if err := os.WriteFile(filePath, []byte(lic), 0644); err != nil {
 				return nil, fmt.Errorf("could not save license file to %s (%s), aborting upgrade", filePath, err.Error())
 			}
 		}
@@ -200,8 +203,8 @@ func ApplyUpdate(ctx context.Context, p *update.Package, conf configx.Values, dr
 	} else {
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			plain, _ := ioutil.ReadAll(resp.Body)
-			errorChan <- errors.New("binary.download.error", "Error while downloading binary:"+string(plain), int32(resp.StatusCode))
+			plain, _ := io.ReadAll(resp.Body)
+			errorChan <- errors.WithMessagef(errors.StatusInternalServerError, "Error while downloading binary: %s, status code %d", string(plain), resp.StatusCode)
 			return
 		}
 
@@ -210,7 +213,7 @@ func ApplyUpdate(ctx context.Context, p *update.Package, conf configx.Values, dr
 			targetPath = filepath.Join(os.TempDir(), "pydio-update")
 		}
 		if p.BinaryChecksum == "" || p.BinarySignature == "" {
-			errorChan <- fmt.Errorf("Missing checksum and signature infos")
+			errorChan <- errors.New("Missing checksum and signature infos")
 			return
 		}
 		checksum, e := base64.StdEncoding.DecodeString(p.BinaryChecksum)
@@ -226,12 +229,12 @@ func ApplyUpdate(ctx context.Context, p *update.Package, conf configx.Values, dr
 
 		pKey := conf.Val("#/defaults/update/publicKey").Default(conf.Val("publicKey").String()).String()
 		if pKey == "" {
-			errorChan <- fmt.Errorf("cannot find public key to verify binary integrity")
+			errorChan <- errors.New("cannot find public key to verify binary integrity")
 			return
 		}
 		block, _ := pem.Decode([]byte(pKey))
 		if block == nil {
-			errorChan <- fmt.Errorf("cannot decode public key")
+			errorChan <- errors.New("cannot decode public key")
 			return
 		}
 		var pubKey rsa.PublicKey
@@ -273,7 +276,7 @@ func ApplyUpdate(ctx context.Context, p *update.Package, conf configx.Values, dr
 			errorChan <- er
 		}
 
-		// Now try to move previous version to the services folder. Do not break on error, just Warn in the logs.
+		// Now try to move previous version to the services' folder. Do not break on error, just Warn in the logs.
 		dataDir, _ := runtime2.ServiceDataDir(common.ServiceGrpcNamespace_ + common.ServiceUpdate)
 		backupPath := filepath.Join(dataDir, filepath.Base(backupFile))
 		if err := filesystem.SafeRenameFile(backupFile, backupPath); err != nil {

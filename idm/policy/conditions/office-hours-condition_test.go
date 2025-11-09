@@ -25,10 +25,11 @@ import (
 
 	"github.com/ory/ladon"
 	"github.com/ory/ladon/manager/memory"
-	. "github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pydio/cells/v4/common/service/context"
+	errors "github.com/pydio/cells/v5/common/middleware/keys"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestOfficeHoursCondition(t *testing.T) {
@@ -48,7 +49,7 @@ func TestOfficeHoursCondition(t *testing.T) {
 			condition := &OfficeHoursCondition{
 				Matches: c.matches,
 			}
-			So(condition.Fulfills(c.value, new(ladon.Request)), ShouldEqual, c.pass)
+			So(condition.Fulfills(bg, c.value, new(ladon.Request)), ShouldEqual, c.pass)
 		}
 	})
 }
@@ -65,7 +66,7 @@ func TestOfficeHoursPolicy(t *testing.T) {
 			Actions:     []string{"write"},
 			Effect:      ladon.AllowAccess,
 			Conditions: ladon.Conditions{
-				servicecontext.ClientTime: &OfficeHoursCondition{
+				errors.ClientTime: &OfficeHoursCondition{
 					Matches: "Monday-Friday/08:00/17:30",
 				},
 			},
@@ -75,7 +76,7 @@ func TestOfficeHoursPolicy(t *testing.T) {
 		warden := &ladon.Ladon{Manager: memory.NewMemoryManager()}
 
 		// Add the policies defined above to the memory manager.
-		require.Nil(t, warden.Manager.Create(ladonPolicy))
+		require.Nil(t, warden.Manager.Create(bg, ladonPolicy))
 
 		requestOK := &ladon.Request{
 			Subject:  "max",
@@ -96,7 +97,7 @@ func TestOfficeHoursPolicy(t *testing.T) {
 
 		// This is where we ask the warden if the access requests should be granted
 		// Note IsAllowed returns null when access is granted and an error otherwise
-		So(warden.IsAllowed(requestOK), ShouldBeNil)
-		So(warden.IsAllowed(requestNotOK), ShouldNotBeNil)
+		So(warden.IsAllowed(bg, requestOK), ShouldBeNil)
+		So(warden.IsAllowed(bg, requestNotOK), ShouldNotBeNil)
 	})
 }

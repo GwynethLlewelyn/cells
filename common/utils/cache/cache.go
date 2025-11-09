@@ -22,7 +22,12 @@
 
 package cache
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/pydio/cells/v5/common/utils/openurl"
+)
 
 type Cache interface {
 	Get(key string, value interface{}) (ok bool)
@@ -31,7 +36,27 @@ type Cache interface {
 	SetWithExpiry(key string, value interface{}, duration time.Duration) error
 	Delete(k string) error
 	Reset() error
+	Exists(key string) (ok bool)
 	KeysByPrefix(prefix string) ([]string, error)
 	Iterate(it func(key string, val interface{})) error
-	Close() error
+	Close(ctx context.Context) error
+}
+
+type URLOpener openurl.URLOpener[Cache]
+
+// MustDiscard opens a discard-cache that can be used as fallback for openCache-related errors
+func MustDiscard() Cache {
+	return &discard{}
+}
+
+// Config holds cache configurations
+type Config struct {
+	// Cache identifier, should be always set
+	Prefix string
+	// Eviction is a golang duration expressed as string ("10s", "1m", etc...). Using -1 means no expiration
+	Eviction string
+	// CleanWindow may be used by caches to trigger expired keys cleaning
+	CleanWindow string
+	// DiscardFallback switches to a "no-op" cache if the cache opening fails
+	DiscardFallback bool
 }
